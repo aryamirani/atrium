@@ -7,7 +7,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const newBranchOption = "New branch (from HEAD)"
+// headBaseOption is the default base choice: the session branches off the repo's current
+// HEAD. Every session gets its own fresh branch regardless (see the branch-off worktree
+// model); this picker only chooses the base, so selecting this option means "base = HEAD".
+const headBaseOption = "HEAD (current branch)"
 
 // BranchPicker is an embeddable component for selecting a branch.
 // It does not hold the full branch list — results are provided asynchronously
@@ -19,7 +22,7 @@ type BranchPicker struct {
 	cursor        int      // index into visibleItems()
 	focused       bool
 	width         int
-	showNewBranch bool // whether to show the "New branch" option
+	showHeadBase  bool // whether to offer the default "HEAD (current branch)" base option
 	loading       bool // a search is in flight (results not yet authoritative)
 }
 
@@ -27,8 +30,8 @@ type BranchPicker struct {
 // because the caller kicks off an initial search as soon as the overlay opens.
 func NewBranchPicker() *BranchPicker {
 	return &BranchPicker{
-		showNewBranch: true,
-		loading:       true,
+		showHeadBase: true,
+		loading:      true,
 	}
 }
 
@@ -121,13 +124,14 @@ func (bp *BranchPicker) SetResults(branches []string, version uint64) {
 	bp.results = branches
 	bp.loading = false
 
-	// Hide "New branch" when filter exactly matches a branch name
-	bp.showNewBranch = true
+	// Hide the default HEAD-base option when the filter exactly matches a branch name: the
+	// user is clearly homing in on that branch as the base.
+	bp.showHeadBase = true
 	if bp.filter != "" {
 		lower := strings.ToLower(bp.filter)
 		for _, b := range branches {
 			if strings.ToLower(b) == lower {
-				bp.showNewBranch = false
+				bp.showHeadBase = false
 				break
 			}
 		}
@@ -147,21 +151,22 @@ func (bp *BranchPicker) SetResults(branches []string, version uint64) {
 // visibleItems returns the list of items to display.
 func (bp *BranchPicker) visibleItems() []string {
 	var items []string
-	if bp.showNewBranch {
-		items = append(items, newBranchOption)
+	if bp.showHeadBase {
+		items = append(items, headBaseOption)
 	}
 	items = append(items, bp.results...)
 	return items
 }
 
-// GetSelectedBranch returns the selected branch name, or empty string for "New branch".
+// GetSelectedBranch returns the selected base branch name, or empty string for the default
+// HEAD-base option (which means "branch off the current HEAD, no explicit base").
 func (bp *BranchPicker) GetSelectedBranch() string {
 	items := bp.visibleItems()
 	if bp.cursor < 0 || bp.cursor >= len(items) {
 		return ""
 	}
 	selected := items[bp.cursor]
-	if selected == newBranchOption {
+	if selected == headBaseOption {
 		return ""
 	}
 	return selected

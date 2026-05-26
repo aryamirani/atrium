@@ -40,15 +40,17 @@ func (pp *ProfilePicker) SetWidth(w int) {
 	pp.width = w
 }
 
-// HandleKeyPress processes a key event. Returns true if consumed.
+// HandleKeyPress processes a key event. Returns true if consumed. Up/Down are accepted
+// alongside Left/Right so navigation is ↑/↓ everywhere in the form, even though this picker
+// renders horizontally.
 func (pp *ProfilePicker) HandleKeyPress(msg tea.KeyMsg) bool {
 	switch msg.Type {
-	case tea.KeyLeft:
+	case tea.KeyLeft, tea.KeyUp:
 		if pp.cursor > 0 {
 			pp.cursor--
 		}
 		return true
-	case tea.KeyRight:
+	case tea.KeyRight, tea.KeyDown:
 		if pp.cursor < len(pp.profiles)-1 {
 			pp.cursor++
 		}
@@ -89,7 +91,7 @@ func (pp *ProfilePicker) Render() string {
 	s.WriteString(ppLabelStyle.Render("Profile"))
 
 	if pp.HasMultiple() && pp.focused {
-		s.WriteString(ppDimStyle.Render("  ←/→ to change"))
+		s.WriteString(ppDimStyle.Render("  ↑↓ to change"))
 	}
 	s.WriteString("\n\n")
 

@@ -50,9 +50,10 @@ const pickerVisibleRows = 3
 // also constant-height.
 const promptVisibleRows = 4
 
-// createFormHelp is the single footer line describing how to navigate the create form,
-// replacing the per-field hints that were ambiguous about what Tab does.
-const createFormHelp = "Tab/⇧Tab move · ↑↓ select · type to filter · Enter create"
+// createFormHelp is the single footer line describing how to navigate the create form.
+// Enter advances between fields (and inserts a newline in the prompt), so submission is
+// surfaced as Ctrl+S — which works from any field — rather than an ambiguous "Enter create".
+const createFormHelp = "Tab/⇧Tab move · ↑↓ select · type to filter · ⌃S create"
 
 // renderPickerRows renders a list of pre-formatted labels windowed around the cursor,
 // always emitting exactly pickerVisibleRows lines (padding with blanks) so the caller's
@@ -133,49 +134,16 @@ func NewTextInputOverlay(title string, initialValue string) *TextInputOverlay {
 	return overlay
 }
 
-// NewTextInputOverlayWithBranchPicker creates a text input overlay that includes a
-// directory picker (for choosing the target repo) and a branch picker. Branch results
-// are populated asynchronously via SetBranchResults. dirCandidates is the ordered list
-// of candidate repo paths, with the default/contextual target first.
-func NewTextInputOverlayWithBranchPicker(title string, initialValue string, profiles []config.Profile, dirCandidates []string) *TextInputOverlay {
-	ti := newTextarea(initialValue)
-	bp := NewBranchPicker()
-	dp := NewDirectoryPicker(dirCandidates)
-
-	var pp *ProfilePicker
-	if len(profiles) > 0 {
-		pp = NewProfilePicker(profiles)
-	}
-
-	// Build the ordered list of stops. Directory precedes branch because branches are
-	// scoped to the chosen directory. Focus starts on the textarea so the user can type
-	// the prompt immediately.
-	stops := []focusStop{stopDirectory}
-	if pp != nil && pp.HasMultiple() {
-		stops = append(stops, stopProfile)
-	}
-	stops = append(stops, stopTextarea, stopBranch, stopEnter)
-
-	overlay := &TextInputOverlay{
-		textarea:        ti,
-		Title:           title,
-		directoryPicker: dp,
-		profilePicker:   pp,
-		branchPicker:    bp,
-		stops:           stops,
-	}
-	overlay.focusStop(stopTextarea)
-	return overlay
-}
-
-// NewSessionCreateOverlay creates the unified new-session form: a title field, a project
-// (directory) picker, an optional profile picker (only when more than one profile
-// exists), a branch picker, and a prompt textarea. Focus starts on the title so the user
-// can name the session immediately, and every section renders at a constant height so the
-// centered overlay does not jump as focus moves. dirCandidates is the ordered list of
-// candidate repo paths with the default/contextual target first.
+// NewSessionCreateOverlay creates the unified new-session form: a title field, a prompt
+// textarea, a project (directory) picker, an optional profile picker (only when more than
+// one profile exists), and a branch picker. Focus starts on the title so the user can name
+// the session immediately, and every section renders at a constant height so the centered
+// overlay does not jump as focus moves. dirCandidates is the ordered list of candidate repo
+// paths with the default/contextual target first.
 func NewSessionCreateOverlay(profiles []config.Profile, dirCandidates []string) *TextInputOverlay {
 	ti := newTextarea("")
+	// The prompt is optional and auto-sent to the agent once the session boots, so say so.
+	ti.Placeholder = "Optional — sent to the agent once it starts (Tab to skip)"
 	bp := NewBranchPicker()
 	dp := NewDirectoryPicker(dirCandidates)
 
@@ -184,13 +152,14 @@ func NewSessionCreateOverlay(profiles []config.Profile, dirCandidates []string) 
 		pp = NewProfilePicker(profiles)
 	}
 
-	// Title first (where focus starts), then project, optional profile, branch, and finally
-	// the prompt — branches are scoped to the chosen project, and the prompt comes last.
-	stops := []focusStop{stopTitle, stopDirectory}
+	// Title first (where focus starts), then the prompt — the input that distinguishes this
+	// flow from the inline `n` flow — followed by project, optional profile, and branch.
+	// Branch stays after project because branches are scoped to the chosen project.
+	stops := []focusStop{stopTitle, stopTextarea, stopDirectory}
 	if pp != nil && pp.HasMultiple() {
 		stops = append(stops, stopProfile)
 	}
-	stops = append(stops, stopBranch, stopTextarea, stopEnter)
+	stops = append(stops, stopBranch, stopEnter)
 
 	overlay := &TextInputOverlay{
 		textarea:        ti,
@@ -224,6 +193,7 @@ func newTitleInput() textinput.Model {
 	in := textinput.New()
 	in.Prompt = ""
 	in.CharLimit = 32
+	in.Placeholder = "name this session"
 	return in
 }
 
@@ -347,6 +317,15 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 	case tea.KeyEsc:
 		t.Canceled = true
 		return true, false
+	case tea.KeyCtrlS:
+		// Submit from any field. Enter only submits on the focused Create button (so it can
+		// stay a newline in the prompt and an "advance" elsewhere), so Ctrl+S is the
+		// submit-from-anywhere shortcut; the Create button remains the fallback.
+		t.Submitted = true
+		if t.OnSubmit != nil {
+			t.OnSubmit()
+		}
+		return true, false
 	case tea.KeyEnter:
 		if t.isEnterButton() {
 			t.Submitted = true
@@ -355,20 +334,15 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			}
 			return true, false
 		}
-		if t.isBranchPicker() {
-			// Enter on branch picker = advance to enter button
-			t.setFocusIndex(numStops - 1)
-			return false, false
-		}
-		if t.isTitle() || t.isDirectoryPicker() || t.isProfilePicker() {
-			// Enter on the title/directory/profile = advance to the next stop
-			t.setFocusIndex(t.FocusIndex + 1)
-			return false, false
-		}
-		// Send enter to textarea
+		// In the prompt textarea, Enter inserts a newline.
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
+			return false, false
 		}
+		// Every other field (title, pickers) advances to the next stop. Advancing by one —
+		// rather than jumping to the button — keeps Enter consistent regardless of where a
+		// field sits in the order.
+		t.setFocusIndex(t.FocusIndex + 1)
 		return false, false
 	default:
 		if t.isTitle() {
@@ -384,7 +358,8 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			return false, false
 		}
 		if t.isProfilePicker() {
-			if msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight {
+			switch msg.Type {
+			case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown:
 				t.profilePicker.HandleKeyPress(msg)
 			}
 			return false, false
@@ -520,30 +495,11 @@ func (t *TextInputOverlay) Render() string {
 		return t.renderCreateForm(divider)
 	}
 
-	// Build the view
+	// Plain prompt overlay (the `p` flow): no pickers — just a title, the prompt textarea,
+	// and the submit button.
 	var content string
-
-	// Render directory picker if present, at the very top.
-	if t.directoryPicker != nil {
-		content += t.directoryPicker.Render() + "\n\n"
-		content += divider + "\n\n"
-	}
-
-	// Render profile picker if present, above the prompt
-	if t.profilePicker != nil {
-		content += t.profilePicker.Render() + "\n\n"
-		content += divider + "\n\n"
-	}
-
 	content += tiTitleStyle.Render(t.Title) + "\n"
 	content += t.textarea.View() + "\n\n"
-
-	// Render branch picker if present, with dividers
-	if t.branchPicker != nil {
-		content += divider + "\n\n"
-		content += t.branchPicker.Render() + "\n\n"
-	}
-
 	content += divider + "\n\n"
 	content += t.renderEnterButton()
 
@@ -565,6 +521,7 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 
 	b.WriteString(tiTitleStyle.Render(t.Title) + "\n")
 	section(tiLabelStyle.Render("Title") + "  " + t.titleInput.View())
+	section(tiLabelStyle.Render("Prompt") + "\n" + t.textarea.View())
 	if t.directoryPicker != nil {
 		section(t.directoryPicker.Render())
 	}
@@ -574,7 +531,6 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 	if t.branchPicker != nil {
 		section(t.branchPicker.Render())
 	}
-	section(tiLabelStyle.Render("Prompt") + "\n" + t.textarea.View())
 
 	b.WriteString(tiHintStyle.Render(createFormHelp) + "\n")
 	b.WriteString(t.renderEnterButton())

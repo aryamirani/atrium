@@ -21,52 +21,30 @@ func TestTextInputOverlay_SimpleFocusCycle(t *testing.T) {
 	assert.True(t, o.isTextarea())
 }
 
-func TestTextInputOverlay_BranchPickerFocusOrder(t *testing.T) {
-	// No profiles → stops: [directory, textarea, branch, enter]. Focus starts on textarea.
-	o := NewTextInputOverlayWithBranchPicker("Enter prompt", "", nil, []string{"/repo/a", "/repo/b"})
-	assert.True(t, o.isTextarea(), "focus should start on the textarea")
-
-	tab(o)
-	assert.True(t, o.isBranchPicker())
-	tab(o)
-	assert.True(t, o.isEnterButton())
-	tab(o)
-	assert.True(t, o.isDirectoryPicker(), "directory is the first stop, reached after wrap")
-	tab(o)
-	assert.True(t, o.isTextarea())
-
-	// Shift+Tab from the textarea lands on the directory picker.
-	shiftTab(o)
-	assert.True(t, o.isDirectoryPicker())
-
-	// The directory picker exposes the default (first) candidate.
-	assert.Equal(t, "/repo/a", o.GetSelectedPath())
-}
-
 func TestTextInputOverlay_GetSelectedPathNilWithoutPicker(t *testing.T) {
 	o := NewTextInputOverlay("Title", "")
 	assert.Equal(t, "", o.GetSelectedPath())
 }
 
 func TestTextInputOverlay_InvalidateBumpsVersion(t *testing.T) {
-	o := NewTextInputOverlayWithBranchPicker("Enter prompt", "", nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
 	before := o.BranchFilterVersion()
 	after := o.InvalidateBranchSearch()
 	assert.Greater(t, after, before)
 }
 
 func TestSessionCreateOverlay_FocusStartsOnTitleAndCycles(t *testing.T) {
-	// No profiles → stops: [title, directory, branch, textarea, enter]; focus starts on title.
+	// No profiles → stops: [title, textarea, directory, branch, enter]; focus starts on title.
 	o := NewSessionCreateOverlay(nil, []string{"/repo/a", "/repo/b"})
 	assert.True(t, o.IsCreateForm())
 	assert.True(t, o.isTitle(), "focus should start on the title")
 
 	tab(o)
+	assert.True(t, o.isTextarea(), "prompt comes right after the title")
+	tab(o)
 	assert.True(t, o.isDirectoryPicker())
 	tab(o)
 	assert.True(t, o.isBranchPicker())
-	tab(o)
-	assert.True(t, o.isTextarea())
 	tab(o)
 	assert.True(t, o.isEnterButton())
 	tab(o)
@@ -74,6 +52,17 @@ func TestSessionCreateOverlay_FocusStartsOnTitleAndCycles(t *testing.T) {
 
 	shiftTab(o)
 	assert.True(t, o.isEnterButton())
+}
+
+func TestSessionCreateOverlay_CtrlSSubmitsFromAnyField(t *testing.T) {
+	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	// Focus starts on the title, not the submit button.
+	assert.True(t, o.isTitle())
+
+	shouldClose, _ := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlS})
+	assert.True(t, shouldClose, "Ctrl+S should close the form")
+	assert.True(t, o.IsSubmitted(), "Ctrl+S should submit from a non-button field")
+	assert.False(t, o.IsCanceled())
 }
 
 func TestSessionCreateOverlay_GetTitle(t *testing.T) {
