@@ -72,6 +72,12 @@ type home struct {
 	// It registers the new instance in the list after the instance has been started.
 	newInstanceFinalizer func()
 
+	// newInstance is the session currently being created (named in stateNew, and prompted
+	// in statePrompt for the N flow). The list selection can be moved out from under the
+	// creation flow by a background instanceStartedMsg, so we target this stable reference
+	// rather than GetSelectedInstance / the last list item.
+	newInstance *session.Instance
+
 	// promptAfterName tracks if we should enter prompt mode after naming
 	promptAfterName bool
 
@@ -408,7 +414,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			m.state = stateDefault
 			m.promptAfterName = false
-			m.list.Kill()
+			m.killNewInstance()
 			return m, tea.Sequence(
 				tea.WindowSize(),
 				func() tea.Msg {
@@ -418,7 +424,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			)
 		}
 
-		instance := m.list.GetInstances()[m.list.NumInstances()-1]
+		// The new instance is tracked by reference: AddInstance may insert it mid-list (under
+		// its repo group) and a background instanceStartedMsg may move the selection, so it is
+		// neither the last item nor reliably the selected one.
+		instance := m.newInstance
+		if instance == nil {
+			m.state = stateDefault
+			return m, nil
+		}
 		switch msg.Type {
 		// Start the instance (enable previews etc) and go back to the main menu state.
 		case tea.KeyEnter:
@@ -440,6 +453,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			// Set Loading status and finalize into the list immediately
 			instance.SetStatus(session.Loading)
 			m.newInstanceFinalizer()
+			m.newInstance = nil // creation handed off to the background start
 			m.promptAfterName = false
 			m.state = stateDefault
 			m.menu.SetState(ui.StateDefault)
@@ -475,7 +489,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(err)
 			}
 		case tea.KeyEsc:
-			m.list.Kill()
+			m.killNewInstance()
 			m.state = stateDefault
 			m.instanceChanged()
 
@@ -500,7 +514,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		// Check if the form was submitted or canceled
 		if shouldClose {
-			selected := m.list.GetSelectedInstance()
+			// Target the instance being created by reference: a background instanceStartedMsg
+			// can move the list selection off it while the prompt overlay is open.
+			selected := m.newInstance
 			if selected == nil {
 				return m, nil
 			}
@@ -539,6 +555,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					// Finalize into list and start
 					selected.SetStatus(session.Loading)
 					m.newInstanceFinalizer()
+					m.newInstance = nil // creation handed off to the background start
 					m.textInputOverlay = nil
 					m.state = stateDefault
 					m.menu.SetState(ui.StateDefault)
@@ -563,6 +580,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 
 			// Close the overlay and reset state
+			m.newInstance = nil
 			m.textInputOverlay = nil
 			m.state = stateDefault
 			return m, tea.Sequence(
@@ -669,8 +687,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		m.newInstanceFinalizer = m.list.AddInstance(instance)
 		// AddInstance may insert the session into the middle of the list (under its repo
-		// group), so select it by identity rather than assuming it is last.
+		// group), so select it by identity rather than assuming it is last. Also track it by
+		// reference: the naming/prompt flow operates on m.newInstance, not the selection,
+		// which a background instanceStartedMsg can move.
 		m.list.SelectInstance(instance)
+		m.newInstance = instance
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
 		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
@@ -701,8 +722,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		m.newInstanceFinalizer = m.list.AddInstance(instance)
 		// AddInstance may insert the session into the middle of the list (under its repo
-		// group), so select it by identity rather than assuming it is last.
+		// group), so select it by identity rather than assuming it is last. Also track it by
+		// reference: the naming/prompt flow operates on m.newInstance, not the selection,
+		// which a background instanceStartedMsg can move.
 		m.list.SelectInstance(instance)
+		m.newInstance = instance
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
 		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
@@ -1116,12 +1140,9 @@ func (m *home) recordRecentPath(path string) {
 	}
 }
 
-// cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.
+// cancelPromptOverlay cancels the prompt overlay, cleaning up the unstarted instance.
 func (m *home) cancelPromptOverlay() tea.Cmd {
-	selected := m.list.GetSelectedInstance()
-	if selected != nil && !selected.Started() {
-		m.list.Kill()
-	}
+	m.killNewInstance()
 	m.textInputOverlay = nil
 	m.state = stateDefault
 	return tea.Sequence(
@@ -1131,6 +1152,17 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 			return nil
 		},
 	)
+}
+
+// killNewInstance removes the in-progress new instance from the list and clears the tracking
+// reference. List.Kill removes the selected item, so we re-select the tracked instance first:
+// a background instanceStartedMsg may have moved the selection onto an already-started one.
+func (m *home) killNewInstance() {
+	if m.newInstance != nil && !m.newInstance.Started() {
+		m.list.SelectInstance(m.newInstance)
+		m.list.Kill()
+	}
+	m.newInstance = nil
 }
 
 // confirmAction shows a confirmation modal and stores the action to execute on confirm
