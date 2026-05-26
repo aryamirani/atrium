@@ -677,8 +677,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
-		// Derive the contextual target repo before adding the new instance.
+		// Derive the contextual target repo before adding the new instance. The inline
+		// `n` flow has no directory picker, so if there is no repo context (e.g. cs was
+		// launched outside a repo with no sessions), guide the user to `N` instead of
+		// letting session creation fail later at worktree time.
 		m.newSessionPath = m.defaultNewSessionPath()
+		if !git.IsGitRepo(m.newSessionPath) {
+			return m, m.handleError(fmt.Errorf("not in a git repository; press N to choose a project"))
+		}
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
 			Path:    m.newSessionPath,

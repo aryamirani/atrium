@@ -39,16 +39,11 @@ var (
 				return err
 			}
 
-			// Check if we're in a git repository
-			currentDir, err := filepath.Abs(".")
-			if err != nil {
-				return fmt.Errorf("failed to get current directory: %w", err)
-			}
-
-			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: %s must be run from within a git repository", binName)
-			}
-
+			// cs no longer requires being launched from within a git repository. A new
+			// session's target repo defaults to the highlighted session's repo (or the
+			// cwd when it is a repo), and the N overlay's directory picker lets you choose
+			// any project. When there is no repo context, session creation guides you to
+			// pick one rather than failing at startup.
 			cfg := config.LoadConfig()
 
 			// Program flag overrides config
