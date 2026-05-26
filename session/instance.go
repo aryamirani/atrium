@@ -160,8 +160,33 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		instance.started = true
 		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
 	} else {
-		if err := instance.Start(false); err != nil {
-			return nil, err
+		sess := tmux.NewTmuxSession(instance.Title, instance.Program)
+		instance.tmuxSession = sess
+		switch {
+		case sess.DoesSessionExist():
+			// Normal case: the session survived (cs detaches, it doesn't kill),
+			// so reattach to it.
+			if err := instance.Start(false); err != nil {
+				return nil, err
+			}
+		default:
+			// The tmux session is gone — e.g. after a reboot, or the one-time
+			// migration to cs's dedicated socket. Don't crash on the failed
+			// attach (which previously aborted startup). If the worktree is
+			// intact, restart the session in place: this preserves uncommitted
+			// work (Resume would force-recreate the worktree and lose it) and
+			// keeps the instance usable. If the worktree is also gone, leave it
+			// Paused so the branch is preserved and Resume can recover it.
+			if valid, err := instance.gitWorktree.IsValidWorktree(); err == nil && valid {
+				if err := sess.Start(instance.gitWorktree.GetWorktreePath()); err != nil {
+					return nil, err
+				}
+				instance.started = true
+				instance.SetStatus(Running)
+			} else {
+				instance.started = true
+				instance.SetStatus(Paused)
+			}
 		}
 	}
 

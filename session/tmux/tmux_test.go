@@ -340,6 +340,18 @@ func TestHasUpdatedShim(t *testing.T) {
 	require.True(t, p)
 }
 
+func TestTmuxCommandInjectsIsolationFlags(t *testing.T) {
+	cmd := tmuxCommand("has-session", "-t=foo")
+	// Args[0] is "tmux"; the socket flag must immediately follow and precede the
+	// subcommand (tmux requires -L/-f before the command).
+	require.Equal(t, "tmux", cmd.Args[0])
+	require.Equal(t, "-L", cmd.Args[1])
+	require.Equal(t, tmuxSocketName, cmd.Args[2])
+	// The subcommand and its args must still be present and last.
+	require.Contains(t, cmd.Args, "has-session")
+	require.Equal(t, "-t=foo", cmd.Args[len(cmd.Args)-1])
+}
+
 func TestStartTmuxSession(t *testing.T) {
 	ptyFactory := NewMockPtyFactory(t)
 
@@ -363,10 +375,21 @@ func TestStartTmuxSession(t *testing.T) {
 	err := session.Start(workdir)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(ptyFactory.cmds))
-	require.Equal(t, fmt.Sprintf("tmux new-session -d -s claudesquad_test-session -c %s claude", workdir),
-		cmd2.ToString(ptyFactory.cmds[0]))
-	require.Equal(t, "tmux attach-session -t claudesquad_test-session",
-		cmd2.ToString(ptyFactory.cmds[1]))
+
+	// cs runs on a dedicated socket with a bundled config, so every command is
+	// prefixed with `-L claudesquad -f <conf>`. The conf path is absolute and
+	// machine-dependent, so assert the load-bearing parts rather than the exact
+	// string.
+	newSession := cmd2.ToString(ptyFactory.cmds[0])
+	require.Contains(t, newSession, "-L claudesquad")
+	require.Contains(t, newSession, "new-session -d -s claudesquad_test-session")
+	require.Contains(t, newSession, "-c "+workdir)
+	require.Contains(t, newSession, "-n test-session")
+	require.Contains(t, newSession, "claude")
+
+	attach := cmd2.ToString(ptyFactory.cmds[1])
+	require.Contains(t, attach, "-L claudesquad")
+	require.Contains(t, attach, "attach-session -t claudesquad_test-session")
 
 	require.Equal(t, 2, len(ptyFactory.files))
 

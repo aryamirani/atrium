@@ -44,6 +44,10 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// TmuxConfigOverride, when set to an existing file path, is used as the tmux
+	// config for cs sessions instead of the bundled managed config. When empty,
+	// cs materializes and uses its own config.
+	TmuxConfigOverride string `json:"tmux_config_override,omitempty"`
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and
