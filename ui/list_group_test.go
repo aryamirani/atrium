@@ -36,8 +36,9 @@ func TestList_RendersRepoHeadersWhenMultipleRepos(t *testing.T) {
 	l.repos["repoB"] = 1
 
 	out := l.String()
-	require.Contains(t, out, "repoA")
-	require.Contains(t, out, "repoB")
+	// Headers are uppercased as section dividers.
+	require.Contains(t, out, "REPOA")
+	require.Contains(t, out, "REPOB")
 }
 
 func TestList_NoHeadersForSingleRepo(t *testing.T) {
@@ -45,8 +46,8 @@ func TestList_NoHeadersForSingleRepo(t *testing.T) {
 	l.repos["repoA"] = 2 // single distinct repo → grouping inactive
 
 	out := l.String()
-	// The header style pads the repo name with a leading space; with a single repo no
-	// header is emitted, so the padded header token must not appear.
-	require.NotContains(t, out, repoHeaderStyle.Render("repoA"))
+	// With a single repo no header is emitted, so the uppercased header token must
+	// not appear.
+	require.NotContains(t, out, repoHeaderStyle.Render("REPOA"))
 	_ = strings.TrimSpace(out)
 }

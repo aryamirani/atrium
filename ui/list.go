@@ -29,22 +29,21 @@ var pausedStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
 
 var titleStyle = lipgloss.NewStyle().
-	Padding(1, 1, 0, 1).
+	Padding(0, 1, 0, 1).
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
 
 var listDescStyle = lipgloss.NewStyle().
-	Padding(0, 1, 1, 1).
+	Padding(0, 1, 0, 1).
 	Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
 
 var selectedTitleStyle = lipgloss.NewStyle().
-	Padding(1, 1, 0, 1).
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
+	Padding(0, 1, 0, 1).
+	Bold(true).
+	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#ffffff"})
 
 var selectedDescStyle = lipgloss.NewStyle().
-	Padding(0, 1, 1, 1).
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
+	Padding(0, 1, 0, 1).
+	Foreground(lipgloss.AdaptiveColor{Light: "#3a3a3a", Dark: "#bbbbbb"})
 
 var mainTitle = lipgloss.NewStyle().
 	Background(lipgloss.Color("62")).
@@ -59,6 +58,19 @@ var repoHeaderStyle = lipgloss.NewStyle().
 	Bold(true).
 	Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9b9b9b"})
 
+// repoRuleStyle renders the dim divider rule trailing a repo header.
+var repoRuleStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#d7d7d7", Dark: "#3C3C3C"})
+
+// selectedItemStyle draws a left accent bar down the selected item (reusing the
+// panel's violet highlightColor from tabbed_window.go); unselectedItemStyle adds
+// matching left padding so item text stays aligned as the selection moves.
+var selectedItemStyle = lipgloss.NewStyle().
+	Border(lipgloss.Border{Left: "▎"}, false, false, false, true).
+	BorderForeground(highlightColor)
+
+var unselectedItemStyle = lipgloss.NewStyle().PaddingLeft(1)
+
 // repoKey returns the grouping key for an instance: its repo name once started,
 // falling back to the base name of its repo path for not-yet-started instances.
 func repoKey(i *session.Instance) string {
@@ -66,6 +78,19 @@ func repoKey(i *session.Instance) string {
 		return name
 	}
 	return filepath.Base(i.Path)
+}
+
+// renderRepoHeader renders a repo group header as an uppercased name followed by a
+// dim rule filling the rest of the panel width, so it reads as a section divider.
+func (l *List) renderRepoHeader(key string) string {
+	name := strings.ToUpper(key)
+	header := repoHeaderStyle.Render(name)
+	// repoHeaderStyle pads the name with one space on each side.
+	ruleLen := AdjustPreviewWidth(l.width) - runewidth.StringWidth(name) - 2
+	if ruleLen < 0 {
+		ruleLen = 0
+	}
+	return header + repoRuleStyle.Render(strings.Repeat("─", ruleLen))
 }
 
 type List struct {
@@ -130,10 +155,7 @@ func (r *InstanceRenderer) setWidth(width int) {
 const branchIcon = "Ꮧ"
 
 func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) string {
-	prefix := fmt.Sprintf(" %d. ", idx)
-	if idx >= 10 {
-		prefix = prefix[:len(prefix)-1]
-	}
+	prefix := fmt.Sprintf(" %d ", idx)
 	titleS := selectedTitleStyle
 	descS := selectedDescStyle
 	if !selected {
@@ -229,7 +251,12 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 		descS.Render(branchLine),
 	)
 
-	return text
+	// Selected items get a left accent bar; others get matching left padding so the
+	// text stays aligned as the selection moves.
+	if selected {
+		return selectedItemStyle.Render(text)
+	}
+	return unselectedItemStyle.Render(text)
 }
 
 func (l *List) String() string {
@@ -266,15 +293,20 @@ func (l *List) String() string {
 	showRepos := len(l.repos) > 1
 	prevRepo := ""
 	for i, item := range l.items {
+		key := repoKey(item)
+		newGroup := showRepos && key != prevRepo
 		if i > 0 {
-			b.WriteString("\n\n")
-		}
-		if showRepos {
-			if key := repoKey(item); key != prevRepo {
-				b.WriteString(repoHeaderStyle.Render(key))
+			// Looser spacing before a new repo group, tighter between items in a group.
+			if newGroup {
+				b.WriteString("\n\n")
+			} else {
 				b.WriteString("\n")
-				prevRepo = key
 			}
+		}
+		if newGroup {
+			b.WriteString(l.renderRepoHeader(key))
+			b.WriteString("\n")
+			prevRepo = key
 		}
 		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx))
 	}
