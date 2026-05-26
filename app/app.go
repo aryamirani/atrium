@@ -230,6 +230,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 			return m, m.handleError(err)
 		}
+		m.recordRecentPath(inst.Path)
 
 		if m.promptAfterName {
 			m.state = statePrompt
@@ -320,6 +321,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 			return m, m.handleError(err)
 		}
+		m.recordRecentPath(msg.instance.Path)
 		if m.autoYes {
 			msg.instance.AutoYes = true
 		}
@@ -1056,7 +1058,8 @@ func (m *home) defaultNewSessionPath() string {
 }
 
 // candidateRepoPaths returns the deduped candidate target paths for the directory
-// picker: the current target first, then existing sessions' repos, then cwd.
+// picker: the current target first, then existing sessions' repos, then recently-used
+// project directories, then cwd.
 func (m *home) candidateRepoPaths() []string {
 	seen := make(map[string]bool)
 	var paths []string
@@ -1071,10 +1074,21 @@ func (m *home) candidateRepoPaths() []string {
 	for _, inst := range m.list.GetInstances() {
 		add(inst.Path)
 	}
+	for _, p := range m.appState.GetRecentPaths() {
+		add(p)
+	}
 	if cwd, err := os.Getwd(); err == nil {
 		add(cwd)
 	}
 	return paths
+}
+
+// recordRecentPath records a newly-started session's repo path in the MRU list. It is
+// best-effort: a persistence error is logged but does not interrupt the session flow.
+func (m *home) recordRecentPath(path string) {
+	if err := m.appState.AddRecentPath(path); err != nil {
+		log.WarningLog.Printf("failed to record recent path %q: %v", path, err)
+	}
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.

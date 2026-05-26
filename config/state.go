@@ -29,7 +29,14 @@ type AppState interface {
 	GetHelpScreensSeen() uint32
 	// SetHelpScreensSeen updates the bitmask of seen help screens
 	SetHelpScreensSeen(seen uint32) error
+	// GetRecentPaths returns recently-used project directories, most-recent-first
+	GetRecentPaths() []string
+	// AddRecentPath records a project directory as most-recently-used
+	AddRecentPath(path string) error
 }
+
+// maxRecentPaths caps how many recently-used project directories are retained.
+const maxRecentPaths = 10
 
 // StateManager combines instance storage and app state management
 type StateManager interface {
@@ -43,6 +50,8 @@ type State struct {
 	HelpScreensSeen uint32 `json:"help_screens_seen"`
 	// Instances stores the serialized instance data as raw JSON
 	InstancesData json.RawMessage `json:"instances"`
+	// RecentPaths is the list of recently-used project directories, most-recent-first
+	RecentPaths []string `json:"recent_paths"`
 }
 
 // DefaultState returns the default state
@@ -50,6 +59,7 @@ func DefaultState() *State {
 	return &State{
 		HelpScreensSeen: 0,
 		InstancesData:   json.RawMessage("[]"),
+		RecentPaths:     []string{},
 	}
 }
 
@@ -135,5 +145,30 @@ func (s *State) GetHelpScreensSeen() uint32 {
 // SetHelpScreensSeen updates the bitmask of seen help screens
 func (s *State) SetHelpScreensSeen(seen uint32) error {
 	s.HelpScreensSeen = seen
+	return SaveState(s)
+}
+
+// GetRecentPaths returns recently-used project directories, most-recent-first.
+func (s *State) GetRecentPaths() []string {
+	return s.RecentPaths
+}
+
+// AddRecentPath records a project directory as most-recently-used: it is moved to
+// the front, duplicates are removed, and the list is capped at maxRecentPaths.
+func (s *State) AddRecentPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	deduped := []string{path}
+	for _, p := range s.RecentPaths {
+		if p == path {
+			continue
+		}
+		deduped = append(deduped, p)
+		if len(deduped) >= maxRecentPaths {
+			break
+		}
+	}
+	s.RecentPaths = deduped
 	return SaveState(s)
 }

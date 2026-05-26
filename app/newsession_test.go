@@ -1,6 +1,7 @@
 package app
 
 import (
+	"claude-squad/config"
 	"claude-squad/session"
 	"claude-squad/ui"
 	"context"
@@ -25,7 +26,7 @@ func newTestHomeWithInstances(t *testing.T, paths ...string) *home {
 		require.NoError(t, err)
 		l.AddInstance(inst)
 	}
-	return &home{ctx: context.Background(), list: l}
+	return &home{ctx: context.Background(), list: l, appState: config.DefaultState()}
 }
 
 func TestDefaultNewSessionPath_CwdFallback(t *testing.T) {
