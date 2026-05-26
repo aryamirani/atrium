@@ -5,6 +5,7 @@ import (
 	"claude-squad/session"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -52,6 +53,20 @@ var mainTitle = lipgloss.NewStyle().
 var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
+
+var repoHeaderStyle = lipgloss.NewStyle().
+	Padding(0, 1).
+	Bold(true).
+	Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9b9b9b"})
+
+// repoKey returns the grouping key for an instance: its repo name once started,
+// falling back to the base name of its repo path for not-yet-started instances.
+func repoKey(i *session.Instance) string {
+	if name, err := i.RepoName(); err == nil {
+		return name
+	}
+	return filepath.Base(i.Path)
+}
 
 type List struct {
 	items         []*session.Instance
@@ -114,7 +129,7 @@ func (r *InstanceRenderer) setWidth(width int) {
 // ɹ and ɻ are other options.
 const branchIcon = "Ꮧ"
 
-func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, hasMultipleRepos bool) string {
+func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) string {
 	prefix := fmt.Sprintf(" %d. ", idx)
 	if idx >= 10 {
 		prefix = prefix[:len(prefix)-1]
@@ -185,14 +200,6 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	remainingWidth -= diffWidth
 
 	branch := i.Branch
-	if i.Started() && hasMultipleRepos {
-		repoName, err := i.RepoName()
-		if err != nil {
-			log.ErrorLog.Printf("could not get repo name in instance renderer: %v", err)
-		} else {
-			branch += fmt.Sprintf(" (%s)", repoName)
-		}
-	}
 	// Don't show branch if there's no space for it. Or show ellipsis if it's too long.
 	branchWidth := runewidth.StringWidth(branch)
 	if remainingWidth < 0 {
@@ -252,12 +259,24 @@ func (l *List) String() string {
 	b.WriteString("\n")
 	b.WriteString("\n")
 
-	// Render the list.
+	// Render the list, grouping consecutive same-repo instances under a header. Headers
+	// are emitted within the item loop (not as selectable rows), so selectedIdx stays a
+	// flat index into l.items and navigation/reorder are unaffected. Items are not sorted:
+	// headers annotate the runs in the user's existing (reorderable) order.
+	showRepos := len(l.repos) > 1
+	prevRepo := ""
 	for i, item := range l.items {
-		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx, len(l.repos) > 1))
-		if i != len(l.items)-1 {
+		if i > 0 {
 			b.WriteString("\n\n")
 		}
+		if showRepos {
+			if key := repoKey(item); key != prevRepo {
+				b.WriteString(repoHeaderStyle.Render(key))
+				b.WriteString("\n")
+				prevRepo = key
+			}
+		}
+		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx))
 	}
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
