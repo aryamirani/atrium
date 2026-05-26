@@ -39,13 +39,14 @@ type GitWorktree struct {
 	isExistingBranch bool
 }
 
-func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string, isExistingBranch bool) *GitWorktree {
+func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string, baseRef string, isExistingBranch bool) *GitWorktree {
 	return &GitWorktree{
 		repoPath:         repoPath,
 		worktreePath:     worktreePath,
 		sessionName:      sessionName,
 		branchName:       branchName,
 		baseCommitSHA:    baseCommitSHA,
+		baseRef:          baseRef,
 		isExistingBranch: isExistingBranch,
 	}
 }
@@ -138,4 +139,10 @@ func (g *GitWorktree) GetRepoName() string {
 // GetBaseCommitSHA returns the base commit SHA for the worktree
 func (g *GitWorktree) GetBaseCommitSHA() string {
 	return g.baseCommitSHA
+}
+
+// GetBaseRef returns the ref the session branch was based on ("" if branched from HEAD
+// or if not persisted for a legacy session).
+func (g *GitWorktree) GetBaseRef() string {
+	return g.baseRef
 }

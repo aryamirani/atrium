@@ -91,6 +91,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 			SessionName:      i.Title,
 			BranchName:       i.gitWorktree.GetBranchName(),
 			BaseCommitSHA:    i.gitWorktree.GetBaseCommitSHA(),
+			BaseRef:          i.gitWorktree.GetBaseRef(),
 			IsExistingBranch: i.gitWorktree.IsExistingBranch(),
 		}
 	}
@@ -98,9 +99,13 @@ func (i *Instance) ToInstanceData() InstanceData {
 	// Only include diff stats if they exist
 	if i.diffStats != nil {
 		data.DiffStats = DiffStatsData{
-			Added:   i.diffStats.Added,
-			Removed: i.diffStats.Removed,
-			Content: i.diffStats.Content,
+			Added:        i.diffStats.Added,
+			Removed:      i.diffStats.Removed,
+			Content:      i.diffStats.Content,
+			FilesChanged: i.diffStats.FilesChanged,
+			Commits:      i.diffStats.Commits,
+			Behind:       i.diffStats.Behind,
+			Dirty:        i.diffStats.Dirty,
 		}
 	}
 
@@ -125,12 +130,17 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			data.Worktree.SessionName,
 			data.Worktree.BranchName,
 			data.Worktree.BaseCommitSHA,
+			data.Worktree.BaseRef,
 			data.Worktree.IsExistingBranch,
 		),
 		diffStats: &git.DiffStats{
-			Added:   data.DiffStats.Added,
-			Removed: data.DiffStats.Removed,
-			Content: data.DiffStats.Content,
+			Added:        data.DiffStats.Added,
+			Removed:      data.DiffStats.Removed,
+			Content:      data.DiffStats.Content,
+			FilesChanged: data.DiffStats.FilesChanged,
+			Commits:      data.DiffStats.Commits,
+			Behind:       data.DiffStats.Behind,
+			Dirty:        data.DiffStats.Dirty,
 		},
 	}
 

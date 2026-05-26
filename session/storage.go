@@ -31,14 +31,19 @@ type GitWorktreeData struct {
 	SessionName      string `json:"session_name"`
 	BranchName       string `json:"branch_name"`
 	BaseCommitSHA    string `json:"base_commit_sha"`
+	BaseRef          string `json:"base_ref"`
 	IsExistingBranch bool   `json:"is_existing_branch"`
 }
 
 // DiffStatsData represents the serializable data of a DiffStats
 type DiffStatsData struct {
-	Added   int    `json:"added"`
-	Removed int    `json:"removed"`
-	Content string `json:"content"`
+	Added        int    `json:"added"`
+	Removed      int    `json:"removed"`
+	Content      string `json:"content"`
+	FilesChanged int    `json:"files_changed"`
+	Commits      int    `json:"commits"`
+	Behind       int    `json:"behind"`
+	Dirty        bool   `json:"dirty"`
 }
 
 // Storage handles saving and loading instances using the state interface

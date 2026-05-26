@@ -25,6 +25,18 @@ var addedLinesStyle = lipgloss.NewStyle().
 var removedLinesStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("#de613e"))
 
+// behindStyle (amber) is the only attention color in the git-context cluster: being
+// behind the base implies an action (consider rebasing). commitsStyle/dirtyStyle are
+// muted because they are status, not problems — this keeps the list scannable.
+var behindStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#b8860b", Dark: "#d79921"})
+
+var commitsStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#999999"})
+
+var dirtyStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#999999"})
+
 var pausedStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
 
@@ -208,6 +220,31 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 		)
 	}
 
+	// Build the git-context cluster (behind / commits ahead / dirty), shown just
+	// left of the diff stats. Each segment appears only when meaningful, so the
+	// common steady state is unchanged. ctxPlain mirrors ctxStyled without ANSI so
+	// the width math below stays correct.
+	var ctxPlain, ctxStyled string
+	if stat != nil && stat.Error == nil {
+		bg := descS.GetBackground()
+		sep := lipgloss.NewStyle().Background(bg).Render(" ")
+		if stat.Behind > 0 {
+			s := fmt.Sprintf("⇣%d", stat.Behind)
+			ctxPlain += s + " "
+			ctxStyled += behindStyle.Background(bg).Render(s) + sep
+		}
+		if stat.Commits > 0 {
+			s := fmt.Sprintf("⇡%d", stat.Commits)
+			ctxPlain += s + " "
+			ctxStyled += commitsStyle.Background(bg).Render(s) + sep
+		}
+		if stat.Dirty {
+			s := "*"
+			ctxPlain += s + " "
+			ctxStyled += dirtyStyle.Background(bg).Render(s) + sep
+		}
+	}
+
 	remainingWidth := r.width
 	remainingWidth -= runewidth.StringWidth(prefix)
 	remainingWidth -= runewidth.StringWidth(branchIcon)
@@ -220,6 +257,14 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 
 	// Use fixed width for diff stats to avoid layout issues
 	remainingWidth -= diffWidth
+	remainingWidth -= runewidth.StringWidth(ctxPlain)
+
+	// If the context cluster doesn't fit, drop it rather than truncate the branch
+	// to nothing.
+	if remainingWidth < 0 {
+		remainingWidth += runewidth.StringWidth(ctxPlain)
+		ctxStyled = ""
+	}
 
 	branch := i.Branch
 	// Don't show branch if there's no space for it. Or show ellipsis if it's too long.
@@ -242,7 +287,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 		spaces = strings.Repeat(" ", remainingWidth)
 	}
 
-	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
+	branchLine := fmt.Sprintf("%s %s-%s%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, ctxStyled, diff)
 
 	// join title and subtitle
 	text := lipgloss.JoinVertical(

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"claude-squad/session"
+	"claude-squad/session/git"
 	"fmt"
 	"strings"
 
@@ -13,6 +14,10 @@ var (
 	AdditionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e"))
 	DeletionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
 	HunkStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#0ea5e9"))
+	// MetaStyle is muted: progress/status segments shouldn't compete for attention.
+	MetaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+	// BehindStyle (amber) is the lone attention color — being behind base implies a rebase.
+	BehindStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#d79921"))
 )
 
 type DiffPane struct {
@@ -88,10 +93,59 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 	} else {
 		additions := AdditionStyle.Render(fmt.Sprintf("%d additions(+)", stats.Added))
 		deletions := DeletionStyle.Render(fmt.Sprintf("%d deletions(-)", stats.Removed))
-		d.stats = lipgloss.JoinHorizontal(lipgloss.Center, additions, " ", deletions)
+		lineStats := lipgloss.JoinHorizontal(lipgloss.Center, additions, " ", deletions)
+		if header := gitContextHeader(instance, stats); header != "" {
+			d.stats = lipgloss.JoinVertical(lipgloss.Left, header, lineStats)
+		} else {
+			d.stats = lineStats
+		}
 		d.diff = colorizeDiff(stats.Content)
 		d.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, d.stats, d.diff))
 	}
+}
+
+// gitContextHeader builds the one-line git-context summary shown above the
+// additions/deletions line. Segments that are zero/empty are omitted, so a clean
+// session with no commits shows nothing extra. Returns "" when there is nothing to add.
+func gitContextHeader(instance *session.Instance, stats *git.DiffStats) string {
+	var baseRef string
+	if wt, err := instance.GetGitWorktree(); err == nil && wt != nil {
+		baseRef = wt.GetBaseRef()
+	}
+
+	var segs []string
+	if branch := instance.Branch; branch != "" {
+		if baseRef != "" {
+			segs = append(segs, MetaStyle.Render(fmt.Sprintf("%s ← %s", baseRef, branch)))
+		} else {
+			segs = append(segs, MetaStyle.Render(branch))
+		}
+	}
+	if stats.FilesChanged > 0 {
+		segs = append(segs, MetaStyle.Render(fmt.Sprintf("%s changed", pluralize(stats.FilesChanged, "file"))))
+	}
+	if stats.Commits > 0 {
+		segs = append(segs, MetaStyle.Render(fmt.Sprintf("⇡%s", pluralize(stats.Commits, "commit"))))
+	}
+	if stats.Behind > 0 {
+		segs = append(segs, BehindStyle.Render(fmt.Sprintf("⇣%d behind", stats.Behind)))
+	}
+	if stats.Dirty {
+		segs = append(segs, MetaStyle.Render("uncommitted"))
+	}
+
+	if len(segs) == 0 {
+		return ""
+	}
+	return strings.Join(segs, MetaStyle.Render("  ·  "))
+}
+
+// pluralize formats a count with a singular/plural noun (e.g. "1 file", "3 files").
+func pluralize(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func (d *DiffPane) String() string {

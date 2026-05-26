@@ -2,11 +2,40 @@ package ui
 
 import (
 	"claude-squad/session"
+	"claude-squad/session/git"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/stretchr/testify/require"
 )
+
+// renderRow renders a single instance row with the given diff stats at a width
+// wide enough that the git-context cluster is never dropped for space.
+func renderRow(t *testing.T, branch string, stats *git.DiffStats) string {
+	t.Helper()
+	s := spinner.New()
+	r := &InstanceRenderer{spinner: &s}
+	r.setWidth(80)
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	inst.Branch = branch
+	inst.SetDiffStats(stats)
+	return r.Render(inst, 1, false)
+}
+
+func TestRender_GitContextCluster(t *testing.T) {
+	// Behind, ahead, and dirty all present → all three glyphs render.
+	out := renderRow(t, "feat", &git.DiffStats{Added: 5, Removed: 2, Commits: 3, Behind: 2, Dirty: true})
+	require.Contains(t, out, "⇣2", "behind count should render")
+	require.Contains(t, out, "⇡3", "commit count should render")
+	require.Contains(t, out, "*", "dirty marker should render")
+
+	// Clean, all committed, base unchanged → no extra glyphs, just the diff.
+	out = renderRow(t, "feat", &git.DiffStats{Added: 5, Removed: 2, Commits: 2})
+	require.NotContains(t, out, "⇣", "behind glyph must be absent when not behind")
+	require.NotContains(t, out, "*", "dirty marker must be absent when clean")
+	require.Contains(t, out, "⇡2", "commit count should still render")
+}
 
 func newTestList(titles ...string) *List {
 	s := spinner.New()
