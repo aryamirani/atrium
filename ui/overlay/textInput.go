@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -29,7 +30,64 @@ var (
 
 	tiDividerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	tiLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("62")).
+			Bold(true)
+
+	tiHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Italic(true)
 )
+
+// pickerVisibleRows is the fixed number of list rows the directory and branch pickers
+// always render (padding with blanks). Keeping it constant means the overlay's total
+// height never changes as focus moves between sections — otherwise the vertically
+// centered overlay (see app View / PlaceOverlay) would visibly jump on every Tab.
+const pickerVisibleRows = 3
+
+// promptVisibleRows is the fixed height of the prompt textarea, so the prompt section is
+// also constant-height.
+const promptVisibleRows = 4
+
+// createFormHelp is the single footer line describing how to navigate the create form,
+// replacing the per-field hints that were ambiguous about what Tab does.
+const createFormHelp = "Tab/⇧Tab move · ↑↓ select · type to filter · Enter create"
+
+// renderPickerRows renders a list of pre-formatted labels windowed around the cursor,
+// always emitting exactly pickerVisibleRows lines (padding with blanks) so the caller's
+// height is constant. When labels is empty, placeholder (if set) occupies the first row.
+func renderPickerRows(labels []string, cursor int, focused bool, placeholder string, selStyle, dimStyle lipgloss.Style) string {
+	lines := make([]string, 0, pickerVisibleRows)
+	if len(labels) == 0 {
+		if placeholder != "" {
+			lines = append(lines, dimStyle.Render("  "+placeholder))
+		}
+	} else {
+		start := 0
+		if cursor >= pickerVisibleRows {
+			start = cursor - pickerVisibleRows + 1
+		}
+		end := start + pickerVisibleRows
+		if end > len(labels) {
+			end = len(labels)
+		}
+		for i := start; i < end; i++ {
+			switch {
+			case i == cursor && focused:
+				lines = append(lines, selStyle.Render("> "+labels[i]))
+			case i == cursor:
+				lines = append(lines, "  "+labels[i])
+			default:
+				lines = append(lines, dimStyle.Render("  "+labels[i]))
+			}
+		}
+	}
+	for len(lines) < pickerVisibleRows {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
 
 // focusStop identifies a focusable component in the overlay. The overlay holds an
 // ordered slice of the stops that are actually present, so adding or removing a
@@ -37,7 +95,8 @@ var (
 type focusStop int
 
 const (
-	stopDirectory focusStop = iota
+	stopTitle focusStop = iota
+	stopDirectory
 	stopProfile
 	stopTextarea
 	stopBranch
@@ -47,6 +106,7 @@ const (
 // TextInputOverlay represents a text input overlay with state management.
 type TextInputOverlay struct {
 	textarea        textarea.Model
+	titleInput      textinput.Model
 	Title           string
 	FocusIndex      int // index into stops
 	Submitted       bool
@@ -58,6 +118,7 @@ type TextInputOverlay struct {
 	profilePicker   *ProfilePicker
 	branchPicker    *BranchPicker
 	stops           []focusStop // ordered focusable stops actually present
+	isCreateForm    bool        // true for the new-session form (has a title field)
 }
 
 // NewTextInputOverlay creates a new text input overlay with the given title and initial value.
@@ -107,6 +168,44 @@ func NewTextInputOverlayWithBranchPicker(title string, initialValue string, prof
 	return overlay
 }
 
+// NewSessionCreateOverlay creates the unified new-session form: a title field, a project
+// (directory) picker, an optional profile picker (only when more than one profile
+// exists), a branch picker, and a prompt textarea. Focus starts on the title so the user
+// can name the session immediately, and every section renders at a constant height so the
+// centered overlay does not jump as focus moves. dirCandidates is the ordered list of
+// candidate repo paths with the default/contextual target first.
+func NewSessionCreateOverlay(profiles []config.Profile, dirCandidates []string) *TextInputOverlay {
+	ti := newTextarea("")
+	bp := NewBranchPicker()
+	dp := NewDirectoryPicker(dirCandidates)
+
+	var pp *ProfilePicker
+	if len(profiles) > 0 {
+		pp = NewProfilePicker(profiles)
+	}
+
+	// Title first (where focus starts), then project, optional profile, branch, and finally
+	// the prompt — branches are scoped to the chosen project, and the prompt comes last.
+	stops := []focusStop{stopTitle, stopDirectory}
+	if pp != nil && pp.HasMultiple() {
+		stops = append(stops, stopProfile)
+	}
+	stops = append(stops, stopBranch, stopTextarea, stopEnter)
+
+	overlay := &TextInputOverlay{
+		textarea:        ti,
+		titleInput:      newTitleInput(),
+		Title:           "New session",
+		directoryPicker: dp,
+		profilePicker:   pp,
+		branchPicker:    bp,
+		stops:           stops,
+		isCreateForm:    true,
+	}
+	overlay.focusStop(stopTitle)
+	return overlay
+}
+
 func newTextarea(initialValue string) textarea.Model {
 	ti := textarea.New()
 	ti.SetValue(initialValue)
@@ -119,10 +218,27 @@ func newTextarea(initialValue string) textarea.Model {
 	return ti
 }
 
+// newTitleInput builds the single-line session-title field, capped at 32 characters to
+// match the inline-naming limit enforced in the quick `n` flow.
+func newTitleInput() textinput.Model {
+	in := textinput.New()
+	in.Prompt = ""
+	in.CharLimit = 32
+	return in
+}
+
 func (t *TextInputOverlay) SetSize(width, height int) {
-	t.textarea.SetHeight(height)
 	t.width = width
 	t.height = height
+	// The create form keeps every section at a constant height so the centered overlay
+	// does not jump; the prompt textarea therefore uses a fixed height rather than scaling
+	// with the window. The plain prompt overlay keeps its original full-height behavior.
+	if t.isCreateForm {
+		t.textarea.SetHeight(promptVisibleRows)
+	} else {
+		t.textarea.SetHeight(height)
+	}
+	t.titleInput.Width = width - 6
 	if t.directoryPicker != nil {
 		t.directoryPicker.SetWidth(width - 6)
 	}
@@ -152,6 +268,7 @@ func (t *TextInputOverlay) currentStop() focusStop {
 	return t.stops[t.FocusIndex]
 }
 
+func (t *TextInputOverlay) isTitle() bool           { return t.currentStop() == stopTitle }
 func (t *TextInputOverlay) isDirectoryPicker() bool { return t.currentStop() == stopDirectory }
 func (t *TextInputOverlay) isProfilePicker() bool   { return t.currentStop() == stopProfile }
 func (t *TextInputOverlay) isTextarea() bool        { return t.currentStop() == stopTextarea }
@@ -183,6 +300,11 @@ func (t *TextInputOverlay) setFocusIndex(i int) {
 
 // updateFocusState syncs each component's focus/blur state to the current stop.
 func (t *TextInputOverlay) updateFocusState() {
+	if t.isTitle() {
+		t.titleInput.Focus()
+	} else {
+		t.titleInput.Blur()
+	}
 	if t.isTextarea() {
 		t.textarea.Focus()
 	} else {
@@ -238,8 +360,8 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			t.setFocusIndex(numStops - 1)
 			return false, false
 		}
-		if t.isDirectoryPicker() || t.isProfilePicker() {
-			// Enter on directory/profile picker = advance to the next stop
+		if t.isTitle() || t.isDirectoryPicker() || t.isProfilePicker() {
+			// Enter on the title/directory/profile = advance to the next stop
 			t.setFocusIndex(t.FocusIndex + 1)
 			return false, false
 		}
@@ -249,6 +371,10 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 		}
 		return false, false
 	default:
+		if t.isTitle() {
+			t.titleInput, _ = t.titleInput.Update(msg)
+			return false, false
+		}
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
 			return false, false
@@ -274,6 +400,17 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 // GetValue returns the current value of the text input.
 func (t *TextInputOverlay) GetValue() string {
 	return t.textarea.Value()
+}
+
+// GetTitle returns the trimmed session title from the title field (create form only).
+func (t *TextInputOverlay) GetTitle() string {
+	return strings.TrimSpace(t.titleInput.Value())
+}
+
+// IsCreateForm reports whether this overlay is the new-session creation form (as opposed
+// to the plain prompt overlay used to send a prompt to a running session).
+func (t *TextInputOverlay) IsCreateForm() bool {
+	return t.isCreateForm
 }
 
 // GetSelectedPath returns the selected target directory from the directory picker.
@@ -372,11 +509,16 @@ func (t *TextInputOverlay) Render() string {
 		innerWidth = 1
 	}
 
-	// Set textarea width to fit within the overlay
+	// Set component widths to fit within the overlay
 	t.textarea.SetWidth(innerWidth)
+	t.titleInput.Width = innerWidth
 
 	// Build a horizontal divider line
 	divider := tiDividerStyle.Render(strings.Repeat("─", innerWidth))
+
+	if t.isCreateForm {
+		return t.renderCreateForm(divider)
+	}
 
 	// Build the view
 	var content string
@@ -403,15 +545,48 @@ func (t *TextInputOverlay) Render() string {
 	}
 
 	content += divider + "\n\n"
-
-	// Render enter button with appropriate style
-	enterButton := " Enter "
-	if t.isEnterButton() {
-		enterButton = tiFocusedButtonStyle.Render(enterButton)
-	} else {
-		enterButton = tiButtonStyle.Render(enterButton)
-	}
-	content += enterButton
+	content += t.renderEnterButton()
 
 	return tiStyle.Render(content)
+}
+
+// renderCreateForm renders the unified new-session form. Every section is constant-height
+// (see pickerVisibleRows / promptVisibleRows), so the vertically centered overlay never
+// jumps as focus moves between fields.
+func (t *TextInputOverlay) renderCreateForm(divider string) string {
+	var b strings.Builder
+
+	// Each section sits directly above a divider with one blank line after it, keeping the
+	// form compact while still visually separating fields.
+	section := func(content string) {
+		b.WriteString(content + "\n")
+		b.WriteString(divider + "\n")
+	}
+
+	b.WriteString(tiTitleStyle.Render(t.Title) + "\n")
+	section(tiLabelStyle.Render("Title") + "  " + t.titleInput.View())
+	if t.directoryPicker != nil {
+		section(t.directoryPicker.Render())
+	}
+	if t.profilePicker != nil {
+		section(t.profilePicker.Render())
+	}
+	if t.branchPicker != nil {
+		section(t.branchPicker.Render())
+	}
+	section(tiLabelStyle.Render("Prompt") + "\n" + t.textarea.View())
+
+	b.WriteString(tiHintStyle.Render(createFormHelp) + "\n")
+	b.WriteString(t.renderEnterButton())
+
+	return tiStyle.Render(b.String())
+}
+
+// renderEnterButton renders the submit button, highlighted when it holds focus.
+func (t *TextInputOverlay) renderEnterButton() string {
+	enterButton := " Enter "
+	if t.isEnterButton() {
+		return tiFocusedButtonStyle.Render(enterButton)
+	}
+	return tiButtonStyle.Render(enterButton)
 }

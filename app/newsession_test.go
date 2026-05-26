@@ -3,6 +3,7 @@ package app
 import (
 	"claude-squad/config"
 	"claude-squad/session"
+	"claude-squad/session/git"
 	"claude-squad/ui"
 	"context"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +30,102 @@ func newTestHomeWithInstances(t *testing.T, paths ...string) *home {
 		l.AddInstance(inst)
 	}
 	return &home{ctx: context.Background(), list: l, appState: config.DefaultState()}
+}
+
+// newCreateFormHome builds a home wired enough to drive the `N` (create-form) flow.
+func newCreateFormHome(t *testing.T) *home {
+	t.Helper()
+	s := spinner.New()
+	return &home{
+		ctx:          context.Background(),
+		state:        stateDefault,
+		list:         ui.NewList(&s, false),
+		menu:         ui.NewMenu(),
+		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		errBox:       ui.NewErrBox(),
+		appConfig:    config.DefaultConfig(),
+		appState:     config.DefaultState(),
+		program:      "echo",
+	}
+}
+
+// Pressing N opens the unified create form and, crucially, does NOT add a list row — the
+// session is created only on submit, so nothing appears under a repo group while naming.
+func TestKeyPrompt_OpensCreateFormWithoutAddingRow(t *testing.T) {
+	h := newCreateFormHome(t)
+	before := h.list.NumInstances()
+
+	// keySent=true skips the menu-highlight pre-pass so the keypress is processed directly.
+	h.keySent = true
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+
+	assert.Equal(t, statePrompt, h.state)
+	require.NotNil(t, h.textInputOverlay)
+	assert.True(t, h.textInputOverlay.IsCreateForm(), "N should open the create form")
+	assert.Equal(t, before, h.list.NumInstances(), "N must not add a list row before submit")
+}
+
+// Submitting the create form creates exactly one session carrying the typed title and
+// prompt, and closes the overlay. (The returned Cmd would Start it in the background; we
+// do not run it, so no tmux/worktree is spun up here.)
+func TestCreateSessionFromForm_CreatesOneAndClearsOverlay(t *testing.T) {
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.True(t, git.IsGitRepo(cwd), "test must run inside a git repository")
+
+	h := newCreateFormHome(t)
+	h.newSessionPath = cwd
+	h.state = statePrompt
+	ov := h.newSessionFormOverlay()
+	h.textInputOverlay = ov
+	// Type the title into the focused title field.
+	ov.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("feature")})
+
+	before := h.list.NumInstances()
+	cmd := h.createSessionFromForm("do the thing")
+	require.NotNil(t, cmd)
+
+	assert.Equal(t, before+1, h.list.NumInstances(), "submit must add exactly one row")
+	assert.Nil(t, h.textInputOverlay, "overlay should close on submit")
+	assert.Equal(t, stateDefault, h.state)
+
+	inst := h.list.GetSelectedInstance()
+	require.NotNil(t, inst)
+	assert.Equal(t, "feature", inst.Title)
+	assert.Equal(t, "do the thing", inst.Prompt)
+}
+
+// An empty title keeps the form open (cleared submit flag) and surfaces an error rather
+// than creating a half-formed session.
+func TestCreateSessionFromForm_EmptyTitleKeepsFormOpen(t *testing.T) {
+	h := newCreateFormHome(t)
+	h.newSessionPath, _ = os.Getwd()
+	h.state = statePrompt
+	ov := h.newSessionFormOverlay()
+	ov.Submitted = true
+	h.textInputOverlay = ov
+
+	before := h.list.NumInstances()
+	h.createSessionFromForm("") // no title typed
+
+	assert.Equal(t, before, h.list.NumInstances(), "no session should be created")
+	require.NotNil(t, h.textInputOverlay, "form stays open on validation error")
+	assert.False(t, h.textInputOverlay.IsSubmitted(), "submitted flag cleared so the user can retry")
+}
+
+// Canceling the create form (Esc) creates nothing and returns to the default state.
+func TestCreateForm_CancelCreatesNothing(t *testing.T) {
+	h := newCreateFormHome(t)
+	h.keySent = true
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	require.Equal(t, statePrompt, h.state)
+	before := h.list.NumInstances()
+
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+
+	assert.Equal(t, stateDefault, h.state)
+	assert.Nil(t, h.textInputOverlay)
+	assert.Equal(t, before, h.list.NumInstances(), "cancel must not create a session")
 }
 
 func TestDefaultNewSessionPath_CwdFallback(t *testing.T) {

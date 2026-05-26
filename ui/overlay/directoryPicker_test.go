@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -89,15 +90,26 @@ func TestDirectoryPicker_Backspace(t *testing.T) {
 	assert.Equal(t, "repoB"[:4], dp.filter)
 }
 
-func TestDirectoryPicker_UnfocusedRenderIsCompactAndShowsTarget(t *testing.T) {
+func TestDirectoryPicker_UnfocusedRenderShowsTargetWithoutListOrHint(t *testing.T) {
 	dp := NewDirectoryPicker([]string{"/repo/a", "/repo/b"})
 	out := dp.Render()
-	// The chosen target and the change affordance are always visible...
+	// The chosen target is always visible on the header line...
 	assert.Contains(t, out, "Project:")
 	assert.Contains(t, out, "/repo/a")
-	assert.Contains(t, out, "Tab to change")
-	// ...but the non-selected candidates are not listed when collapsed.
+	// ...the misleading "Tab to change" hint is gone (Tab cycles all fields, not the picker)...
+	assert.NotContains(t, out, "Tab to change")
+	// ...and the candidate list is blank (reserved but empty) when unfocused.
 	assert.NotContains(t, out, "/repo/b")
+}
+
+// The picker renders the same number of lines focused and unfocused, so the surrounding
+// overlay does not change height — and therefore does not jump — as focus moves.
+func TestDirectoryPicker_RenderHeightConstantAcrossFocus(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a", "/repo/b"})
+	unfocused := strings.Count(dp.Render(), "\n")
+	dp.Focus()
+	focused := strings.Count(dp.Render(), "\n")
+	assert.Equal(t, unfocused, focused, "directory picker height must not change with focus")
 }
 
 func TestDirectoryPicker_FocusedRenderListsCandidates(t *testing.T) {

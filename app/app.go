@@ -72,14 +72,12 @@ type home struct {
 	// It registers the new instance in the list after the instance has been started.
 	newInstanceFinalizer func()
 
-	// newInstance is the session currently being created (named in stateNew, and prompted
-	// in statePrompt for the N flow). The list selection can be moved out from under the
-	// creation flow by a background instanceStartedMsg, so we target this stable reference
-	// rather than GetSelectedInstance / the last list item.
+	// newInstance is the session currently being created via the inline `n` flow (named in
+	// stateNew). AddInstance may insert it mid-list (under its repo group) and a background
+	// instanceStartedMsg may move the selection, so the naming step targets this stable
+	// reference rather than GetSelectedInstance / the last list item. The `N` flow does not
+	// use it — that session is created only on form submit.
 	newInstance *session.Instance
-
-	// promptAfterName tracks if we should enter prompt mode after naming
-	promptAfterName bool
 
 	// newSessionPath is the target repo path for the session currently being created.
 	// It defaults to the contextual repo (the highlighted session's repo, else cwd) and
@@ -239,14 +237,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recordRecentPath(inst.Path)
 
-		if m.promptAfterName {
-			m.state = statePrompt
-			m.menu.SetState(ui.StatePrompt)
-			m.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
-			m.promptAfterName = false
-		} else {
-			m.showHelpScreen(helpStart(inst), nil)
-		}
+		m.showHelpScreen(helpStart(inst), nil)
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
@@ -333,21 +324,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.instance.AutoYes = true
 		}
 
-		if msg.promptAfterName {
-			m.state = statePrompt
-			m.menu.SetState(ui.StatePrompt)
-			m.textInputOverlay = m.newPromptOverlay()
-		} else {
-			// If instance has a prompt (set from Shift+N flow), send it now
-			if msg.instance.Prompt != "" {
-				if err := msg.instance.SendPrompt(msg.instance.Prompt); err != nil {
-					log.ErrorLog.Printf("failed to send prompt: %v", err)
-				}
-				msg.instance.Prompt = ""
+		// If the instance was created with a prompt (the N form), send it now that it is up.
+		if msg.instance.Prompt != "" {
+			if err := msg.instance.SendPrompt(msg.instance.Prompt); err != nil {
+				log.ErrorLog.Printf("failed to send prompt: %v", err)
 			}
-			m.menu.SetState(ui.StateDefault)
-			m.showHelpScreen(helpStart(msg.instance), nil)
+			msg.instance.Prompt = ""
 		}
+		m.menu.SetState(ui.StateDefault)
+		m.showHelpScreen(helpStart(msg.instance), nil)
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case spinner.TickMsg:
@@ -413,7 +398,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// Handle quit commands first. Don't handle q because the user might want to type that.
 		if msg.String() == "ctrl+c" {
 			m.state = stateDefault
-			m.promptAfterName = false
 			m.killNewInstance()
 			return m, tea.Sequence(
 				tea.WindowSize(),
@@ -424,9 +408,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			)
 		}
 
-		// The new instance is tracked by reference: AddInstance may insert it mid-list (under
-		// its repo group) and a background instanceStartedMsg may move the selection, so it is
-		// neither the last item nor reliably the selected one.
+		// The inline `n` flow tracks the new instance by reference: AddInstance may insert it
+		// mid-list (under its repo group) and a background instanceStartedMsg may move the
+		// selection, so it is neither the last item nor reliably the selected one.
 		instance := m.newInstance
 		if instance == nil {
 			m.state = stateDefault
@@ -439,33 +423,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(fmt.Errorf("title cannot be empty"))
 			}
 
-			// If promptAfterName, show prompt+branch overlay before starting
-			if m.promptAfterName {
-				m.promptAfterName = false
-				m.state = statePrompt
-				m.menu.SetState(ui.StatePrompt)
-				m.textInputOverlay = m.newPromptOverlay()
-				// Trigger initial branch search (no debounce, version 0)
-				initialSearch := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
-				return m, tea.Batch(tea.WindowSize(), initialSearch)
-			}
-
 			// Set Loading status and finalize into the list immediately
 			instance.SetStatus(session.Loading)
 			m.newInstanceFinalizer()
 			m.newInstance = nil // creation handed off to the background start
-			m.promptAfterName = false
 			m.state = stateDefault
 			m.menu.SetState(ui.StateDefault)
 
 			// Return a tea.Cmd that runs instance.Start in the background
 			startCmd := func() tea.Msg {
 				err := instance.Start(true)
-				return instanceStartedMsg{
-					instance:        instance,
-					err:             err,
-					promptAfterName: false,
-				}
+				return instanceStartedMsg{instance: instance, err: err}
 			}
 
 			return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
@@ -514,73 +482,34 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		// Check if the form was submitted or canceled
 		if shouldClose {
-			// Target the instance being created by reference: a background instanceStartedMsg
-			// can move the list selection off it while the prompt overlay is open.
-			selected := m.newInstance
-			if selected == nil {
-				return m, nil
-			}
-
 			if m.textInputOverlay.IsCanceled() {
 				return m, m.cancelPromptOverlay()
 			}
 
-			if m.textInputOverlay.IsSubmitted() {
-				prompt := m.textInputOverlay.GetValue()
-				selectedBranch := m.textInputOverlay.GetSelectedBranch()
-				selectedProgram := m.textInputOverlay.GetSelectedProgram()
-
-				if !selected.Started() {
-					// Shift+N flow: instance not started yet — set target dir, branch,
-					// start, then send prompt.
-					if path := m.textInputOverlay.GetSelectedPath(); path != "" && path != selected.Path {
-						if !git.IsGitRepo(path) {
-							// Keep the overlay open so the user can fix the path.
-							m.textInputOverlay.Submitted = false
-							return m, m.handleError(fmt.Errorf("%q is not a git repository", path))
-						}
-						if err := selected.SetPath(path); err != nil {
-							m.textInputOverlay.Submitted = false
-							return m, m.handleError(err)
-						}
-					}
-					if selectedBranch != "" {
-						selected.SetSelectedBranch(selectedBranch)
-					}
-					if selectedProgram != "" {
-						selected.Program = selectedProgram
-					}
-					selected.Prompt = prompt
-
-					// Finalize into list and start
-					selected.SetStatus(session.Loading)
-					m.newInstanceFinalizer()
-					m.newInstance = nil // creation handed off to the background start
-					m.textInputOverlay = nil
-					m.state = stateDefault
-					m.menu.SetState(ui.StateDefault)
-
-					startCmd := func() tea.Msg {
-						err := selected.Start(true)
-						return instanceStartedMsg{
-							instance:        selected,
-							err:             err,
-							promptAfterName: false,
-							selectedBranch:  selectedBranch,
-						}
-					}
-
-					return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
-				}
-
-				// Regular flow: instance already running, just send prompt
-				if err := selected.SendPrompt(prompt); err != nil {
-					return m, m.handleError(err)
-				}
+			if !m.textInputOverlay.IsSubmitted() {
+				m.textInputOverlay = nil
+				m.state = stateDefault
+				return m, nil
 			}
 
-			// Close the overlay and reset state
-			m.newInstance = nil
+			prompt := m.textInputOverlay.GetValue()
+
+			// The new-session form creates the instance only now, on submit, so no row
+			// appears in the list while the user is still filling it in.
+			if m.textInputOverlay.IsCreateForm() {
+				return m, m.createSessionFromForm(prompt)
+			}
+
+			// Plain prompt overlay: send the prompt to the selected running session.
+			selected := m.list.GetSelectedInstance()
+			if selected == nil {
+				m.textInputOverlay = nil
+				m.state = stateDefault
+				return m, nil
+			}
+			if err := selected.SendPrompt(prompt); err != nil {
+				return m, m.handleError(err)
+			}
 			m.textInputOverlay = nil
 			m.state = stateDefault
 			return m, tea.Sequence(
@@ -666,9 +595,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 
-		// Derive the contextual target repo before adding the new instance (so the
-		// highlighted instance is still the previous one), and start a background fetch
-		// so branches are up to date by the time the picker opens.
+		// Open the unified new-session form immediately. The session itself is not created
+		// (and no list row appears) until the form is submitted — every parameter is reached
+		// directly in the form. Derive the contextual target repo first and kick a background
+		// fetch so branches are current by the time the user reaches the branch field.
 		m.newSessionPath = m.defaultNewSessionPath()
 		target := m.newSessionPath
 		fetchCmd := func() tea.Msg {
@@ -676,28 +606,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return nil
 		}
 
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    m.newSessionPath,
-			Program: m.program,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
+		m.state = statePrompt
+		m.menu.SetState(ui.StatePrompt)
+		m.textInputOverlay = m.newSessionFormOverlay()
+		// Trigger the initial branch search (no debounce, version 0).
+		initialSearch := m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion())
 
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		// AddInstance may insert the session into the middle of the list (under its repo
-		// group), so select it by identity rather than assuming it is last. Also track it by
-		// reference: the naming/prompt flow operates on m.newInstance, not the selection,
-		// which a background instanceStartedMsg can move.
-		m.list.SelectInstance(instance)
-		m.newInstance = instance
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
-		m.promptAfterName = true
-
-		return m, fetchCmd
+		return m, tea.Batch(tea.WindowSize(), fetchCmd, initialSearch)
 	case keys.KeyNew:
 		if m.list.NumInstances() >= GlobalInstanceLimit {
 			return m, m.handleError(
@@ -933,10 +848,8 @@ type previewTickMsg struct{}
 type instanceChangedMsg struct{}
 
 type instanceStartedMsg struct {
-	instance        *session.Instance
-	err             error
-	promptAfterName bool
-	selectedBranch  string
+	instance *session.Instance
+	err      error
 }
 
 // branchSearchDebounceMsg fires after the debounce interval to trigger a search.
@@ -1078,13 +991,73 @@ func (m *home) handleError(err error) tea.Cmd {
 	}
 }
 
-func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	ov := overlay.NewTextInputOverlayWithBranchPicker(
-		"Enter prompt", "", m.appConfig.GetProfiles(), m.candidateRepoPaths())
+// newSessionFormOverlay builds the unified new-session form (title, project, optional
+// profile, branch, prompt) for the `N` flow.
+func (m *home) newSessionFormOverlay() *overlay.TextInputOverlay {
+	ov := overlay.NewSessionCreateOverlay(m.appConfig.GetProfiles(), m.candidateRepoPaths())
 	// Seed the initial validity so the picker can flag a non-repo default target
 	// (e.g. when cs was launched outside a git repo) before the user navigates.
 	ov.SetTargetValidity(git.IsGitRepo(m.newSessionPath))
 	return ov
+}
+
+// createSessionFromForm validates the submitted new-session form, creates the session,
+// adds it to the list, and starts it in the background with the entered prompt. On a
+// validation error it leaves the overlay open (clearing the submitted flag) and surfaces
+// the error so the user can correct the offending field.
+func (m *home) createSessionFromForm(prompt string) tea.Cmd {
+	ov := m.textInputOverlay
+
+	title := ov.GetTitle()
+	if title == "" {
+		ov.Submitted = false
+		return m.handleError(fmt.Errorf("title cannot be empty"))
+	}
+
+	path := ov.GetSelectedPath()
+	if path == "" {
+		path = m.newSessionPath
+	}
+	if !git.IsGitRepo(path) {
+		ov.Submitted = false
+		return m.handleError(fmt.Errorf("%q is not a git repository", path))
+	}
+
+	program := m.program
+	if p := ov.GetSelectedProgram(); p != "" {
+		program = p
+	}
+
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:   title,
+		Path:    path,
+		Program: program,
+	})
+	if err != nil {
+		ov.Submitted = false
+		return m.handleError(err)
+	}
+
+	// Create the list row only now, on submit. AddInstance may insert it mid-list under its
+	// repo group, so select it by identity.
+	finalizer := m.list.AddInstance(instance)
+	m.list.SelectInstance(instance)
+	if branch := ov.GetSelectedBranch(); branch != "" {
+		instance.SetSelectedBranch(branch)
+	}
+	instance.Prompt = prompt
+	instance.SetStatus(session.Loading)
+	finalizer()
+
+	m.textInputOverlay = nil
+	m.state = stateDefault
+	m.menu.SetState(ui.StateDefault)
+
+	startCmd := func() tea.Msg {
+		err := instance.Start(true)
+		return instanceStartedMsg{instance: instance, err: err}
+	}
+	return tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
 }
 
 // defaultNewSessionPath returns the contextual target repo for a new session: the

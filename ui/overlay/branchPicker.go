@@ -20,12 +20,15 @@ type BranchPicker struct {
 	focused       bool
 	width         int
 	showNewBranch bool // whether to show the "New branch" option
+	loading       bool // a search is in flight (results not yet authoritative)
 }
 
-// NewBranchPicker creates a new empty branch picker.
+// NewBranchPicker creates a new empty branch picker. It starts in the loading state
+// because the caller kicks off an initial search as soon as the overlay opens.
 func NewBranchPicker() *BranchPicker {
 	return &BranchPicker{
 		showNewBranch: true,
+		loading:       true,
 	}
 }
 
@@ -61,11 +64,14 @@ func (bp *BranchPicker) GetFilterVersion() uint64 {
 
 // Invalidate bumps the filter version and clears stale results, returning the new
 // version. Used when the target repo changes so in-flight searches for the previous
-// repo are rejected by SetResults' version check.
+// repo are rejected by SetResults' version check. It enters the loading state rather
+// than rendering an empty list, so the picker keeps its height and shows "searching…"
+// until the fresh results arrive.
 func (bp *BranchPicker) Invalidate() uint64 {
 	bp.filterVersion++
 	bp.results = nil
 	bp.cursor = 0
+	bp.loading = true
 	return bp.filterVersion
 }
 
@@ -88,16 +94,19 @@ func (bp *BranchPicker) HandleKeyPress(msg tea.KeyMsg) (consumed bool, filterCha
 			runes := []rune(bp.filter)
 			bp.filter = string(runes[:len(runes)-1])
 			bp.filterVersion++
+			bp.loading = true
 			return true, true
 		}
 		return true, false
 	case tea.KeyRunes:
 		bp.filter += string(msg.Runes)
 		bp.filterVersion++
+		bp.loading = true
 		return true, true
 	case tea.KeySpace:
 		bp.filter += " "
 		bp.filterVersion++
+		bp.loading = true
 		return true, true
 	}
 	return false, false
@@ -110,6 +119,7 @@ func (bp *BranchPicker) SetResults(branches []string, version uint64) {
 		return // stale results
 	}
 	bp.results = branches
+	bp.loading = false
 
 	// Hide "New branch" when filter exactly matches a branch name
 	bp.showNewBranch = true
@@ -173,50 +183,43 @@ var (
 			Foreground(lipgloss.Color("240"))
 )
 
-// Render renders the branch picker.
+// Render renders the branch picker at a constant height (one header line, a blank line,
+// then pickerVisibleRows item rows) so the surrounding overlay never changes size as
+// focus moves or results load. When unfocused it shows the chosen branch on the header
+// line and leaves the rows blank; when focused it shows the filter and the list, with a
+// "searching…" hint while results are in flight rather than blanking the list.
 func (bp *BranchPicker) Render() string {
 	var s strings.Builder
-	s.WriteString(bpLabelStyle.Render("Branch"))
-	if bp.focused {
-		cursor := bp.filter + "█"
-		s.WriteString(bpFilterStyle.Render(" (filter: " + cursor + ")"))
-	} else if bp.filter != "" {
-		s.WriteString(bpDimStyle.Render(" (filter: " + bp.filter + ")"))
-	}
-	s.WriteString("\n\n")
 
-	items := bp.visibleItems()
-	if len(items) == 0 {
-		s.WriteString(bpDimStyle.Render("  No matching branches"))
+	if !bp.focused {
+		s.WriteString(bpLabelStyle.Render("Branch: "))
+		if sel := bp.selectedLabel(); sel != "" {
+			s.WriteString(sel)
+		} else {
+			s.WriteString(bpDimStyle.Render("(none)"))
+		}
+		s.WriteString("\n\n")
+		s.WriteString(renderPickerRows(nil, 0, false, "", bpSelectedStyle, bpDimStyle))
 		return s.String()
 	}
 
-	// Show max 5 visible items, windowed around cursor
-	maxVisible := 5
-	start := 0
-	if bp.cursor >= maxVisible {
-		start = bp.cursor - maxVisible + 1
+	s.WriteString(bpLabelStyle.Render("Branch"))
+	s.WriteString(bpFilterStyle.Render(" (filter: " + bp.filter + "█)"))
+	if bp.loading {
+		s.WriteString(bpDimStyle.Render("  searching…"))
 	}
-	end := start + maxVisible
-	if end > len(items) {
-		end = len(items)
-	}
+	s.WriteString("\n\n")
 
-	for i := start; i < end; i++ {
-		prefix := "  "
-		label := items[i]
-		if i == bp.cursor && bp.focused {
-			prefix = "> "
-			s.WriteString(bpSelectedStyle.Render(prefix + label))
-		} else if i == bp.cursor {
-			s.WriteString(prefix + label)
-		} else {
-			s.WriteString(bpDimStyle.Render(prefix + label))
-		}
-		if i < end-1 {
-			s.WriteString("\n")
-		}
-	}
-
+	s.WriteString(renderPickerRows(bp.visibleItems(), bp.cursor, true, "no matching branches", bpSelectedStyle, bpDimStyle))
 	return s.String()
+}
+
+// selectedLabel returns the label of the current selection (including the "New branch"
+// option), or empty if there is nothing to select.
+func (bp *BranchPicker) selectedLabel() string {
+	items := bp.visibleItems()
+	if bp.cursor < 0 || bp.cursor >= len(items) {
+		return ""
+	}
+	return items[bp.cursor]
 }

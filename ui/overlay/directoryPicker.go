@@ -176,17 +176,14 @@ var (
 	dpDimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
 
-	dpHintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
-			Italic(true)
-
 	dpInvalidStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203"))
 )
 
-// Render renders the directory picker. When unfocused it collapses to a single line
-// showing the chosen project and how to change it, so the target repo is always
-// visible without crowding the overlay. When focused it expands to the filterable list.
+// Render renders the directory picker at a constant height (one header line, a blank
+// line, then pickerVisibleRows item rows) so the surrounding overlay never changes size
+// as focus moves. When unfocused it shows the chosen project on the header line and
+// leaves the rows blank; when focused it shows the filter and the candidate list.
 func (dp *DirectoryPicker) Render() string {
 	var s strings.Builder
 
@@ -197,51 +194,27 @@ func (dp *DirectoryPicker) Render() string {
 		} else {
 			s.WriteString(dpDimStyle.Render("(none)"))
 		}
-		s.WriteString(dpHintStyle.Render("  (Tab to change)"))
+		if dp.validityChecked && !dp.selectionValid {
+			s.WriteString(dpInvalidStyle.Render("  (not a git repo)"))
+		}
+		s.WriteString("\n\n")
+		s.WriteString(renderPickerRows(nil, 0, false, "", dpSelectedStyle, dpDimStyle))
 		return s.String()
 	}
 
 	s.WriteString(dpLabelStyle.Render("Project"))
-	cursor := dp.filter + "█"
-	s.WriteString(dpFilterStyle.Render(" (filter/path: " + cursor + ")"))
+	s.WriteString(dpFilterStyle.Render(" (filter/path: " + dp.filter + "█)"))
 	if dp.validityChecked && !dp.selectionValid {
 		s.WriteString(dpInvalidStyle.Render("  (not a git repo)"))
 	}
 	s.WriteString("\n\n")
 
 	items := dp.visibleItems()
-	if len(items) == 0 {
-		s.WriteString(dpDimStyle.Render("  No matches — type a path (/, ~, .) to use another project"))
-		return s.String()
+	labels := make([]string, len(items))
+	for i, it := range items {
+		labels[i] = dp.displayPath(it)
 	}
-
-	// Show max 5 visible items, windowed around the cursor.
-	maxVisible := 5
-	start := 0
-	if dp.cursor >= maxVisible {
-		start = dp.cursor - maxVisible + 1
-	}
-	end := start + maxVisible
-	if end > len(items) {
-		end = len(items)
-	}
-
-	for i := start; i < end; i++ {
-		prefix := "  "
-		label := dp.displayPath(items[i])
-		if i == dp.cursor && dp.focused {
-			prefix = "> "
-			s.WriteString(dpSelectedStyle.Render(prefix + label))
-		} else if i == dp.cursor {
-			s.WriteString(prefix + label)
-		} else {
-			s.WriteString(dpDimStyle.Render(prefix + label))
-		}
-		if i < end-1 {
-			s.WriteString("\n")
-		}
-	}
-
+	s.WriteString(renderPickerRows(labels, dp.cursor, true, "no matches — type a path (/, ~, .)", dpSelectedStyle, dpDimStyle))
 	return s.String()
 }
 
