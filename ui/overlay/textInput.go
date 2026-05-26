@@ -40,15 +40,27 @@ var (
 			Italic(true)
 )
 
-// pickerVisibleRows is the fixed number of list rows the directory and branch pickers
-// always render (padding with blanks). Keeping it constant means the overlay's total
-// height never changes as focus moves between sections — otherwise the vertically
-// centered overlay (see app View / PlaceOverlay) would visibly jump on every Tab.
-const pickerVisibleRows = 3
-
-// promptVisibleRows is the fixed height of the prompt textarea, so the prompt section is
-// also constant-height.
-const promptVisibleRows = 4
+// defaultPickerRows / defaultPromptRows are the preferred number of list rows the directory
+// and branch pickers render and the preferred prompt-textarea height. They are also the
+// upper bound: SetSize only ever shrinks below these to fit a short terminal, never grows
+// past them. The chosen counts are fixed for a given window size (computed in SetSize, not
+// per render) so the overlay's height never changes as focus moves between sections —
+// otherwise the vertically centered overlay (see app View / PlaceOverlay) would jump on Tab.
+const (
+	defaultPickerRows = 3
+	defaultPromptRows = 4
+	// minPickerRows / minPromptRows are the floors the form collapses to on short terminals.
+	minPickerRows = 1
+	minPromptRows = 1
+	// formChromeLines is every create-form line that is neither a picker row nor a prompt
+	// row: the rounded border (2) + vertical padding (2) + the overlay title, the Title
+	// field and its divider, each picker's header/blank/divider, the prompt label and its
+	// divider, the help line, and the Create button. Used to size the form to the terminal.
+	formChromeLines = 18
+	// profileSectionLines is the height the profile section adds when present (label + blank
+	// + the names row + a divider).
+	profileSectionLines = 4
+)
 
 // createFormHelp is the single footer line describing how to navigate the create form.
 // Enter advances between fields (and inserts a newline in the prompt), so submission is
@@ -56,20 +68,23 @@ const promptVisibleRows = 4
 const createFormHelp = "Tab/⇧Tab move · ↑↓ select · type to filter · ⌃S create"
 
 // renderPickerRows renders a list of pre-formatted labels windowed around the cursor,
-// always emitting exactly pickerVisibleRows lines (padding with blanks) so the caller's
-// height is constant. When labels is empty, placeholder (if set) occupies the first row.
-func renderPickerRows(labels []string, cursor int, focused bool, placeholder string, selStyle, dimStyle lipgloss.Style) string {
-	lines := make([]string, 0, pickerVisibleRows)
+// always emitting exactly rows lines (padding with blanks) so the caller's height is
+// constant. When labels is empty, placeholder (if set) occupies the first row.
+func renderPickerRows(labels []string, cursor, rows int, focused bool, placeholder string, selStyle, dimStyle lipgloss.Style) string {
+	if rows < 1 {
+		rows = 1
+	}
+	lines := make([]string, 0, rows)
 	if len(labels) == 0 {
 		if placeholder != "" {
 			lines = append(lines, dimStyle.Render("  "+placeholder))
 		}
 	} else {
 		start := 0
-		if cursor >= pickerVisibleRows {
-			start = cursor - pickerVisibleRows + 1
+		if cursor >= rows {
+			start = cursor - rows + 1
 		}
-		end := start + pickerVisibleRows
+		end := start + rows
 		if end > len(labels) {
 			end = len(labels)
 		}
@@ -84,7 +99,7 @@ func renderPickerRows(labels []string, cursor int, focused bool, placeholder str
 			}
 		}
 	}
-	for len(lines) < pickerVisibleRows {
+	for len(lines) < rows {
 		lines = append(lines, "")
 	}
 	return strings.Join(lines, "\n")
@@ -197,16 +212,24 @@ func newTitleInput() textinput.Model {
 	return in
 }
 
+// SetSize is given the full terminal dimensions. The create form keeps every section at a
+// constant height so the centered overlay does not jump as focus moves, but it sizes those
+// sections to fit the terminal (shrinking the pickers and prompt on short screens). The plain
+// prompt overlay keeps its original behavior of a textarea ~40% of the screen tall.
 func (t *TextInputOverlay) SetSize(width, height int) {
 	t.width = width
 	t.height = height
-	// The create form keeps every section at a constant height so the centered overlay
-	// does not jump; the prompt textarea therefore uses a fixed height rather than scaling
-	// with the window. The plain prompt overlay keeps its original full-height behavior.
 	if t.isCreateForm {
-		t.textarea.SetHeight(promptVisibleRows)
+		pickerRows, promptRows := t.fitRows(height)
+		t.textarea.SetHeight(promptRows)
+		if t.directoryPicker != nil {
+			t.directoryPicker.SetVisibleRows(pickerRows)
+		}
+		if t.branchPicker != nil {
+			t.branchPicker.SetVisibleRows(pickerRows)
+		}
 	} else {
-		t.textarea.SetHeight(height)
+		t.textarea.SetHeight(int(float32(height) * 0.4))
 	}
 	t.titleInput.Width = width - 6
 	if t.directoryPicker != nil {
@@ -218,6 +241,32 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	if t.profilePicker != nil {
 		t.profilePicker.SetWidth(width - 6)
 	}
+}
+
+// fitRows chooses the picker-row and prompt-row counts that make the create form fit within
+// a terminal of the given height. It starts from the preferred defaults and shrinks to fit —
+// picker rows first (the windowed list degrades gracefully to a single scrolling row), then
+// the prompt — but never below the floors. On terminals too short for even the floors it
+// returns the floors and the overlay clips minimally rather than misbehaving.
+func (t *TextInputOverlay) fitRows(height int) (pickerRows, promptRows int) {
+	pickerRows, promptRows = defaultPickerRows, defaultPromptRows
+	chrome := formChromeLines
+	if t.profilePicker != nil {
+		chrome += profileSectionLines
+	}
+	const margin = 2 // keep a row above and below so the overlay isn't flush to the edges
+	total := func() int { return 2*pickerRows + promptRows + chrome }
+	for total() > height-margin {
+		switch {
+		case pickerRows > minPickerRows:
+			pickerRows--
+		case promptRows > minPromptRows:
+			promptRows--
+		default:
+			return pickerRows, promptRows
+		}
+	}
+	return pickerRows, promptRows
 }
 
 // Init initializes the text input overlay model
@@ -507,8 +556,8 @@ func (t *TextInputOverlay) Render() string {
 }
 
 // renderCreateForm renders the unified new-session form. Every section is constant-height
-// (see pickerVisibleRows / promptVisibleRows), so the vertically centered overlay never
-// jumps as focus moves between fields.
+// for a given window size (the picker/prompt row counts are fixed in SetSize via fitRows),
+// so the vertically centered overlay never jumps as focus moves between fields.
 func (t *TextInputOverlay) renderCreateForm(divider string) string {
 	var b strings.Builder
 

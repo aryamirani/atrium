@@ -178,7 +178,10 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.list.SetSize(listWidth, contentHeight)
 
 	if m.textInputOverlay != nil {
-		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
+		// Pass the full terminal height: the create form sizes its own sections to fit (and the
+		// plain prompt overlay applies its own fraction), so it needs to know the real height
+		// rather than a pre-scaled slice of it.
+		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), msg.Height)
 	}
 	if m.textOverlay != nil {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))

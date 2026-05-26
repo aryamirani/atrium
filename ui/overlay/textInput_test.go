@@ -90,3 +90,21 @@ func TestSessionCreateOverlay_RenderHeightConstantAcrossFocus(t *testing.T) {
 	assert.Equal(t, dirFocused, promptFocused, "overlay height must not change between fields")
 	assert.Equal(t, dirFocused, branchFocused, "overlay height must not change between fields")
 }
+
+// The form must shrink to fit short terminals (it has a fixed-height default that overflows
+// otherwise), and must still render at a constant height regardless of which field is focused.
+func TestSessionCreateOverlay_FitsShortTerminal(t *testing.T) {
+	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o.SetBranchResults([]string{"main", "develop", "feature/x"}, o.BranchFilterVersion())
+
+	// The form collapses its picker/prompt rows to fit; at a comfortable-but-short 24 rows it
+	// must already shrink from its 28-line default, and never exceed the terminal height.
+	for _, h := range []int{24, 30, 50} {
+		o.SetSize(80, h)
+		for _, stop := range []focusStop{stopTitle, stopTextarea, stopDirectory, stopBranch, stopEnter} {
+			o.focusStop(stop)
+			got := strings.Count(o.Render(), "\n") + 1
+			assert.LessOrEqual(t, got, h, "h=%d focus=%d: overlay rendered %d lines, must fit", h, stop, got)
+		}
+	}
+}

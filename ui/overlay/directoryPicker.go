@@ -17,10 +17,11 @@ import (
 // chosen path is a git repo happens at the call site, on selection/submit.
 type DirectoryPicker struct {
 	candidates []string // absolute candidate repo paths, deduped; candidates[0] is the default
-	filter     string
-	cursor     int
-	focused    bool
-	width      int
+	filter      string
+	cursor      int
+	focused     bool
+	width       int
+	visibleRows int // number of candidate rows to render (kept constant across focus)
 
 	// validityChecked/selectionValid let the call site surface an inline "(not a git
 	// repo)" hint as the selection changes, instead of only rejecting it at submit.
@@ -41,12 +42,21 @@ func NewDirectoryPicker(candidates []string) *DirectoryPicker {
 		seen[c] = true
 		deduped = append(deduped, c)
 	}
-	return &DirectoryPicker{candidates: deduped}
+	return &DirectoryPicker{candidates: deduped, visibleRows: defaultPickerRows}
 }
 
 // SetWidth sets the width of the directory picker.
 func (dp *DirectoryPicker) SetWidth(w int) {
 	dp.width = w
+}
+
+// SetVisibleRows sets how many candidate rows the picker renders (floored at 1). Driven by
+// the overlay so the form can shrink to fit short terminals.
+func (dp *DirectoryPicker) SetVisibleRows(n int) {
+	if n < 1 {
+		n = 1
+	}
+	dp.visibleRows = n
 }
 
 // Focus gives the directory picker focus.
@@ -181,7 +191,7 @@ var (
 )
 
 // Render renders the directory picker at a constant height (one header line, a blank
-// line, then pickerVisibleRows item rows) so the surrounding overlay never changes size
+// line, then visibleRows item rows) so the surrounding overlay never changes size
 // as focus moves. When unfocused it shows the chosen project on the header line and
 // leaves the rows blank; when focused it shows the filter and the candidate list.
 func (dp *DirectoryPicker) Render() string {
@@ -198,7 +208,7 @@ func (dp *DirectoryPicker) Render() string {
 			s.WriteString(dpInvalidStyle.Render("  (not a git repo)"))
 		}
 		s.WriteString("\n\n")
-		s.WriteString(renderPickerRows(nil, 0, false, "", dpSelectedStyle, dpDimStyle))
+		s.WriteString(renderPickerRows(nil, 0, dp.visibleRows, false, "", dpSelectedStyle, dpDimStyle))
 		return s.String()
 	}
 
@@ -214,7 +224,7 @@ func (dp *DirectoryPicker) Render() string {
 	for i, it := range items {
 		labels[i] = dp.displayPath(it)
 	}
-	s.WriteString(renderPickerRows(labels, dp.cursor, true, "no matches — type a path (/, ~, .)", dpSelectedStyle, dpDimStyle))
+	s.WriteString(renderPickerRows(labels, dp.cursor, dp.visibleRows, true, "no matches — type a path (/, ~, .)", dpSelectedStyle, dpDimStyle))
 	return s.String()
 }
 

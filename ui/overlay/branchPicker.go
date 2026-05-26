@@ -22,6 +22,7 @@ type BranchPicker struct {
 	cursor        int      // index into visibleItems()
 	focused       bool
 	width         int
+	visibleRows   int  // number of result rows to render (kept constant across focus)
 	showHeadBase  bool // whether to offer the default "HEAD (current branch)" base option
 	loading       bool // a search is in flight (results not yet authoritative)
 }
@@ -32,12 +33,22 @@ func NewBranchPicker() *BranchPicker {
 	return &BranchPicker{
 		showHeadBase: true,
 		loading:      true,
+		visibleRows:  defaultPickerRows,
 	}
 }
 
 // SetWidth sets the width of the branch picker.
 func (bp *BranchPicker) SetWidth(w int) {
 	bp.width = w
+}
+
+// SetVisibleRows sets how many result rows the picker renders (floored at 1). Driven by the
+// overlay so the form can shrink to fit short terminals.
+func (bp *BranchPicker) SetVisibleRows(n int) {
+	if n < 1 {
+		n = 1
+	}
+	bp.visibleRows = n
 }
 
 // Focus gives the branch picker focus.
@@ -189,7 +200,7 @@ var (
 )
 
 // Render renders the branch picker at a constant height (one header line, a blank line,
-// then pickerVisibleRows item rows) so the surrounding overlay never changes size as
+// then visibleRows item rows) so the surrounding overlay never changes size as
 // focus moves or results load. When unfocused it shows the chosen branch on the header
 // line and leaves the rows blank; when focused it shows the filter and the list, with a
 // "searching…" hint while results are in flight rather than blanking the list.
@@ -204,7 +215,7 @@ func (bp *BranchPicker) Render() string {
 			s.WriteString(bpDimStyle.Render("(none)"))
 		}
 		s.WriteString("\n\n")
-		s.WriteString(renderPickerRows(nil, 0, false, "", bpSelectedStyle, bpDimStyle))
+		s.WriteString(renderPickerRows(nil, 0, bp.visibleRows, false, "", bpSelectedStyle, bpDimStyle))
 		return s.String()
 	}
 
@@ -215,7 +226,7 @@ func (bp *BranchPicker) Render() string {
 	}
 	s.WriteString("\n\n")
 
-	s.WriteString(renderPickerRows(bp.visibleItems(), bp.cursor, true, "no matching branches", bpSelectedStyle, bpDimStyle))
+	s.WriteString(renderPickerRows(bp.visibleItems(), bp.cursor, bp.visibleRows, true, "no matching branches", bpSelectedStyle, bpDimStyle))
 	return s.String()
 }
 
