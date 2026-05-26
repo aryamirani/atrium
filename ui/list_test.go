@@ -102,3 +102,15 @@ func TestMoveWithSingleItem(t *testing.T) {
 	require.False(t, l.MoveUp())
 	require.False(t, l.MoveDown())
 }
+
+func TestList_RendersDisplayLabel(t *testing.T) {
+	l := newTestList("original")
+	l.SetSize(80, 20)
+
+	// With no label set, the list shows the Title.
+	require.Contains(t, l.String(), "original", "shows Title when no label is set")
+
+	// Once a cosmetic label is set, the list shows it in place of the Title.
+	l.items[0].SetDisplayName("renamed")
+	require.Contains(t, l.String(), "renamed", "shows the custom label when set")
+}

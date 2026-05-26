@@ -47,6 +47,8 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
+	// stateRename is the state when the user is editing a session's display label.
+	stateRename
 )
 
 type home struct {
@@ -115,6 +117,8 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+	// renameOverlay handles editing a session's display label
+	renameOverlay *overlay.RenameOverlay
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -369,7 +373,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateRename {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -567,6 +571,31 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle rename state. This must run before the global q/ctrl+c quit handling below so
+	// those keys edit (or cancel) the label instead of quitting the app.
+	if m.state == stateRename {
+		shouldClose := m.renameOverlay.HandleKeyPress(msg)
+		if !shouldClose {
+			return m, nil
+		}
+
+		submitted := m.renameOverlay.IsSubmitted()
+		value := m.renameOverlay.Value()
+		m.renameOverlay = nil
+		m.state = stateDefault
+		m.menu.SetState(ui.StateDefault)
+
+		if submitted {
+			if selected := m.list.GetSelectedInstance(); selected != nil {
+				selected.SetDisplayName(value)
+				if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+					return m, m.handleError(err)
+				}
+			}
+		}
+		return m, m.instanceChanged()
+	}
+
 	// Exit scrolling mode when ESC is pressed and preview pane is in scrolling mode
 	// Check if Escape key was pressed and we're not in the diff tab (meaning we're in preview tab)
 	// Always check for escape key first to ensure it doesn't get intercepted elsewhere
@@ -695,7 +724,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 
 			if checkedOut {
-				return fmt.Errorf("instance %s is currently checked out", selected.Title)
+				return fmt.Errorf("instance %s is currently checked out", selected.DisplayName())
 			}
 
 			// Clean up terminal session for this instance
@@ -712,8 +741,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// Show confirmation modal
-		message := fmt.Sprintf("[!] Kill session '%s'?", selected.Title)
+		message := fmt.Sprintf("[!] Kill session '%s'?", selected.DisplayName())
 		return m, m.confirmAction(message, killAction)
+	case keys.KeyRename:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Status == session.Loading {
+			return m, nil
+		}
+		m.renameOverlay = overlay.NewRenameOverlay(selected.DisplayName())
+		m.state = stateRename
+		m.menu.SetState(ui.StatePrompt)
+		return m, nil
 	case keys.KeySubmit:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.Status == session.Loading {
@@ -723,7 +761,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// Create the push action as a tea.Cmd
 		pushAction := func() tea.Msg {
 			// Default commit message with timestamp
-			commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s", selected.Title, time.Now().Format(time.RFC822))
+			commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s", selected.DisplayName(), time.Now().Format(time.RFC822))
 			worktree, err := selected.GetGitWorktree()
 			if err != nil {
 				return err
@@ -735,7 +773,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// Show confirmation modal
-		message := fmt.Sprintf("[!] Push changes from session '%s'?", selected.Title)
+		message := fmt.Sprintf("[!] Push changes from session '%s'?", selected.DisplayName())
 		return m, m.confirmAction(message, pushAction)
 	case keys.KeyCheckout:
 		selected := m.list.GetSelectedInstance()
@@ -1278,6 +1316,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	} else if m.state == stateRename {
+		if m.renameOverlay == nil {
+			log.ErrorLog.Printf("rename overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.renameOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView

@@ -32,6 +32,8 @@ const (
 	// Reorder keybindings
 	KeyMoveUp
 	KeyMoveDown
+
+	KeyRename // Rename the selected session's display label
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -49,6 +51,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"o":          KeyEnter,
 	"n":          KeyNew,
 	"D":          KeyKill,
+	"R":          KeyRename,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
 	"c":          KeyCheckout,
@@ -86,6 +89,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyKill: key.NewBinding(
 		key.WithKeys("D"),
 		key.WithHelp("D", "kill"),
+	),
+	KeyRename: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "rename"),
 	),
 	KeyHelp: key.NewBinding(
 		key.WithKeys("?"),

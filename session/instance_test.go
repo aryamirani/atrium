@@ -4,6 +4,7 @@ import (
 	"claude-squad/cmd/cmd_test"
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -114,4 +115,59 @@ func TestSetPath_RejectedAfterStart(t *testing.T) {
 	inst.started = true
 	err = inst.SetPath("/tmp/other")
 	require.Error(t, err)
+}
+
+func TestDisplayName_FallsBackToTitle(t *testing.T) {
+	inst, err := NewInstance(InstanceOptions{Title: "my-task", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+
+	// With no label set, DisplayName mirrors Title.
+	assert.Equal(t, "my-task", inst.DisplayName())
+
+	inst.SetDisplayName("Nicer Label")
+	assert.Equal(t, "Nicer Label", inst.DisplayName())
+	// Title (the stable identifier) is untouched by the label.
+	assert.Equal(t, "my-task", inst.Title)
+}
+
+func TestSetDisplayName_WorksAfterStart(t *testing.T) {
+	inst, err := NewInstance(InstanceOptions{Title: "my-task", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+
+	// Unlike SetTitle, the cosmetic label can change after the instance has started.
+	inst.started = true
+	require.Error(t, inst.SetTitle("renamed"), "SetTitle must reject a started instance")
+
+	inst.SetDisplayName("After Start")
+	assert.Equal(t, "After Start", inst.DisplayName())
+}
+
+func TestSetDisplayName_TrimsAndClears(t *testing.T) {
+	inst, err := NewInstance(InstanceOptions{Title: "my-task", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+
+	inst.SetDisplayName("  spaced label  ")
+	assert.Equal(t, "spaced label", inst.DisplayName())
+
+	// Empty/whitespace input clears the label, reverting to Title.
+	inst.SetDisplayName("   ")
+	assert.Equal(t, "my-task", inst.DisplayName())
+}
+
+func TestDisplayName_SerializedInInstanceData(t *testing.T) {
+	inst, err := NewInstance(InstanceOptions{Title: "my-task", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	inst.SetDisplayName("Nicer Label")
+
+	data := inst.ToInstanceData()
+	assert.Equal(t, "Nicer Label", data.DisplayName)
+	assert.Equal(t, "my-task", data.Title)
+}
+
+func TestInstanceData_MissingDisplayNameIsEmpty(t *testing.T) {
+	// State files written before this feature have no display_name key; they must load with
+	// an empty label so the name falls back to Title.
+	var data InstanceData
+	require.NoError(t, json.Unmarshal([]byte(`{"title":"my-task"}`), &data))
+	assert.Equal(t, "", data.DisplayName)
 }

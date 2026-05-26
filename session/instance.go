@@ -29,8 +29,14 @@ const (
 
 // Instance is a running instance of claude code.
 type Instance struct {
-	// Title is the title of the instance.
+	// Title is the title of the instance. It is the stable identifier used as the storage
+	// key and to seed the git branch and tmux session names at creation, so it never changes
+	// once the instance has started.
 	Title string
+	// displayName is an optional, purely cosmetic label shown in the list in place of Title.
+	// Unlike Title it can be changed at any time because it is decoupled from the git branch,
+	// worktree, and tmux session. Empty means "show Title".
+	displayName string
 	// Path is the path to the workspace.
 	Path string
 	// Branch is the branch of the instance.
@@ -71,16 +77,17 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:     i.Title,
-		Path:      i.Path,
-		Branch:    i.Branch,
-		Status:    i.Status,
-		Height:    i.Height,
-		Width:     i.Width,
-		CreatedAt: i.CreatedAt,
-		UpdatedAt: time.Now(),
-		Program:   i.Program,
-		AutoYes:   i.AutoYes,
+		Title:       i.Title,
+		DisplayName: i.displayName,
+		Path:        i.Path,
+		Branch:      i.Branch,
+		Status:      i.Status,
+		Height:      i.Height,
+		Width:       i.Width,
+		CreatedAt:   i.CreatedAt,
+		UpdatedAt:   time.Now(),
+		Program:     i.Program,
+		AutoYes:     i.AutoYes,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -115,15 +122,16 @@ func (i *Instance) ToInstanceData() InstanceData {
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
 	instance := &Instance{
-		Title:     data.Title,
-		Path:      data.Path,
-		Branch:    data.Branch,
-		Status:    data.Status,
-		Height:    data.Height,
-		Width:     data.Width,
-		CreatedAt: data.CreatedAt,
-		UpdatedAt: data.UpdatedAt,
-		Program:   data.Program,
+		Title:       data.Title,
+		displayName: data.DisplayName,
+		Path:        data.Path,
+		Branch:      data.Branch,
+		Status:      data.Status,
+		Height:      data.Height,
+		Width:       data.Width,
+		CreatedAt:   data.CreatedAt,
+		UpdatedAt:   data.UpdatedAt,
+		Program:     data.Program,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -440,6 +448,23 @@ func (i *Instance) SetTitle(title string) error {
 	}
 	i.Title = title
 	return nil
+}
+
+// DisplayName returns the cosmetic label shown for the instance, falling back to Title when
+// no custom label has been set.
+func (i *Instance) DisplayName() string {
+	if i.displayName != "" {
+		return i.displayName
+	}
+	return i.Title
+}
+
+// SetDisplayName sets the cosmetic display label. Unlike SetTitle it works at any time
+// (even after the instance has started) because the label is decoupled from the git branch
+// and tmux session. Whitespace is trimmed; an empty value clears the label so the name
+// reverts to Title.
+func (i *Instance) SetDisplayName(name string) {
+	i.displayName = strings.TrimSpace(name)
 }
 
 func (i *Instance) Paused() bool {

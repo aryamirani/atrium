@@ -188,7 +188,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 	}
 
 	// Cut the title if it's too long
-	titleText := i.Title
+	titleText := i.DisplayName()
 	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1
 	if widthAvail > 0 && runewidth.StringWidth(titleText) > widthAvail {
 		titleText = runewidth.Truncate(titleText, widthAvail-3, "...")
