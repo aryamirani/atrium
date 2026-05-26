@@ -392,8 +392,26 @@ func (l *List) rmRepo(repo string) {
 // AddInstance adds a new instance to the list. It returns a finalizer function that should be called when the instance
 // is started. If the instance was restored from storage or is paused, you can call the finalizer immediately.
 // When creating a new one and entering the name, you want to call the finalizer once the name is done.
+//
+// The instance is inserted immediately after the last existing item sharing its repoKey, so it becomes the next entry
+// in that repo's group; if no item shares the key, it is appended as a new group. This keeps same-repo instances
+// contiguous, which is the invariant String() relies on to avoid emitting a repo header more than once per group. It
+// also self-migrates state loaded from storage, which is added one instance at a time through this method.
 func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
-	l.items = append(l.items, instance)
+	key := repoKey(instance)
+	insertAt := len(l.items)
+	for i, item := range l.items {
+		if repoKey(item) == key {
+			insertAt = i + 1
+		}
+	}
+	l.items = append(l.items, nil)
+	copy(l.items[insertAt+1:], l.items[insertAt:])
+	l.items[insertAt] = instance
+	// Keep the selection on the same logical item if we inserted at or before it.
+	if insertAt <= l.selectedIdx && len(l.items) > 1 {
+		l.selectedIdx++
+	}
 	// The finalizer registers the repo name once the instance is started.
 	return func() {
 		repoName, err := instance.RepoName()
@@ -432,9 +450,14 @@ func (l *List) SelectInstance(target *session.Instance) {
 	}
 }
 
-// MoveUp swaps the selected instance with the one above it.
+// MoveUp swaps the selected instance with the one above it. The swap is confined to within a repo group: if the item
+// above belongs to a different group, this is a no-op so the move cannot split a group and produce a duplicate header.
+// (Single-repo lists share one key, so reordering stays unrestricted there.)
 func (l *List) MoveUp() bool {
 	if l.selectedIdx <= 0 || len(l.items) < 2 {
+		return false
+	}
+	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[l.selectedIdx-1]) {
 		return false
 	}
 	l.items[l.selectedIdx], l.items[l.selectedIdx-1] = l.items[l.selectedIdx-1], l.items[l.selectedIdx]
@@ -442,9 +465,13 @@ func (l *List) MoveUp() bool {
 	return true
 }
 
-// MoveDown swaps the selected instance with the one below it.
+// MoveDown swaps the selected instance with the one below it. As with MoveUp, the swap is confined to within a repo
+// group so it cannot split a group across a boundary.
 func (l *List) MoveDown() bool {
 	if l.selectedIdx >= len(l.items)-1 || len(l.items) < 2 {
+		return false
+	}
+	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[l.selectedIdx+1]) {
 		return false
 	}
 	l.items[l.selectedIdx], l.items[l.selectedIdx+1] = l.items[l.selectedIdx+1], l.items[l.selectedIdx]

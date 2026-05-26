@@ -668,7 +668,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+		// AddInstance may insert the session into the middle of the list (under its repo
+		// group), so select it by identity rather than assuming it is last.
+		m.list.SelectInstance(instance)
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
 		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
@@ -698,7 +700,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+		// AddInstance may insert the session into the middle of the list (under its repo
+		// group), so select it by identity rather than assuming it is last.
+		m.list.SelectInstance(instance)
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
 		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
