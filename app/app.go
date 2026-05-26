@@ -1043,7 +1043,7 @@ func (m *home) createSessionFromForm(prompt string) tea.Cmd {
 	finalizer := m.list.AddInstance(instance)
 	m.list.SelectInstance(instance)
 	if branch := ov.GetSelectedBranch(); branch != "" {
-		instance.SetSelectedBranch(branch)
+		instance.SetBaseBranch(branch)
 	}
 	instance.Prompt = prompt
 	instance.SetStatus(session.Loading)

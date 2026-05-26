@@ -29,8 +29,13 @@ type GitWorktree struct {
 	branchName string
 	// Base commit hash for the worktree
 	baseCommitSHA string
+	// baseRef is the ref the session branch is created from (a branch name to base on,
+	// or "" to base on HEAD). The session always gets its own branch; baseRef only
+	// chooses the start point, so it never conflicts with a branch checked out elsewhere.
+	baseRef string
 	// isExistingBranch is true if the branch existed before the session was created.
-	// When true, the branch will not be deleted on cleanup.
+	// When true, the branch will not be deleted on cleanup. Only set for sessions restored
+	// from storage that predate the branch-off model; new sessions are always branch-owners.
 	isExistingBranch bool
 }
 
@@ -69,8 +74,22 @@ func resolveWorktreePaths(repoPath string, branchName string) (resolvedRepo stri
 	return resolvedRepo, worktreePath, nil
 }
 
-// NewGitWorktree creates a new GitWorktree instance
+// NewGitWorktree creates a new GitWorktree instance whose session branch is based on HEAD.
 func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, branchname string, err error) {
+	return newSessionWorktree(repoPath, sessionName, "")
+}
+
+// NewGitWorktreeFromBase creates a new GitWorktree whose session branch is based on baseRef
+// (an existing branch to start from). The session still gets its own branch named after the
+// session, so cleanup deletes it and baseRef is left untouched; baseRef merely sets the start
+// point, which is why it works even when baseRef is checked out in another worktree.
+func NewGitWorktreeFromBase(repoPath string, sessionName string, baseRef string) (tree *GitWorktree, branchname string, err error) {
+	return newSessionWorktree(repoPath, sessionName, baseRef)
+}
+
+// newSessionWorktree builds a GitWorktree that owns a fresh session branch
+// (<BranchPrefix><sessionName>) created from baseRef ("" = HEAD).
+func newSessionWorktree(repoPath string, sessionName string, baseRef string) (*GitWorktree, string, error) {
 	cfg := config.LoadConfig()
 	branchName := fmt.Sprintf("%s%s", cfg.BranchPrefix, sessionName)
 	// Sanitize the final branch name to handle invalid characters from any source
@@ -87,24 +106,8 @@ func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, bra
 		sessionName:  sessionName,
 		branchName:   branchName,
 		worktreePath: worktreePath,
+		baseRef:      baseRef,
 	}, branchName, nil
-}
-
-// NewGitWorktreeFromBranch creates a new GitWorktree that uses an existing branch.
-// The branch will not be deleted on cleanup.
-func NewGitWorktreeFromBranch(repoPath string, branchName string, sessionName string) (*GitWorktree, error) {
-	repoPath, worktreePath, err := resolveWorktreePaths(repoPath, branchName)
-	if err != nil {
-		return nil, err
-	}
-
-	return &GitWorktree{
-		repoPath:         repoPath,
-		sessionName:      sessionName,
-		branchName:       branchName,
-		worktreePath:     worktreePath,
-		isExistingBranch: true,
-	}, nil
 }
 
 // IsExistingBranch returns whether this worktree uses a pre-existing branch

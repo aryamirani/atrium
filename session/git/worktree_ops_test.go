@@ -4,8 +4,109 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// newTestRepo initializes a git repo with one commit under a sandboxed HOME (so the cs
+// worktree directory resolves inside tempHome) and returns the repo path.
+func newTestRepo(t *testing.T) string {
+	t.Helper()
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	mustRunGit(t, "", "init", repoPath)
+	mustRunGit(t, repoPath, "config", "user.name", "Test User")
+	mustRunGit(t, repoPath, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	mustRunGit(t, repoPath, "add", "README.md")
+	mustRunGit(t, repoPath, "commit", "-m", "initial")
+	return repoPath
+}
+
+func revParse(t *testing.T, dir, ref string) string {
+	t.Helper()
+	return strings.TrimSpace(mustRunGit(t, dir, "rev-parse", ref))
+}
+
+// Selecting an existing branch that is already checked out in another worktree must still
+// create the session: we branch off it rather than checking it out, so git's "already used
+// by worktree" error never arises. This is the exact failure reported from the picker.
+func TestSetup_BranchOffBusyBranch(t *testing.T) {
+	repoPath := newTestRepo(t)
+	mustRunGit(t, repoPath, "branch", "feat")
+	featSHA := revParse(t, repoPath, "feat")
+
+	// Make "feat" busy by checking it out in a separate worktree (as the main repo would).
+	busyWorktree := filepath.Join(t.TempDir(), "busy")
+	mustRunGit(t, repoPath, "worktree", "add", busyWorktree, "feat")
+
+	wt, branch, err := NewGitWorktreeFromBase(repoPath, "mysess", "feat")
+	if err != nil {
+		t.Fatalf("NewGitWorktreeFromBase error = %v", err)
+	}
+	if err := wt.Setup(); err != nil {
+		t.Fatalf("Setup() error = %v (branch-off must succeed even when base is checked out elsewhere)", err)
+	}
+
+	if branch == "feat" {
+		t.Fatalf("session branch must differ from the base branch, got %q", branch)
+	}
+	// The session branch exists and starts at feat's tip.
+	if got := revParse(t, repoPath, branch); got != featSHA {
+		t.Fatalf("session branch tip = %q, want feat tip %q", got, featSHA)
+	}
+	// baseCommitSHA is recorded as the start point so the diff pane has a correct base.
+	if got := wt.GetBaseCommitSHA(); got != featSHA {
+		t.Fatalf("baseCommitSHA = %q, want %q", got, featSHA)
+	}
+}
+
+// Basing on a branch that exists only on the remote resolves via origin/<branch>.
+func TestSetup_BranchOffRemoteOnlyBase(t *testing.T) {
+	repoPath := newTestRepo(t)
+	mustRunGit(t, repoPath, "branch", "feat")
+	featSHA := revParse(t, repoPath, "feat")
+
+	// Publish feat to a bare origin, then drop the local branch so only origin/feat remains.
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	mustRunGit(t, "", "init", "--bare", bare)
+	mustRunGit(t, repoPath, "remote", "add", "origin", bare)
+	mustRunGit(t, repoPath, "push", "origin", "feat")
+	mustRunGit(t, repoPath, "fetch", "origin")
+	mustRunGit(t, repoPath, "branch", "-D", "feat")
+
+	wt, branch, err := NewGitWorktreeFromBase(repoPath, "remotesess", "feat")
+	if err != nil {
+		t.Fatalf("NewGitWorktreeFromBase error = %v", err)
+	}
+	if err := wt.Setup(); err != nil {
+		t.Fatalf("Setup() error = %v (should resolve origin/feat)", err)
+	}
+	if got := revParse(t, repoPath, branch); got != featSHA {
+		t.Fatalf("session branch tip = %q, want origin/feat tip %q", got, featSHA)
+	}
+}
+
+// An unknown base branch fails cleanly rather than producing a confusing git error.
+func TestSetup_UnknownBaseBranchErrors(t *testing.T) {
+	repoPath := newTestRepo(t)
+
+	wt, _, err := NewGitWorktreeFromBase(repoPath, "sess", "does-not-exist")
+	if err != nil {
+		t.Fatalf("NewGitWorktreeFromBase error = %v", err)
+	}
+	err = wt.Setup()
+	if err == nil {
+		t.Fatal("Setup() expected an error for an unknown base branch")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Setup() error = %v, want it to mention the base branch was not found", err)
+	}
+}
 
 func TestSetupFromExistingBranch_RemovesOrphanedDirectory(t *testing.T) {
 	tempHome := t.TempDir()

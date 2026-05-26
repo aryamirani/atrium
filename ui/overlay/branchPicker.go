@@ -192,7 +192,7 @@ func (bp *BranchPicker) Render() string {
 	var s strings.Builder
 
 	if !bp.focused {
-		s.WriteString(bpLabelStyle.Render("Branch: "))
+		s.WriteString(bpLabelStyle.Render("Base: "))
 		if sel := bp.selectedLabel(); sel != "" {
 			s.WriteString(sel)
 		} else {
@@ -203,7 +203,7 @@ func (bp *BranchPicker) Render() string {
 		return s.String()
 	}
 
-	s.WriteString(bpLabelStyle.Render("Branch"))
+	s.WriteString(bpLabelStyle.Render("Base branch"))
 	s.WriteString(bpFilterStyle.Render(" (filter: " + bp.filter + "█)"))
 	if bp.loading {
 		s.WriteString(bpDimStyle.Render("  searching…"))

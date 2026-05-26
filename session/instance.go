@@ -55,8 +55,9 @@ type Instance struct {
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
 
-	// selectedBranch is the existing branch to start on (empty = new branch from HEAD)
-	selectedBranch string
+	// baseBranch is the existing branch the session branch is based on (empty = base on HEAD).
+	// The session always gets its own branch; baseBranch only chooses the start point.
+	baseBranch string
 
 	// The below fields are initialized upon calling Start().
 
@@ -169,16 +170,16 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	}
 
 	return &Instance{
-		Title:          opts.Title,
-		Status:         Ready,
-		Path:           absPath,
-		Program:        opts.Program,
-		Height:         0,
-		Width:          0,
-		CreatedAt:      t,
-		UpdatedAt:      t,
-		AutoYes:        false,
-		selectedBranch: opts.Branch,
+		Title:      opts.Title,
+		Status:     Ready,
+		Path:       absPath,
+		Program:    opts.Program,
+		Height:     0,
+		Width:      0,
+		CreatedAt:  t,
+		UpdatedAt:  t,
+		AutoYes:    false,
+		baseBranch: opts.Branch,
 	}, nil
 }
 
@@ -208,9 +209,10 @@ func (i *Instance) SetStatus(status Status) {
 	i.Status = status
 }
 
-// SetSelectedBranch sets the branch to use when starting the instance.
-func (i *Instance) SetSelectedBranch(branch string) {
-	i.selectedBranch = branch
+// SetBaseBranch sets the existing branch the session branch will be based on when the
+// instance starts. The session still gets its own branch; this only sets the start point.
+func (i *Instance) SetBaseBranch(branch string) {
+	i.baseBranch = branch
 }
 
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
@@ -230,21 +232,21 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	i.tmuxSession = tmuxSession
 
 	if firstTimeSetup {
-		if i.selectedBranch != "" {
-			gitWorktree, err := git.NewGitWorktreeFromBranch(i.Path, i.selectedBranch, i.Title)
-			if err != nil {
-				return fmt.Errorf("failed to create git worktree from branch: %w", err)
-			}
-			i.gitWorktree = gitWorktree
-			i.Branch = i.selectedBranch
+		// The session always gets its own branch. baseBranch (if set) only chooses the start
+		// point it branches off, so i.Branch is the session branch in both cases.
+		var gitWorktree *git.GitWorktree
+		var branchName string
+		var err error
+		if i.baseBranch != "" {
+			gitWorktree, branchName, err = git.NewGitWorktreeFromBase(i.Path, i.Title, i.baseBranch)
 		} else {
-			gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
-			if err != nil {
-				return fmt.Errorf("failed to create git worktree: %w", err)
-			}
-			i.gitWorktree = gitWorktree
-			i.Branch = branchName
+			gitWorktree, branchName, err = git.NewGitWorktree(i.Path, i.Title)
 		}
+		if err != nil {
+			return fmt.Errorf("failed to create git worktree: %w", err)
+		}
+		i.gitWorktree = gitWorktree
+		i.Branch = branchName
 	}
 
 	// Setup error handler to cleanup resources on any error

@@ -21,13 +21,15 @@ func (g *GitWorktree) Setup() error {
 		return err
 	}
 
-	// If this worktree uses a pre-existing branch, always set up from that branch
-	// (it may exist locally or only on the remote).
-	if g.isExistingBranch {
-		return g.setupFromExistingBranch()
+	// When basing on a chosen branch, always branch off it into a fresh session branch
+	// (setupNewWorktree force-recreates the session branch from the start point). We must
+	// not fall into the reuse path below, which would ignore baseRef.
+	if g.baseRef != "" {
+		return g.setupNewWorktree()
 	}
 
-	// Check if branch exists using git CLI (much faster than go-git PlainOpen)
+	// HEAD-based session: if the session branch already exists (e.g. a leftover from a
+	// previous run with the same title), reuse it rather than wiping it.
 	_, err = g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
 	if err == nil {
 		return g.setupFromExistingBranch()
@@ -67,7 +69,8 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 	return nil
 }
 
-// setupNewWorktree creates a new worktree from HEAD
+// setupNewWorktree creates a new worktree on a fresh session branch, started from g.baseRef
+// (an existing branch to base on) or HEAD when baseRef is empty.
 func (g *GitWorktree) setupNewWorktree() error {
 	// Clean up any existing worktree first
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
@@ -77,27 +80,52 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
 	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
 
-	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
+	// Resolve the start point. Branching off a ref (rather than checking it out) succeeds
+	// even when that ref is checked out in another worktree, which is the whole point.
+	startPoint, err := g.resolveStartPoint()
 	if err != nil {
-		if strings.Contains(err.Error(), "fatal: ambiguous argument 'HEAD'") ||
-			strings.Contains(err.Error(), "fatal: not a valid object name") ||
-			strings.Contains(err.Error(), "fatal: HEAD: not a valid object name") {
-			return fmt.Errorf("this appears to be a brand new repository: please create an initial commit before creating an instance")
-		}
-		return fmt.Errorf("failed to get HEAD commit hash: %w", err)
+		return err
 	}
-	headCommit := strings.TrimSpace(string(output))
-	g.baseCommitSHA = headCommit
 
-	// Create a new worktree from the HEAD commit
-	// Otherwise, we'll inherit uncommitted changes from the previous worktree.
-	// This way, we can start the worktree with a clean slate.
-	// TODO: we might want to give an option to use main/master instead of the current branch.
-	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
-		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	output, err := g.runGitCommand(g.repoPath, "rev-parse", startPoint)
+	if err != nil {
+		return fmt.Errorf("failed to resolve start point %s: %w", startPoint, err)
+	}
+	g.baseCommitSHA = strings.TrimSpace(string(output))
+
+	// Create a new worktree on its own branch from the start point. Starting from a commit
+	// (rather than the current worktree) gives the session a clean slate without inheriting
+	// uncommitted changes.
+	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, startPoint); err != nil {
+		return fmt.Errorf("failed to create worktree on branch %s from %s: %w", g.branchName, startPoint, err)
 	}
 
 	return nil
+}
+
+// resolveStartPoint returns the ref to branch the session off. When baseRef is empty this is
+// HEAD; otherwise it is the local branch baseRef, falling back to its remote-tracking
+// counterpart origin/<baseRef> when no local branch exists.
+func (g *GitWorktree) resolveStartPoint() (string, error) {
+	if g.baseRef == "" {
+		if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", "HEAD"); err != nil {
+			if strings.Contains(err.Error(), "fatal: ambiguous argument 'HEAD'") ||
+				strings.Contains(err.Error(), "fatal: not a valid object name") ||
+				strings.Contains(err.Error(), "fatal: HEAD: not a valid object name") {
+				return "", fmt.Errorf("this appears to be a brand new repository: please create an initial commit before creating an instance")
+			}
+			return "", fmt.Errorf("failed to get HEAD commit hash: %w", err)
+		}
+		return "HEAD", nil
+	}
+
+	if _, err := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.baseRef)); err == nil {
+		return g.baseRef, nil
+	}
+	if _, err := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/remotes/origin/%s", g.baseRef)); err == nil {
+		return fmt.Sprintf("origin/%s", g.baseRef), nil
+	}
+	return "", fmt.Errorf("base branch %q not found locally or on remote", g.baseRef)
 }
 
 // Cleanup removes the worktree and associated branch
