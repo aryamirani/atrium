@@ -6,6 +6,7 @@ import (
 	"claude-squad/ui"
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -63,4 +64,17 @@ func TestCandidateRepoPaths_CurrentFirstThenDeduped(t *testing.T) {
 		seen[p]++
 		assert.Equal(t, 1, seen[p], "path %q duplicated", p)
 	}
+}
+
+func TestCandidateRepoPaths_DropsStaleRecentPaths(t *testing.T) {
+	h := newTestHomeWithInstances(t)
+	existing := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "deleted-repo")
+	require.NoError(t, h.appState.AddRecentPath(missing))
+	require.NoError(t, h.appState.AddRecentPath(existing))
+
+	got := h.candidateRepoPaths()
+
+	assert.Contains(t, got, existing, "existing recent path should be offered")
+	assert.NotContains(t, got, missing, "missing recent path should be pruned")
 }

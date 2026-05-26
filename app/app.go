@@ -580,6 +580,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// fresh (debounced) search with the current branch filter.
 		if newPath := m.textInputOverlay.GetSelectedPath(); newPath != "" && newPath != m.newSessionPath {
 			m.newSessionPath = newPath
+			// Validate up front so the picker can flag a non-repo inline, rather than
+			// only rejecting it at submit after the user has filled in the prompt.
+			m.textInputOverlay.SetTargetValidity(git.IsGitRepo(newPath))
 			version := m.textInputOverlay.InvalidateBranchSearch()
 			return m, m.scheduleBranchSearch(m.textInputOverlay.BranchFilter(), version)
 		}
@@ -1048,8 +1051,12 @@ func (m *home) handleError(err error) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	return overlay.NewTextInputOverlayWithBranchPicker(
+	ov := overlay.NewTextInputOverlayWithBranchPicker(
 		"Enter prompt", "", m.appConfig.GetProfiles(), m.candidateRepoPaths())
+	// Seed the initial validity so the picker can flag a non-repo default target
+	// (e.g. when cs was launched outside a git repo) before the user navigates.
+	ov.SetTargetValidity(git.IsGitRepo(m.newSessionPath))
+	return ov
 }
 
 // defaultNewSessionPath returns the contextual target repo for a new session: the
@@ -1084,6 +1091,11 @@ func (m *home) candidateRepoPaths() []string {
 		add(inst.Path)
 	}
 	for _, p := range m.appState.GetRecentPaths() {
+		// Skip recent paths that no longer exist so deleted/moved repos don't clutter
+		// the picker or error only when selected.
+		if info, err := os.Stat(p); err != nil || !info.IsDir() {
+			continue
+		}
 		add(p)
 	}
 	if cwd, err := os.Getwd(); err == nil {

@@ -21,6 +21,11 @@ type DirectoryPicker struct {
 	cursor     int
 	focused    bool
 	width      int
+
+	// validityChecked/selectionValid let the call site surface an inline "(not a git
+	// repo)" hint as the selection changes, instead of only rejecting it at submit.
+	validityChecked bool
+	selectionValid  bool
 }
 
 // NewDirectoryPicker creates a directory picker over the given candidate paths.
@@ -57,6 +62,13 @@ func (dp *DirectoryPicker) Blur() {
 // IsFocused returns whether the directory picker is focused.
 func (dp *DirectoryPicker) IsFocused() bool {
 	return dp.focused
+}
+
+// SetSelectionValidity records whether the currently selected path is a valid git
+// repository, so Render can show an inline indicator while the user is choosing.
+func (dp *DirectoryPicker) SetSelectionValidity(valid bool) {
+	dp.validityChecked = true
+	dp.selectionValid = valid
 }
 
 // HandleKeyPress processes a key event. Returns (consumed, selectionChanged).
@@ -163,23 +175,43 @@ var (
 
 	dpDimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	dpHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Italic(true)
+
+	dpInvalidStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("203"))
 )
 
-// Render renders the directory picker.
+// Render renders the directory picker. When unfocused it collapses to a single line
+// showing the chosen project and how to change it, so the target repo is always
+// visible without crowding the overlay. When focused it expands to the filterable list.
 func (dp *DirectoryPicker) Render() string {
 	var s strings.Builder
+
+	if !dp.focused {
+		s.WriteString(dpLabelStyle.Render("Project: "))
+		if sel := dp.GetSelectedPath(); sel != "" {
+			s.WriteString(dp.displayPath(sel))
+		} else {
+			s.WriteString(dpDimStyle.Render("(none)"))
+		}
+		s.WriteString(dpHintStyle.Render("  (Tab to change)"))
+		return s.String()
+	}
+
 	s.WriteString(dpLabelStyle.Render("Project"))
-	if dp.focused {
-		cursor := dp.filter + "█"
-		s.WriteString(dpFilterStyle.Render(" (filter/path: " + cursor + ")"))
-	} else if dp.filter != "" {
-		s.WriteString(dpDimStyle.Render(" (filter/path: " + dp.filter + ")"))
+	cursor := dp.filter + "█"
+	s.WriteString(dpFilterStyle.Render(" (filter/path: " + cursor + ")"))
+	if dp.validityChecked && !dp.selectionValid {
+		s.WriteString(dpInvalidStyle.Render("  (not a git repo)"))
 	}
 	s.WriteString("\n\n")
 
 	items := dp.visibleItems()
 	if len(items) == 0 {
-		s.WriteString(dpDimStyle.Render("  No matching directories"))
+		s.WriteString(dpDimStyle.Render("  No matches — type a path (/, ~, .) to use another project"))
 		return s.String()
 	}
 

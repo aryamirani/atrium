@@ -285,6 +285,16 @@ func (t *TextInputOverlay) GetSelectedPath() string {
 	return t.directoryPicker.GetSelectedPath()
 }
 
+// SetTargetValidity marks whether the currently selected target directory is a valid
+// git repository, so the picker can surface an inline indicator while the user chooses.
+// No-op when there is no directory picker.
+func (t *TextInputOverlay) SetTargetValidity(valid bool) {
+	if t.directoryPicker == nil {
+		return
+	}
+	t.directoryPicker.SetSelectionValidity(valid)
+}
+
 // GetSelectedBranch returns the selected branch name from the branch picker.
 // Returns empty string if no branch picker is present or "New branch" is selected.
 func (t *TextInputOverlay) GetSelectedBranch() string {

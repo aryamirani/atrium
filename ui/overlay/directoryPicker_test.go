@@ -88,3 +88,40 @@ func TestDirectoryPicker_Backspace(t *testing.T) {
 	assert.True(t, changed)
 	assert.Equal(t, "repoB"[:4], dp.filter)
 }
+
+func TestDirectoryPicker_UnfocusedRenderIsCompactAndShowsTarget(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a", "/repo/b"})
+	out := dp.Render()
+	// The chosen target and the change affordance are always visible...
+	assert.Contains(t, out, "Project:")
+	assert.Contains(t, out, "/repo/a")
+	assert.Contains(t, out, "Tab to change")
+	// ...but the non-selected candidates are not listed when collapsed.
+	assert.NotContains(t, out, "/repo/b")
+}
+
+func TestDirectoryPicker_FocusedRenderListsCandidates(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a", "/repo/b"})
+	dp.Focus()
+	out := dp.Render()
+	assert.Contains(t, out, "/repo/a")
+	assert.Contains(t, out, "/repo/b")
+}
+
+func TestDirectoryPicker_InvalidRepoIndicator(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a"})
+	dp.Focus()
+	dp.SetSelectionValidity(false)
+	assert.Contains(t, dp.Render(), "not a git repo")
+
+	dp.SetSelectionValidity(true)
+	assert.NotContains(t, dp.Render(), "not a git repo")
+}
+
+func TestDirectoryPicker_EmptyMatchHintsFreeText(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a"})
+	dp.Focus()
+	dp.HandleKeyPress(runes("zzz")) // matches nothing, not path-like
+	require.Empty(t, dp.visibleItems())
+	assert.Contains(t, dp.Render(), "type a path")
+}
