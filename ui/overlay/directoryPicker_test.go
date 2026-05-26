@@ -1,0 +1,90 @@
+package overlay
+
+import (
+	"path/filepath"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func runes(s string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
+func TestDirectoryPicker_DedupAndDefaultSelection(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a", "/repo/b", "/repo/a", ""})
+	// Dedup preserves order and drops empties.
+	assert.Equal(t, []string{"/repo/a", "/repo/b"}, dp.candidates)
+	// Cursor starts on the first (default/contextual) candidate.
+	assert.Equal(t, "/repo/a", dp.GetSelectedPath())
+}
+
+func TestDirectoryPicker_Navigation(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a", "/repo/b"})
+
+	consumed, changed := dp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	assert.True(t, consumed)
+	assert.True(t, changed)
+	assert.Equal(t, "/repo/b", dp.GetSelectedPath())
+
+	// Down at the end is consumed but does not change the selection.
+	consumed, changed = dp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	assert.True(t, consumed)
+	assert.False(t, changed)
+	assert.Equal(t, "/repo/b", dp.GetSelectedPath())
+
+	consumed, changed = dp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyUp})
+	assert.True(t, consumed)
+	assert.True(t, changed)
+	assert.Equal(t, "/repo/a", dp.GetSelectedPath())
+}
+
+func TestDirectoryPicker_FilterMatchesCandidates(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/home/me/repoA", "/home/me/other"})
+
+	// Typing a non-path fragment filters the candidates.
+	dp.HandleKeyPress(runes("repo"))
+	items := dp.visibleItems()
+	require.Len(t, items, 1)
+	assert.Equal(t, "/home/me/repoA", items[0])
+	assert.Equal(t, "/home/me/repoA", dp.GetSelectedPath())
+}
+
+func TestDirectoryPicker_FreeTextPathEntry(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/home/me/repoA"})
+
+	// A filter that looks like a path is offered as a selectable entry, resolved to abs.
+	for _, r := range "/tmp/elsewhere" {
+		dp.HandleKeyPress(runes(string(r)))
+	}
+	abs, _ := filepath.Abs("/tmp/elsewhere")
+	assert.Equal(t, abs, dp.GetSelectedPath())
+}
+
+func TestDirectoryPicker_RelativePathExpandsToAbs(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/home/me/repoA"})
+	dp.HandleKeyPress(runes("."))
+	got := dp.GetSelectedPath()
+	assert.True(t, filepath.IsAbs(got), "expected absolute path, got %q", got)
+}
+
+func TestDirectoryPicker_TypingReportsSelectionChanged(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/repo/a"})
+	consumed, changed := dp.HandleKeyPress(runes("x"))
+	assert.True(t, consumed)
+	assert.True(t, changed)
+}
+
+func TestDirectoryPicker_Backspace(t *testing.T) {
+	dp := NewDirectoryPicker([]string{"/home/me/repoA", "/home/me/repoB"})
+	dp.HandleKeyPress(runes("repoB"))
+	assert.Equal(t, "/home/me/repoB", dp.GetSelectedPath())
+
+	// Removing the last char widens the filter back out.
+	consumed, changed := dp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyBackspace})
+	assert.True(t, consumed)
+	assert.True(t, changed)
+	assert.Equal(t, "repoB"[:4], dp.filter)
+}

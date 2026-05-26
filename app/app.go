@@ -74,6 +74,12 @@ type home struct {
 	// promptAfterName tracks if we should enter prompt mode after naming
 	promptAfterName bool
 
+	// newSessionPath is the target repo path for the session currently being created.
+	// It defaults to the contextual repo (the highlighted session's repo, else cwd) and
+	// can be re-pointed via the directory picker in the new-session overlay. It scopes the
+	// branch search and is applied to the instance before Start.
+	newSessionPath string
+
 	// keySent is used to manage underlining menu items
 	keySent bool
 
@@ -506,7 +512,19 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				selectedProgram := m.textInputOverlay.GetSelectedProgram()
 
 				if !selected.Started() {
-					// Shift+N flow: instance not started yet — set branch, start, then send prompt
+					// Shift+N flow: instance not started yet — set target dir, branch,
+					// start, then send prompt.
+					if path := m.textInputOverlay.GetSelectedPath(); path != "" && path != selected.Path {
+						if !git.IsGitRepo(path) {
+							// Keep the overlay open so the user can fix the path.
+							m.textInputOverlay.Submitted = false
+							return m, m.handleError(fmt.Errorf("%q is not a git repository", path))
+						}
+						if err := selected.SetPath(path); err != nil {
+							m.textInputOverlay.Submitted = false
+							return m, m.handleError(err)
+						}
+					}
 					if selectedBranch != "" {
 						selected.SetSelectedBranch(selectedBranch)
 					}
@@ -552,6 +570,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					return nil
 				},
 			)
+		}
+
+		// If the target directory changed in the picker, re-scope the branch search to
+		// the new repo: invalidate in-flight results for the old repo, then schedule a
+		// fresh (debounced) search with the current branch filter.
+		if newPath := m.textInputOverlay.GetSelectedPath(); newPath != "" && newPath != m.newSessionPath {
+			m.newSessionPath = newPath
+			version := m.textInputOverlay.InvalidateBranchSearch()
+			return m, m.scheduleBranchSearch(m.textInputOverlay.BranchFilter(), version)
 		}
 
 		// Schedule a debounced branch search if the filter changed
@@ -615,16 +642,19 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 
-		// Start a background fetch so branches are up to date by the time the picker opens
+		// Derive the contextual target repo before adding the new instance (so the
+		// highlighted instance is still the previous one), and start a background fetch
+		// so branches are up to date by the time the picker opens.
+		m.newSessionPath = m.defaultNewSessionPath()
+		target := m.newSessionPath
 		fetchCmd := func() tea.Msg {
-			currentDir, _ := os.Getwd()
-			git.FetchBranches(currentDir)
+			git.FetchBranches(target)
 			return nil
 		}
 
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    m.newSessionPath,
 			Program: m.program,
 		})
 		if err != nil {
@@ -643,9 +673,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
+		// Derive the contextual target repo before adding the new instance.
+		m.newSessionPath = m.defaultNewSessionPath()
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    m.newSessionPath,
 			Program: m.program,
 		})
 		if err != nil {
@@ -888,10 +920,18 @@ func (m *home) scheduleBranchSearch(filter string, version uint64) tea.Cmd {
 }
 
 // runBranchSearch returns a tea.Cmd that performs the git search in the background.
+// It searches the current new-session target repo (m.newSessionPath), captured at call
+// time so it reflects the directory chosen in the picker rather than the process cwd.
 func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
+	target := m.newSessionPath
 	return func() tea.Msg {
-		currentDir, _ := os.Getwd()
-		branches, err := git.SearchBranches(currentDir, filter)
+		if target == "" {
+			var err error
+			if target, err = os.Getwd(); err != nil {
+				return nil
+			}
+		}
+		branches, err := git.SearchBranches(target, filter)
 		if err != nil {
 			log.WarningLog.Printf("branch search failed: %v", err)
 			return nil
@@ -997,7 +1037,44 @@ func (m *home) handleError(err error) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	return overlay.NewTextInputOverlayWithBranchPicker(
+		"Enter prompt", "", m.appConfig.GetProfiles(), m.candidateRepoPaths())
+}
+
+// defaultNewSessionPath returns the contextual target repo for a new session: the
+// highlighted session's repo, falling back to the current working directory. The
+// empty string is returned only if there is no repo context at all (no highlighted
+// session and cwd is unavailable).
+func (m *home) defaultNewSessionPath() string {
+	if selected := m.list.GetSelectedInstance(); selected != nil && selected.Path != "" {
+		return selected.Path
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return ""
+}
+
+// candidateRepoPaths returns the deduped candidate target paths for the directory
+// picker: the current target first, then existing sessions' repos, then cwd.
+func (m *home) candidateRepoPaths() []string {
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	add(m.newSessionPath)
+	for _, inst := range m.list.GetInstances() {
+		add(inst.Path)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		add(cwd)
+	}
+	return paths
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.

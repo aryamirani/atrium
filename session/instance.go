@@ -189,6 +189,21 @@ func (i *Instance) RepoName() (string, error) {
 	return i.gitWorktree.GetRepoName(), nil
 }
 
+// SetPath sets the repo path for a not-yet-started instance, resolving it to an
+// absolute path (mirroring NewInstance). The worktree is created from this path on
+// Start, so it must be called before the instance is started.
+func (i *Instance) SetPath(path string) error {
+	if i.started {
+		return fmt.Errorf("cannot change path after instance has started")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	i.Path = absPath
+	return nil
+}
+
 func (i *Instance) SetStatus(status Status) {
 	i.Status = status
 }

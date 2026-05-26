@@ -31,55 +31,79 @@ var (
 			Foreground(lipgloss.Color("240"))
 )
 
+// focusStop identifies a focusable component in the overlay. The overlay holds an
+// ordered slice of the stops that are actually present, so adding or removing a
+// component is a matter of editing that slice rather than juggling hardcoded indices.
+type focusStop int
+
+const (
+	stopDirectory focusStop = iota
+	stopProfile
+	stopTextarea
+	stopBranch
+	stopEnter
+)
+
 // TextInputOverlay represents a text input overlay with state management.
 type TextInputOverlay struct {
-	textarea      textarea.Model
-	Title         string
-	FocusIndex    int // index into focusable stops
-	Submitted     bool
-	Canceled      bool
-	OnSubmit      func()
-	width         int
-	height        int
-	profilePicker *ProfilePicker
-	branchPicker  *BranchPicker
-	numStops      int // total number of focus stops
+	textarea        textarea.Model
+	Title           string
+	FocusIndex      int // index into stops
+	Submitted       bool
+	Canceled        bool
+	OnSubmit        func()
+	width           int
+	height          int
+	directoryPicker *DirectoryPicker
+	profilePicker   *ProfilePicker
+	branchPicker    *BranchPicker
+	stops           []focusStop // ordered focusable stops actually present
 }
 
 // NewTextInputOverlay creates a new text input overlay with the given title and initial value.
 func NewTextInputOverlay(title string, initialValue string) *TextInputOverlay {
 	ti := newTextarea(initialValue)
-	return &TextInputOverlay{
+	overlay := &TextInputOverlay{
 		textarea: ti,
 		Title:    title,
-		numStops: 2, // textarea + enter button
+		stops:    []focusStop{stopTextarea, stopEnter},
 	}
+	overlay.focusStop(stopTextarea)
+	return overlay
 }
 
-// NewTextInputOverlayWithBranchPicker creates a text input overlay that includes an
-// empty branch picker. Results are populated asynchronously via SetBranchResults.
-func NewTextInputOverlayWithBranchPicker(title string, initialValue string, profiles []config.Profile) *TextInputOverlay {
+// NewTextInputOverlayWithBranchPicker creates a text input overlay that includes a
+// directory picker (for choosing the target repo) and a branch picker. Branch results
+// are populated asynchronously via SetBranchResults. dirCandidates is the ordered list
+// of candidate repo paths, with the default/contextual target first.
+func NewTextInputOverlayWithBranchPicker(title string, initialValue string, profiles []config.Profile, dirCandidates []string) *TextInputOverlay {
 	ti := newTextarea(initialValue)
 	bp := NewBranchPicker()
+	dp := NewDirectoryPicker(dirCandidates)
 
 	var pp *ProfilePicker
 	if len(profiles) > 0 {
 		pp = NewProfilePicker(profiles)
 	}
 
-	numStops := 3 // textarea + branch picker + enter button
+	// Build the ordered list of stops. Directory precedes branch because branches are
+	// scoped to the chosen directory. Focus starts on the textarea so the user can type
+	// the prompt immediately.
+	stops := []focusStop{stopDirectory}
 	if pp != nil && pp.HasMultiple() {
-		numStops = 4 // profile picker + textarea + branch picker + enter button
+		stops = append(stops, stopProfile)
 	}
+	stops = append(stops, stopTextarea, stopBranch, stopEnter)
 
 	overlay := &TextInputOverlay{
-		textarea:      ti,
-		Title:         title,
-		profilePicker: pp,
-		branchPicker:  bp,
-		numStops:      numStops,
+		textarea:        ti,
+		Title:           title,
+		directoryPicker: dp,
+		profilePicker:   pp,
+		branchPicker:    bp,
+		stops:           stops,
 	}
-	overlay.updateFocusState()
+	overlay.focusStop(stopTextarea)
 	return overlay
 }
 
@@ -99,6 +123,9 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	t.textarea.SetHeight(height)
 	t.width = width
 	t.height = height
+	if t.directoryPicker != nil {
+		t.directoryPicker.SetWidth(width - 6)
+	}
 	if t.branchPicker != nil {
 		t.branchPicker.SetWidth(width - 6)
 	}
@@ -117,33 +144,35 @@ func (t *TextInputOverlay) View() string {
 	return t.Render()
 }
 
-// isProfilePicker returns true if the current focus is on the profile picker.
-func (t *TextInputOverlay) isProfilePicker() bool {
-	return t.profilePicker != nil && t.profilePicker.HasMultiple() && t.FocusIndex == 0
+// currentStop returns the focusStop the FocusIndex currently points at.
+func (t *TextInputOverlay) currentStop() focusStop {
+	if t.FocusIndex < 0 || t.FocusIndex >= len(t.stops) {
+		return stopEnter
+	}
+	return t.stops[t.FocusIndex]
 }
 
-// isTextarea returns true if the current focus is on the textarea.
-func (t *TextInputOverlay) isTextarea() bool {
-	if t.profilePicker != nil && t.profilePicker.HasMultiple() {
-		return t.FocusIndex == 1
+func (t *TextInputOverlay) isDirectoryPicker() bool { return t.currentStop() == stopDirectory }
+func (t *TextInputOverlay) isProfilePicker() bool   { return t.currentStop() == stopProfile }
+func (t *TextInputOverlay) isTextarea() bool        { return t.currentStop() == stopTextarea }
+func (t *TextInputOverlay) isBranchPicker() bool    { return t.currentStop() == stopBranch }
+func (t *TextInputOverlay) isEnterButton() bool     { return t.currentStop() == stopEnter }
+
+// indexOfStop returns the FocusIndex of a stop kind, or -1 if absent.
+func (t *TextInputOverlay) indexOfStop(kind focusStop) int {
+	for i, s := range t.stops {
+		if s == kind {
+			return i
+		}
 	}
-	return t.FocusIndex == 0
+	return -1
 }
 
-// isEnterButton returns true if the current focus is on the enter button.
-func (t *TextInputOverlay) isEnterButton() bool {
-	return t.FocusIndex == t.numStops-1
-}
-
-// isBranchPicker returns true if the current focus is on the branch picker.
-func (t *TextInputOverlay) isBranchPicker() bool {
-	if t.branchPicker == nil {
-		return false
+// focusStop moves focus to the given stop kind (if present) and syncs focus state.
+func (t *TextInputOverlay) focusStop(kind focusStop) {
+	if i := t.indexOfStop(kind); i >= 0 {
+		t.setFocusIndex(i)
 	}
-	if t.profilePicker != nil && t.profilePicker.HasMultiple() {
-		return t.FocusIndex == 2
-	}
-	return t.FocusIndex == 1
 }
 
 // setFocusIndex sets the focus index and syncs focus state.
@@ -152,12 +181,19 @@ func (t *TextInputOverlay) setFocusIndex(i int) {
 	t.updateFocusState()
 }
 
-// updateFocusState syncs the textarea/branchPicker/profilePicker focus/blur state.
+// updateFocusState syncs each component's focus/blur state to the current stop.
 func (t *TextInputOverlay) updateFocusState() {
 	if t.isTextarea() {
 		t.textarea.Focus()
 	} else {
 		t.textarea.Blur()
+	}
+	if t.directoryPicker != nil {
+		if t.isDirectoryPicker() {
+			t.directoryPicker.Focus()
+		} else {
+			t.directoryPicker.Blur()
+		}
 	}
 	if t.branchPicker != nil {
 		if t.isBranchPicker() {
@@ -178,12 +214,13 @@ func (t *TextInputOverlay) updateFocusState() {
 // HandleKeyPress processes a key press and updates the state accordingly.
 // Returns (shouldClose, branchFilterChanged).
 func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
+	numStops := len(t.stops)
 	switch msg.Type {
 	case tea.KeyTab:
-		t.setFocusIndex((t.FocusIndex + 1) % t.numStops)
+		t.setFocusIndex((t.FocusIndex + 1) % numStops)
 		return false, false
 	case tea.KeyShiftTab:
-		t.setFocusIndex((t.FocusIndex - 1 + t.numStops) % t.numStops)
+		t.setFocusIndex((t.FocusIndex - 1 + numStops) % numStops)
 		return false, false
 	case tea.KeyEsc:
 		t.Canceled = true
@@ -198,11 +235,11 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 		}
 		if t.isBranchPicker() {
 			// Enter on branch picker = advance to enter button
-			t.setFocusIndex(t.numStops - 1)
+			t.setFocusIndex(numStops - 1)
 			return false, false
 		}
-		if t.isProfilePicker() {
-			// Enter on profile picker = advance to textarea
+		if t.isDirectoryPicker() || t.isProfilePicker() {
+			// Enter on directory/profile picker = advance to the next stop
 			t.setFocusIndex(t.FocusIndex + 1)
 			return false, false
 		}
@@ -214,6 +251,10 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 	default:
 		if t.isTextarea() {
 			t.textarea, _ = t.textarea.Update(msg)
+			return false, false
+		}
+		if t.isDirectoryPicker() {
+			t.directoryPicker.HandleKeyPress(msg)
 			return false, false
 		}
 		if t.isProfilePicker() {
@@ -233,6 +274,15 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 // GetValue returns the current value of the text input.
 func (t *TextInputOverlay) GetValue() string {
 	return t.textarea.Value()
+}
+
+// GetSelectedPath returns the selected target directory from the directory picker.
+// Returns empty string if no directory picker is present.
+func (t *TextInputOverlay) GetSelectedPath() string {
+	if t.directoryPicker == nil {
+		return ""
+	}
+	return t.directoryPicker.GetSelectedPath()
 }
 
 // GetSelectedBranch returns the selected branch name from the branch picker.
@@ -268,6 +318,16 @@ func (t *TextInputOverlay) BranchFilter() string {
 		return ""
 	}
 	return t.branchPicker.GetFilter()
+}
+
+// InvalidateBranchSearch bumps the branch filter version and clears stale results,
+// returning the new version. Used when the target directory changes so in-flight
+// searches for the previous repo are rejected. Returns 0 if no branch picker.
+func (t *TextInputOverlay) InvalidateBranchSearch() uint64 {
+	if t.branchPicker == nil {
+		return 0
+	}
+	return t.branchPicker.Invalidate()
 }
 
 // SetBranchResults updates the branch picker with search results.
@@ -310,6 +370,12 @@ func (t *TextInputOverlay) Render() string {
 
 	// Build the view
 	var content string
+
+	// Render directory picker if present, at the very top.
+	if t.directoryPicker != nil {
+		content += t.directoryPicker.Render() + "\n\n"
+		content += divider + "\n\n"
+	}
 
 	// Render profile picker if present, above the prompt
 	if t.profilePicker != nil {

@@ -59,6 +59,16 @@ func (bp *BranchPicker) GetFilterVersion() uint64 {
 	return bp.filterVersion
 }
 
+// Invalidate bumps the filter version and clears stale results, returning the new
+// version. Used when the target repo changes so in-flight searches for the previous
+// repo are rejected by SetResults' version check.
+func (bp *BranchPicker) Invalidate() uint64 {
+	bp.filterVersion++
+	bp.results = nil
+	bp.cursor = 0
+	return bp.filterVersion
+}
+
 // HandleKeyPress processes a key event. Returns (consumed, filterChanged).
 func (bp *BranchPicker) HandleKeyPress(msg tea.KeyMsg) (consumed bool, filterChanged bool) {
 	switch msg.Type {
