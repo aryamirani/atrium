@@ -30,6 +30,43 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
+func TestDeliverReadyPrompts(t *testing.T) {
+	newInst := func(prompt string) *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "s", Path: t.TempDir(), Program: "claude",
+		})
+		require.NoError(t, err)
+		inst.Prompt = prompt
+		return inst
+	}
+
+	t.Run("ready instance with a queued prompt is delivered once and cleared", func(t *testing.T) {
+		inst := newInst("do the thing")
+		cmds := deliverReadyPrompts([]instanceMetaResult{
+			{instance: inst, readyForPrompt: true},
+		})
+		require.Len(t, cmds, 1)
+		require.Equal(t, "", inst.Prompt, "prompt must be cleared so it is never sent twice")
+	})
+
+	t.Run("ready instance with no queued prompt sends nothing", func(t *testing.T) {
+		inst := newInst("")
+		cmds := deliverReadyPrompts([]instanceMetaResult{
+			{instance: inst, readyForPrompt: true},
+		})
+		require.Empty(t, cmds)
+	})
+
+	t.Run("queued prompt is not delivered until the instance is ready", func(t *testing.T) {
+		inst := newInst("waiting on trust screen")
+		cmds := deliverReadyPrompts([]instanceMetaResult{
+			{instance: inst, readyForPrompt: false},
+		})
+		require.Empty(t, cmds)
+		require.Equal(t, "waiting on trust screen", inst.Prompt, "prompt must remain queued")
+	})
+}
+
 // TestConfirmationModalStateTransitions tests state transitions without full instance setup
 func TestConfirmationModalStateTransitions(t *testing.T) {
 	// Create a minimal home struct for testing state transitions

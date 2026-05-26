@@ -152,6 +152,18 @@ func (t *TmuxSession) Start(workDir string) error {
 	return nil
 }
 
+// containsStartupGate reports whether the pane is showing a one-time setup/trust
+// gate that intercepts keystrokes (claude's trust-folder or new-MCP-server screen,
+// or the non-claude documentation-url screen). Keystrokes sent while a gate is up
+// are consumed by the gate rather than the agent's input box.
+func containsStartupGate(program, content string) bool {
+	if strings.HasSuffix(program, ProgramClaude) {
+		return strings.Contains(content, "Do you trust the files in this folder?") ||
+			strings.Contains(content, "new MCP server")
+	}
+	return strings.Contains(content, "Open documentation url for more info")
+}
+
 // CheckAndHandleTrustPrompt checks the pane content once for a trust prompt and dismisses it if found.
 // Returns true if the prompt was found and handled.
 func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
@@ -160,23 +172,31 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 		return false
 	}
 
+	if !containsStartupGate(t.program, content) {
+		return false
+	}
+
 	if strings.HasSuffix(t.program, ProgramClaude) {
-		if strings.Contains(content, "Do you trust the files in this folder?") ||
-			strings.Contains(content, "new MCP server") {
-			if err := t.TapEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust/MCP screen: %v", err)
-			}
-			return true
+		if err := t.TapEnter(); err != nil {
+			log.ErrorLog.Printf("could not tap enter on trust/MCP screen: %v", err)
 		}
 	} else {
-		if strings.Contains(content, "Open documentation url for more info") {
-			if err := t.TapDAndEnter(); err != nil {
-				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
-			}
-			return true
+		if err := t.TapDAndEnter(); err != nil {
+			log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
 		}
 	}
-	return false
+	return true
+}
+
+// IsReadyForPrompt reports whether the agent has rendered and is past any startup
+// gate, so a queued first message can be submitted into its input box. It is a
+// read-only check: it captures the pane once and never sends keystrokes.
+func (t *TmuxSession) IsReadyForPrompt() bool {
+	content, err := t.CapturePaneContent()
+	if err != nil || strings.TrimSpace(content) == "" {
+		return false
+	}
+	return !containsStartupGate(t.program, content)
 }
 
 // Restore attaches to an existing session and restores the window size

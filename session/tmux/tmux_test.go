@@ -49,6 +49,83 @@ func TestSanitizeName(t *testing.T) {
 	require.Equal(t, TmuxPrefix+"asdf__asdf", session.sanitizedName)
 }
 
+func TestIsReadyForPrompt(t *testing.T) {
+	cases := []struct {
+		name    string
+		program string
+		content string
+		want    bool
+	}{
+		{
+			name:    "claude trust screen is not ready",
+			program: "claude",
+			content: "Do you trust the files in this folder?\n  Yes  No",
+			want:    false,
+		},
+		{
+			name:    "claude new MCP server screen is not ready",
+			program: "claude",
+			content: "new MCP server detected. Approve?",
+			want:    false,
+		},
+		{
+			name:    "empty pane is not ready",
+			program: "claude",
+			content: "   \n\t\n",
+			want:    false,
+		},
+		{
+			name:    "claude idle input box is ready",
+			program: "claude",
+			content: "╭───╮\n│ > │  ? for shortcuts\n╰───╯",
+			want:    true,
+		},
+		{
+			name:    "non-claude doc-url gate is not ready",
+			program: "aider",
+			content: "Open documentation url for more info? (Y)es/(N)o",
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ptyFactory := NewMockPtyFactory(t)
+			cmdExec := cmd_test.MockCmdExec{
+				OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+					return []byte(tc.content), nil
+				},
+			}
+			session := newTmuxSession("ready-test", tc.program, ptyFactory, cmdExec)
+			require.Equal(t, tc.want, session.IsReadyForPrompt())
+		})
+	}
+}
+
+// Regression: after extracting containsStartupGate (shared by CheckAndHandleTrustPrompt
+// and IsReadyForPrompt), it must still recognize each gate string.
+func TestContainsStartupGate(t *testing.T) {
+	cases := []struct {
+		name    string
+		program string
+		content string
+		want    bool
+	}{
+		{"claude trust folder", "claude", "Do you trust the files in this folder?", true},
+		{"claude new MCP server", "claude", "A new MCP server was found", true},
+		{"non-claude doc url", "aider", "Open documentation url for more info", true},
+		{"claude idle box has no gate", "claude", "│ > │  ? for shortcuts", false},
+		{"claude ignores non-claude gate string", "claude", "Open documentation url for more info", false},
+		{"non-claude ignores claude gate string", "aider", "Do you trust the files in this folder?", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, containsStartupGate(tc.program, tc.content))
+		})
+	}
+}
+
 func TestStartTmuxSession(t *testing.T) {
 	ptyFactory := NewMockPtyFactory(t)
 
