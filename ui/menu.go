@@ -49,6 +49,9 @@ type Menu struct {
 	instance      *session.Instance
 	activeTab     int
 
+	// newInstanceHint is the target repo shown while naming a new session.
+	newInstanceHint string
+
 	// keyDown is the key which is pressed. The default is -1.
 	keyDown keys.KeyName
 }
@@ -78,6 +81,11 @@ func (m *Menu) ClearKeydown() {
 func (m *Menu) SetState(state MenuState) {
 	m.state = state
 	m.updateOptions()
+}
+
+// SetNewInstanceHint sets the target-repo hint shown while naming a new session.
+func (m *Menu) SetNewInstanceHint(repo string) {
+	m.newInstanceHint = repo
 }
 
 // SetInstance updates the current instance and refreshes menu options
@@ -220,6 +228,13 @@ func (m *Menu) String() string {
 				s.WriteString(sepStyle.Render(separator))
 			}
 		}
+	}
+
+	// While naming a new session, show which repo it will be created in.
+	if m.state == StateNewInstance && m.newInstanceHint != "" {
+		s.WriteString(sepStyle.Render(verticalSeparator))
+		s.WriteString(keyStyle.Render("in "))
+		s.WriteString(descStyle.Render(m.newInstanceHint))
 	}
 
 	centeredMenuText := menuStyle.Render(s.String())

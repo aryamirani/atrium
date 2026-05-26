@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -667,6 +668,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
+		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
 		m.promptAfterName = true
 
 		return m, fetchCmd
@@ -690,6 +692,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
 		m.state = stateNew
 		m.menu.SetState(ui.StateNewInstance)
+		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
 
 		return m, nil
 	case keys.KeyUp:
