@@ -265,7 +265,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.instance.SetDiffStats(r.diffStats)
 			}
 		}
-		return m, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance())
+		cmds := deliverReadyPrompts(msg.results)
+		cmds = append(cmds, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance()))
+		return m, tea.Batch(cmds...)
 	case tea.MouseMsg:
 		// Handle mouse wheel events for scrolling the diff/preview pane
 		if msg.Action == tea.MouseActionPress {
@@ -327,13 +329,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.instance.AutoYes = true
 		}
 
-		// If the instance was created with a prompt (the N form), send it now that it is up.
-		if msg.instance.Prompt != "" {
-			if err := msg.instance.SendPrompt(msg.instance.Prompt); err != nil {
-				log.ErrorLog.Printf("failed to send prompt: %v", err)
-			}
-			msg.instance.Prompt = ""
-		}
+		// A prompt from the N form is delivered later by the metadata tick loop,
+		// once the agent is past its startup/trust screen and ready for input
+		// (see deliverReadyPrompts). Sending here races the agent's boot and lands
+		// keystrokes in the trust dialog instead of the input box.
 		m.menu.SetState(ui.StateDefault)
 		m.showHelpScreen(helpStart(msg.instance), nil)
 
@@ -901,10 +900,37 @@ func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
 // instanceMetaResult holds the results of a single instance's metadata update,
 // computed in a background goroutine.
 type instanceMetaResult struct {
-	instance  *session.Instance
-	updated   bool
-	hasPrompt bool
-	diffStats *git.DiffStats
+	instance       *session.Instance
+	updated        bool
+	hasPrompt      bool
+	readyForPrompt bool
+	diffStats      *git.DiffStats
+}
+
+// sendPromptCmd submits a queued initial prompt to an instance off the UI thread,
+// so the SendKeys→Enter pause inside SendPrompt does not block rendering.
+func sendPromptCmd(instance *session.Instance, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		if err := instance.SendPrompt(prompt); err != nil {
+			log.ErrorLog.Printf("failed to send queued prompt: %v", err)
+		}
+		return nil
+	}
+}
+
+// deliverReadyPrompts submits each ready instance's queued prompt and returns the
+// commands that perform the sends. The prompt is cleared synchronously here so it
+// is dispatched at most once, even if a later tick also reports the instance ready.
+func deliverReadyPrompts(results []instanceMetaResult) []tea.Cmd {
+	var cmds []tea.Cmd
+	for _, r := range results {
+		if r.readyForPrompt && r.instance.Prompt != "" {
+			prompt := r.instance.Prompt
+			r.instance.Prompt = ""
+			cmds = append(cmds, sendPromptCmd(r.instance, prompt))
+		}
+	}
+	return cmds
 }
 
 // metadataUpdateDoneMsg is sent when the background metadata update completes.
@@ -966,6 +992,13 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 				r := &results[i]
 				r.instance = instance
 				r.updated, r.hasPrompt = instance.HasUpdated()
+				// Only probe readiness while a prompt is actually queued (a brief
+				// window after a new session), so the extra pane capture is rare.
+				// Require one stable tick (!updated) to avoid the post-trust
+				// "loading" transition window.
+				if instance.Prompt != "" {
+					r.readyForPrompt = !r.updated && instance.IsReadyForPrompt()
+				}
 				if instance == selected {
 					r.diffStats = instance.ComputeDiff()
 				} else {

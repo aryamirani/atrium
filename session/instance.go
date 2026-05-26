@@ -371,6 +371,15 @@ func (i *Instance) CheckAndHandleTrustPrompt() bool {
 	return i.tmuxSession.CheckAndHandleTrustPrompt()
 }
 
+// IsReadyForPrompt reports whether the agent has finished booting and is past any
+// startup gate, so a queued initial prompt can be submitted into its input box.
+func (i *Instance) IsReadyForPrompt() bool {
+	if !i.started || i.tmuxSession == nil {
+		return false
+	}
+	return i.tmuxSession.IsReadyForPrompt()
+}
+
 // TapEnter sends an enter key press to the tmux session if AutoYes is enabled.
 func (i *Instance) TapEnter() {
 	if !i.started || !i.AutoYes {
