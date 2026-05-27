@@ -33,6 +33,14 @@ const (
 	KeyMoveUp
 	KeyMoveDown
 
+	// Whole-group reorder keybindings
+	KeyMoveGroupUp
+	KeyMoveGroupDown
+
+	// Group collapse keybindings
+	KeyCollapseToggle
+	KeyCollapseAll
+
 	KeyRename // Rename the selected session's display label
 )
 
@@ -46,6 +54,10 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"shift+down": KeyShiftDown,
 	"J":          KeyMoveDown,
 	"K":          KeyMoveUp,
+	"{":          KeyMoveGroupUp,
+	"}":          KeyMoveGroupDown,
+	" ":          KeyCollapseToggle,
+	"Z":          KeyCollapseAll,
 	"N":          KeyPrompt,
 	"enter":      KeyEnter,
 	"o":          KeyEnter,
@@ -130,6 +142,23 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyMoveDown: key.NewBinding(
 		key.WithKeys("J"),
 		key.WithHelp("J", "move down"),
+	),
+
+	KeyMoveGroupUp: key.NewBinding(
+		key.WithKeys("{"),
+		key.WithHelp("{", "move group up"),
+	),
+	KeyMoveGroupDown: key.NewBinding(
+		key.WithKeys("}"),
+		key.WithHelp("}", "move group down"),
+	),
+	KeyCollapseToggle: key.NewBinding(
+		key.WithKeys(" "),
+		key.WithHelp("space", "collapse/expand group"),
+	),
+	KeyCollapseAll: key.NewBinding(
+		key.WithKeys("Z"),
+		key.WithHelp("Z", "collapse/expand all"),
 	),
 
 	// -- Special keybindings --

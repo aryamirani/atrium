@@ -173,6 +173,9 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 			instance.AutoYes = true
 		}
 	}
+	// Restore folded groups only after every instance is loaded — AddInstance auto-expands the
+	// group it inserts into, so applying persisted folds earlier would be undone by the loop.
+	h.list.SetCollapsedRepos(appState.GetCollapsedRepos())
 
 	return h
 }
@@ -809,6 +812,38 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyMoveDown:
 		if m.list.MoveDown() {
 			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				return m, m.handleError(err)
+			}
+			return m, m.instanceChanged()
+		}
+		return m, nil
+	case keys.KeyMoveGroupUp:
+		if m.list.MoveGroupUp() {
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				return m, m.handleError(err)
+			}
+			return m, m.instanceChanged()
+		}
+		return m, nil
+	case keys.KeyMoveGroupDown:
+		if m.list.MoveGroupDown() {
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				return m, m.handleError(err)
+			}
+			return m, m.instanceChanged()
+		}
+		return m, nil
+	case keys.KeyCollapseToggle:
+		if m.list.ToggleCollapse() {
+			if err := m.appState.SetCollapsedRepos(m.list.CollapsedRepos()); err != nil {
+				return m, m.handleError(err)
+			}
+			return m, m.instanceChanged()
+		}
+		return m, nil
+	case keys.KeyCollapseAll:
+		if m.list.ToggleCollapseAll() {
+			if err := m.appState.SetCollapsedRepos(m.list.CollapsedRepos()); err != nil {
 				return m, m.handleError(err)
 			}
 			return m, m.instanceChanged()

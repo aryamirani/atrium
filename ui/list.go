@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -116,17 +117,34 @@ func (l *List) distinctRepoCount() int {
 	return len(seen)
 }
 
-// renderRepoHeader renders a repo group header as an uppercased name followed by a
-// dim rule filling the rest of the panel width, so it reads as a section divider.
-func (l *List) renderRepoHeader(key string) string {
-	name := strings.ToUpper(key)
+// renderRepoHeader renders a repo group header as a fold marker, the uppercased name (with a
+// member count when collapsed), and a dim rule filling the rest of the panel width, so it
+// reads as a section divider. A collapsed group's header doubles as its selectable row, so it
+// gets the same left accent bar as a selected item when selected is true.
+func (l *List) renderRepoHeader(key string, collapsed bool, count int, selected bool) string {
+	marker := "▾ "
+	if collapsed {
+		marker = "▸ "
+	}
+	name := marker + strings.ToUpper(key)
+	if collapsed {
+		name = fmt.Sprintf("%s (%d)", name, count)
+	}
 	header := repoHeaderStyle.Render(name)
-	// repoHeaderStyle pads the name with one space on each side.
+	// repoHeaderStyle pads the name with one space on each side; a selected header also gains
+	// a one-cell left accent bar, so reserve for both when sizing the trailing rule.
 	ruleLen := AdjustPreviewWidth(l.width) - runewidth.StringWidth(name) - 2
+	if selected {
+		ruleLen--
+	}
 	if ruleLen < 0 {
 		ruleLen = 0
 	}
-	return header + repoRuleStyle.Render(strings.Repeat("─", ruleLen))
+	line := header + repoRuleStyle.Render(strings.Repeat("─", ruleLen))
+	if selected {
+		return selectedItemStyle.Render(line)
+	}
+	return line
 }
 
 type List struct {
@@ -135,13 +153,19 @@ type List struct {
 	height, width int
 	renderer      *InstanceRenderer
 	autoyes       bool
+	// collapsed records which repo groups are folded, keyed by repoKey. It is a pure
+	// display/navigation flag — never authoritative over membership or order, which stay
+	// derived from items. All reads go through effectiveCollapsed so the "only meaningful
+	// with >1 repo" rule is enforced in exactly one place.
+	collapsed map[string]bool
 }
 
 func NewList(spinner *spinner.Model, autoYes bool) *List {
 	return &List{
-		items:    []*session.Instance{},
-		renderer: &InstanceRenderer{spinner: spinner},
-		autoyes:  autoYes,
+		items:     []*session.Instance{},
+		renderer:  &InstanceRenderer{spinner: spinner},
+		autoyes:   autoYes,
+		collapsed: map[string]bool{},
 	}
 }
 
@@ -352,42 +376,59 @@ func (l *List) String() string {
 	b.WriteString("\n")
 	b.WriteString("\n")
 
-	// Render the list, grouping consecutive same-repo instances under a header. Headers
-	// are emitted within the item loop (not as selectable rows), so selectedIdx stays a
-	// flat index into l.items and navigation/reorder are unaffected. Items are not sorted:
-	// headers annotate the runs in the user's existing (reorderable) order.
+	// Render the list group by group, in the user's existing (reorderable) order. Headers are
+	// shown only with more than one repo, and are not selectable rows for expanded groups, so
+	// selectedIdx stays a flat index into l.items. A collapsed group renders only its header
+	// (which doubles as its anchor's row) and suppresses its members.
 	showRepos := l.distinctRepoCount() > 1
-	prevRepo := ""
-	for i, item := range l.items {
-		key := repoKey(item)
-		newGroup := showRepos && key != prevRepo
-		if i > 0 {
-			// Looser spacing before a new repo group, tighter between items in a group.
-			if newGroup {
-				b.WriteString("\n\n")
-			} else {
+	first := true
+	for i := 0; i < len(l.items); {
+		key := repoKey(l.items[i])
+		start, end := l.groupBounds(i)
+		collapsed := showRepos && l.collapsed[key]
+
+		// Looser spacing before each group; tighter spacing between items is handled below.
+		if !first {
+			b.WriteString("\n\n")
+		}
+		first = false
+
+		if showRepos {
+			b.WriteString(l.renderRepoHeader(key, collapsed, end-start, collapsed && l.selectedIdx == start))
+			if !collapsed {
 				b.WriteString("\n")
 			}
 		}
-		if newGroup {
-			b.WriteString(l.renderRepoHeader(key))
-			b.WriteString("\n")
-			prevRepo = key
+		if !collapsed {
+			for j := start; j < end; j++ {
+				if j > start {
+					b.WriteString("\n")
+				}
+				b.WriteString(l.renderer.Render(l.items[j], j+1, j == l.selectedIdx))
+			}
 		}
-		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx))
+		i = end
 	}
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
-// Down selects the next item in the list.
+// Down selects the next visible item in the list, wrapping at the end and skipping the hidden
+// members of collapsed groups.
 func (l *List) Down() {
 	if len(l.items) == 0 {
 		return
 	}
-	if l.selectedIdx < len(l.items)-1 {
-		l.selectedIdx++
-	} else {
-		l.selectedIdx = 0
+	idx := l.selectedIdx
+	for i := 0; i < len(l.items); i++ {
+		if idx < len(l.items)-1 {
+			idx++
+		} else {
+			idx = 0
+		}
+		if !l.isHidden(idx) {
+			l.selectedIdx = idx
+			return
+		}
 	}
 }
 
@@ -410,6 +451,9 @@ func (l *List) Kill() {
 
 	// Since there's items after this, the selectedIdx can stay the same.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
+	// Removing an item can shift the selection onto a now-hidden index (or off the end), so
+	// re-establish the navigable-selection invariant.
+	l.clampSelectionToNavigable()
 }
 
 func (l *List) Attach() (chan struct{}, error) {
@@ -417,15 +461,23 @@ func (l *List) Attach() (chan struct{}, error) {
 	return targetInstance.Attach()
 }
 
-// Up selects the prev item in the list.
+// Up selects the prev visible item in the list, wrapping at the top and skipping the hidden
+// members of collapsed groups.
 func (l *List) Up() {
 	if len(l.items) == 0 {
 		return
 	}
-	if l.selectedIdx > 0 {
-		l.selectedIdx--
-	} else {
-		l.selectedIdx = len(l.items) - 1
+	idx := l.selectedIdx
+	for i := 0; i < len(l.items); i++ {
+		if idx > 0 {
+			idx--
+		} else {
+			idx = len(l.items) - 1
+		}
+		if !l.isHidden(idx) {
+			l.selectedIdx = idx
+			return
+		}
 	}
 }
 
@@ -451,6 +503,10 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 	l.items = append(l.items, nil)
 	copy(l.items[insertAt+1:], l.items[insertAt:])
 	l.items[insertAt] = instance
+	// A newly added session must never land hidden inside a folded group, so expand its group.
+	// During startup restore the collapsed set is still empty (it is applied after this loop),
+	// so this is a no-op there and doesn't clobber persisted folds.
+	delete(l.collapsed, key)
 	// Keep the selection on the same logical item if we inserted at or before it.
 	if insertAt <= l.selectedIdx && len(l.items) > 1 {
 		l.selectedIdx++
@@ -474,11 +530,13 @@ func (l *List) SetSelectedInstance(idx int) {
 	l.selectedIdx = idx
 }
 
-// SelectInstance finds and selects the given instance in the list.
+// SelectInstance finds and selects the given instance in the list. If the target sits inside a
+// collapsed group, the selection snaps to that group's anchor so the cursor stays visible.
 func (l *List) SelectInstance(target *session.Instance) {
 	for i, inst := range l.items {
 		if inst == target {
 			l.SetSelectedInstance(i)
+			l.clampSelectionToNavigable()
 			return
 		}
 	}
@@ -489,6 +547,10 @@ func (l *List) SelectInstance(target *session.Instance) {
 // (Single-repo lists share one key, so reordering stays unrestricted there.)
 func (l *List) MoveUp() bool {
 	if l.selectedIdx <= 0 || len(l.items) < 2 {
+		return false
+	}
+	// A collapsed group shows no siblings to swap with, so within-group reorder is inert.
+	if l.effectiveCollapsed(repoKey(l.items[l.selectedIdx])) {
 		return false
 	}
 	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[l.selectedIdx-1]) {
@@ -505,11 +567,179 @@ func (l *List) MoveDown() bool {
 	if l.selectedIdx >= len(l.items)-1 || len(l.items) < 2 {
 		return false
 	}
+	if l.effectiveCollapsed(repoKey(l.items[l.selectedIdx])) {
+		return false
+	}
 	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[l.selectedIdx+1]) {
 		return false
 	}
 	l.items[l.selectedIdx], l.items[l.selectedIdx+1] = l.items[l.selectedIdx+1], l.items[l.selectedIdx]
 	l.selectedIdx++
+	return true
+}
+
+// groupBounds returns the [start, end) range of the contiguous run of items sharing the
+// repoKey of the item at idx — i.e. the repo group idx belongs to. Returns an empty range
+// for an out-of-bounds idx. This is the single primitive the whole-group operations build on.
+func (l *List) groupBounds(idx int) (start, end int) {
+	if idx < 0 || idx >= len(l.items) {
+		return idx, idx
+	}
+	key := repoKey(l.items[idx])
+	start = idx
+	for start > 0 && repoKey(l.items[start-1]) == key {
+		start--
+	}
+	end = idx + 1
+	for end < len(l.items) && repoKey(l.items[end]) == key {
+		end++
+	}
+	return start, end
+}
+
+// effectiveCollapsed reports whether a group is folded *and* folding is meaningful. Folding
+// is only meaningful when more than one repo is present (headers don't render otherwise), so
+// this guard lives here and every collapse read goes through it — preventing a stale flag from
+// hiding the sole remaining group after others are killed.
+func (l *List) effectiveCollapsed(key string) bool {
+	return l.distinctRepoCount() > 1 && l.collapsed[key]
+}
+
+// isHidden reports whether the item at idx is suppressed from view: a member of a collapsed
+// group other than its first item (the anchor), which stands in for the whole group.
+func (l *List) isHidden(idx int) bool {
+	if !l.effectiveCollapsed(repoKey(l.items[idx])) {
+		return false
+	}
+	start, _ := l.groupBounds(idx)
+	return idx != start
+}
+
+// clampSelectionToNavigable enforces the invariant that the selection always rests on a
+// visible item. It snaps an out-of-bounds or hidden selectedIdx to its group anchor. This is
+// the single place that invariant is maintained, so every mutation just calls it afterward.
+func (l *List) clampSelectionToNavigable() {
+	if len(l.items) == 0 {
+		l.selectedIdx = 0
+		return
+	}
+	if l.selectedIdx < 0 {
+		l.selectedIdx = 0
+	} else if l.selectedIdx >= len(l.items) {
+		l.selectedIdx = len(l.items) - 1
+	}
+	if l.isHidden(l.selectedIdx) {
+		l.selectedIdx, _ = l.groupBounds(l.selectedIdx)
+	}
+}
+
+// ToggleCollapse folds or unfolds the selected session's repo group. It is a no-op (returns
+// false) when fewer than two repos are present, since folding is meaningless there.
+func (l *List) ToggleCollapse() bool {
+	if len(l.items) == 0 || l.distinctRepoCount() <= 1 {
+		return false
+	}
+	key := repoKey(l.items[l.selectedIdx])
+	if l.collapsed[key] {
+		delete(l.collapsed, key)
+	} else {
+		l.collapsed[key] = true
+	}
+	l.clampSelectionToNavigable()
+	return true
+}
+
+// ToggleCollapseAll folds every group if any is currently expanded, otherwise unfolds every
+// group. No-op (returns false) with fewer than two repos.
+func (l *List) ToggleCollapseAll() bool {
+	if len(l.items) == 0 || l.distinctRepoCount() <= 1 {
+		return false
+	}
+	anyExpanded := false
+	for i := 0; i < len(l.items); {
+		_, end := l.groupBounds(i)
+		if !l.collapsed[repoKey(l.items[i])] {
+			anyExpanded = true
+		}
+		i = end
+	}
+	if anyExpanded {
+		for i := 0; i < len(l.items); {
+			_, end := l.groupBounds(i)
+			l.collapsed[repoKey(l.items[i])] = true
+			i = end
+		}
+	} else {
+		l.collapsed = map[string]bool{}
+	}
+	l.clampSelectionToNavigable()
+	return true
+}
+
+// CollapsedRepos returns the collapsed repo keys still present in the list, sorted for stable
+// output. Pruning to live keys happens here (at save time) only — never on load, where the
+// instance set is still being assembled.
+func (l *List) CollapsedRepos() []string {
+	present := map[string]struct{}{}
+	for _, item := range l.items {
+		present[repoKey(item)] = struct{}{}
+	}
+	keys := make([]string, 0, len(l.collapsed))
+	for k := range l.collapsed {
+		if _, ok := present[k]; ok {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// SetCollapsedRepos replaces the collapsed set (used to restore persisted state on startup).
+func (l *List) SetCollapsedRepos(keys []string) {
+	l.collapsed = make(map[string]bool, len(keys))
+	for _, k := range keys {
+		l.collapsed[k] = true
+	}
+	l.clampSelectionToNavigable()
+}
+
+// MoveGroupUp moves the selected session's entire repo group above the group immediately
+// preceding it, as a unit, keeping the same session selected. It is a no-op when the group is
+// already first (which also covers the single-group case). Returns whether anything moved.
+func (l *List) MoveGroupUp() bool {
+	start, end := l.groupBounds(l.selectedIdx)
+	if start <= 0 {
+		return false
+	}
+	prevStart, _ := l.groupBounds(start - 1)
+	sel := l.items[l.selectedIdx]
+	reordered := make([]*session.Instance, 0, len(l.items))
+	reordered = append(reordered, l.items[:prevStart]...)
+	reordered = append(reordered, l.items[start:end]...)
+	reordered = append(reordered, l.items[prevStart:start]...)
+	reordered = append(reordered, l.items[end:]...)
+	l.items = reordered
+	l.SelectInstance(sel)
+	return true
+}
+
+// MoveGroupDown moves the selected session's entire repo group below the group immediately
+// following it, as a unit, keeping the same session selected. It is a no-op when the group is
+// already last (which also covers the single-group case). Returns whether anything moved.
+func (l *List) MoveGroupDown() bool {
+	start, end := l.groupBounds(l.selectedIdx)
+	if end >= len(l.items) {
+		return false
+	}
+	_, nextEnd := l.groupBounds(end)
+	sel := l.items[l.selectedIdx]
+	reordered := make([]*session.Instance, 0, len(l.items))
+	reordered = append(reordered, l.items[:start]...)
+	reordered = append(reordered, l.items[end:nextEnd]...)
+	reordered = append(reordered, l.items[start:end]...)
+	reordered = append(reordered, l.items[nextEnd:]...)
+	l.items = reordered
+	l.SelectInstance(sel)
 	return true
 }
 
