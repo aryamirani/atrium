@@ -25,6 +25,12 @@ import (
 
 const GlobalInstanceLimit = 10
 
+// contentTopPadding is the blank row View() places above the list/preview block.
+// It is chrome the height budget must account for, otherwise the composed frame
+// is one row taller than the terminal — which scrolls the terminal and desyncs
+// bubbletea's renderer. Kept here so View() and the size handler can't drift.
+const contentTopPadding = 1
+
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
 	p := tea.NewProgram(
@@ -178,9 +184,16 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	listWidth := int(float32(msg.Width) * 0.3)
 	tabsWidth := msg.Width - listWidth
 
-	// Menu takes 10% of height, list and window take 90%
+	// Menu takes 10% of height, list and window take 90%. The vertical budget is
+	// contentTopPadding (View's blank row) + contentHeight + menuHeight + 1 (error
+	// box) == msg.Height, so the composed frame never exceeds the terminal.
 	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
+	menuHeight := msg.Height - contentHeight - 1 - contentTopPadding // error box + top padding row
+	if menuHeight < 1 {
+		// Tiny terminal: protect the menu/error rows by borrowing from content.
+		contentHeight = max(1, msg.Height-1-contentTopPadding-1)
+		menuHeight = 1
+	}
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
@@ -1304,8 +1317,8 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 }
 
 func (m *home) View() string {
-	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
+	listWithPadding := lipgloss.NewStyle().PaddingTop(contentTopPadding).Render(m.list.String())
+	previewWithPadding := lipgloss.NewStyle().PaddingTop(contentTopPadding).Render(m.tabbedWindow.String())
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
 
 	mainView := lipgloss.JoinVertical(
