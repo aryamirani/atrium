@@ -588,6 +588,9 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 // renderEnterButton renders the submit button, highlighted when it holds focus.
 func (t *TextInputOverlay) renderEnterButton() string {
 	enterButton := " Enter "
+	if t.isCreateForm {
+		enterButton = " Create " // matches the ⌃S create hint in the footer
+	}
 	if t.isEnterButton() {
 		return tiFocusedButtonStyle().Render(enterButton)
 	}
