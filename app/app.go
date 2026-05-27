@@ -1363,7 +1363,7 @@ func (m *home) View() string {
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
 	mainView := lipgloss.JoinVertical(
-		lipgloss.Center,
+		lipgloss.Left,
 		m.statusBar.String(),
 		listAndPreview,
 		m.menu.String(),

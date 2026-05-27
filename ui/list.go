@@ -66,7 +66,7 @@ func (l *List) renderRepoHeader(key string, collapsed bool, count int, selected 
 	header := repoHeaderStyle().Render(name)
 	// repoHeaderStyle pads the name with one space on each side; a selected header also gains
 	// a one-cell left accent bar, so reserve for both when sizing the trailing rule.
-	ruleLen := AdjustPreviewWidth(l.width) - runewidth.StringWidth(name) - 2
+	ruleLen := l.renderer.width - runewidth.StringWidth(name) - 2
 	if selected {
 		ruleLen--
 	}
@@ -102,11 +102,12 @@ func NewList(spinner *spinner.Model, autoYes bool) *List {
 	}
 }
 
-// SetSize sets the height and width of the list.
+// SetSize sets the OUTER height and width of the list (including its panel
+// border). Rows render to the inner width (width-2).
 func (l *List) SetSize(width, height int) {
 	l.width = width
 	l.height = height
-	l.renderer.setWidth(width)
+	l.renderer.setWidth(width - 2)
 }
 
 // SetSessionPreviewSize sets the height and width for the tmux sessions. This makes the stdout line have the correct
@@ -161,7 +162,10 @@ type InstanceRenderer struct {
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
-	r.width = AdjustPreviewWidth(width)
+	if width < 1 {
+		width = 1
+	}
+	r.width = width
 }
 
 // stateParts returns the glyph, word, and color describing an instance's status.
@@ -354,8 +358,17 @@ func (l *List) String() string {
 		i = end
 	}
 
-	lines = l.windowLines(lines, selStart, selH)
-	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, strings.Join(lines, "\n"))
+	// Inner content area inside the panel border (2 cols / 2 rows of chrome).
+	innerH := l.height - 2
+	if innerH < 1 {
+		innerH = 1
+	}
+	lines = l.windowLines(lines, selStart, selH, innerH)
+	content := strings.Join(lines, "\n")
+
+	// The list is the primary navigation surface, so its panel is always drawn
+	// active (accent border). A dynamic focus model can flip this later.
+	return theme.Current().Panel("Sessions", content, l.width, l.height, true)
 }
 
 // windowLines clips lines to the list height, scrolling so the selected block
@@ -363,8 +376,7 @@ func (l *List) String() string {
 // edge. When content is clipped, the top/bottom visible line becomes a faint
 // "↑/↓ N more" indicator (only shown when there is actually more in that
 // direction, so the selection is never hidden behind one).
-func (l *List) windowLines(lines []string, selStart, selH int) []string {
-	avail := l.height
+func (l *List) windowLines(lines []string, selStart, selH, avail int) []string {
 	if avail < 1 {
 		avail = 1
 	}
