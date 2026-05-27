@@ -121,6 +121,8 @@ type home struct {
 	tabbedWindow *ui.TabbedWindow
 	// errBox displays error messages
 	errBox *ui.ErrBox
+	// statusBar is the top bar: app title + global working/waiting/paused summary
+	statusBar *ui.StatusBar
 	// global spinner instance. we plumb this down to where it's needed
 	spinner spinner.Model
 	// textInputOverlay handles text input with state
@@ -160,6 +162,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
+		statusBar:    ui.NewStatusBar(),
 		storage:      storage,
 		lostStrikes:  make(map[*session.Instance]int),
 		appConfig:    appConfig,
@@ -210,6 +213,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		menuHeight = 1
 	}
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	m.statusBar.SetSize(msg.Width, 1)                // top bar takes 1 row (replaces top padding)
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
@@ -1353,12 +1357,14 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 }
 
 func (m *home) View() string {
-	listWithPadding := lipgloss.NewStyle().PaddingTop(contentTopPadding).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(contentTopPadding).Render(m.tabbedWindow.String())
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
+	// The top status bar occupies the row that used to be blank top padding, so
+	// the height budget is unchanged (see updateHandleWindowSizeEvent).
+	m.statusBar.SetCounts(m.list.Counts())
+	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Center,
+		m.statusBar.String(),
 		listAndPreview,
 		m.menu.String(),
 		m.errBox.String(),

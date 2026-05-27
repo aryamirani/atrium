@@ -3,6 +3,7 @@ package ui
 import (
 	"claude-squad/session"
 	"claude-squad/session/git"
+	"claude-squad/ui/theme"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -10,9 +11,11 @@ import (
 )
 
 // renderRow renders a single instance row with the given diff stats at a width
-// wide enough that the git-context cluster is never dropped for space.
+// wide enough that the git-context cluster is never dropped for space. It pins
+// the unicode theme so glyph assertions (⇣ ⇡ *) are stable across themes.
 func renderRow(t *testing.T, branch string, stats *git.DiffStats) string {
 	t.Helper()
+	t.Cleanup(theme.Set("unicode"))
 	s := spinner.New()
 	r := &InstanceRenderer{spinner: &s}
 	r.setWidth(80)
