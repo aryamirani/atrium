@@ -105,6 +105,11 @@ type home struct {
 	// startingInstance holds a reference to the instance being started in the background.
 	startingInstance *session.Instance
 
+	// windowWidth/windowHeight cache the last terminal size so the layout can be
+	// recomputed off a synthesized size event — e.g. when an error appears or
+	// clears and the panes must give up or reclaim the error box's row.
+	windowWidth, windowHeight int
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -193,17 +198,20 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	listWidth := int(float32(msg.Width) * 0.3)
 	tabsWidth := msg.Width - listWidth
 
-	// Menu takes 10% of height, list and window take 90%. The vertical budget is
-	// contentHeight + menuHeight + 1 (error box) == msg.Height, so the composed
-	// frame never exceeds the terminal.
-	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1 // error box row
-	if menuHeight < 1 {
-		// Tiny terminal: protect the menu/error rows by borrowing from content.
-		contentHeight = max(1, msg.Height-1-1)
-		menuHeight = 1
+	m.windowWidth, m.windowHeight = msg.Width, msg.Height
+
+	// The menu always takes one row at the bottom; the error box takes a row only
+	// while an error is showing. With no error the help bar sits flush on the last
+	// row. When an error appears the panes give up a row for it (and reclaim it once
+	// the error clears via recomputeLayout), so the composed frame is always exactly
+	// msg.Height tall and never floats in a centered band.
+	menuHeight := 1
+	errHeight := 0
+	if m.errBox.HasError() {
+		errHeight = 1
 	}
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	contentHeight := max(1, msg.Height-menuHeight-errHeight)
+	m.errBox.SetSize(int(float32(msg.Width)*0.9), errHeight)
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
@@ -225,6 +233,16 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.menu.SetSize(msg.Width, menuHeight)
 }
 
+// recomputeLayout re-runs the size calculation off the cached terminal size. Use
+// it when something other than a resize changes the vertical budget — e.g. an
+// error appearing or clearing toggles whether the error box claims a row.
+func (m *home) recomputeLayout() {
+	if m.windowWidth == 0 || m.windowHeight == 0 {
+		return
+	}
+	m.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: m.windowWidth, Height: m.windowHeight})
+}
+
 func (m *home) Init() tea.Cmd {
 	// Upon starting, we want to start the spinner. Whenever we get a spinner.TickMsg, we
 	// update the spinner, which sends a new spinner.TickMsg. I think this lasts forever lol.
@@ -242,6 +260,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
+		m.recomputeLayout() // reclaim the error row; panes grow back by one
 	case previewTickMsg:
 		cmd := m.instanceChanged()
 		return m, tea.Batch(
@@ -1198,6 +1217,7 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 func (m *home) handleError(err error) tea.Cmd {
 	log.ErrorLog.Printf("%v", err)
 	m.errBox.SetError(err)
+	m.recomputeLayout() // give the error its row; panes shrink by one
 	return func() tea.Msg {
 		select {
 		case <-m.ctx.Done():
@@ -1383,12 +1403,14 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 func (m *home) View() string {
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
-	mainView := lipgloss.JoinVertical(
-		lipgloss.Left,
-		listAndPreview,
-		m.menu.String(),
-		m.errBox.String(),
-	)
+	parts := []string{listAndPreview, m.menu.String()}
+	// The error box only claims a row while it has something to show; otherwise the
+	// help bar is the last row and there is no trailing blank line. (JoinVertical
+	// treats an empty string as a blank line, so it must be omitted, not just empty.)
+	if m.errBox.HasError() {
+		parts = append(parts, m.errBox.String())
+	}
+	mainView := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
