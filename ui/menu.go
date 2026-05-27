@@ -2,6 +2,7 @@ package ui
 
 import (
 	"claude-squad/keys"
+	"claude-squad/ui/theme"
 	"strings"
 
 	"claude-squad/session"
@@ -9,28 +10,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var keyStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
-	Light: "#655F5F",
-	Dark:  "#7F7A7A",
-})
-
-var descStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
-	Light: "#7A7474",
-	Dark:  "#9C9494",
-})
-
-var sepStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
-	Light: "#DDDADA",
-	Dark:  "#3C3C3C",
-})
-
-var actionGroupStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
+// Hint-bar styles read the active theme at render time: keys in primary text,
+// descriptions dim, the primary action group in accent, separators faint.
+func keyStyle() lipgloss.Style         { return theme.Current().FgStyle() }
+func descStyle() lipgloss.Style        { return theme.Current().DimStyle() }
+func sepStyle() lipgloss.Style         { return theme.Current().FaintStyle() }
+func actionGroupStyle() lipgloss.Style { return theme.Current().AccentStyle().Bold(true) }
+func menuStyle() lipgloss.Style        { return lipgloss.NewStyle() }
 
 var separator = " • "
 var verticalSeparator = " │ "
-
-var menuStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("205"))
 
 // MenuState represents different states the menu can be in
 type MenuState int
@@ -184,9 +173,9 @@ func (m *Menu) String() string {
 		binding := keys.GlobalkeyBindings[k]
 
 		var (
-			localActionStyle = actionGroupStyle
-			localKeyStyle    = keyStyle
-			localDescStyle   = descStyle
+			localActionStyle = actionGroupStyle()
+			localKeyStyle    = keyStyle()
+			localDescStyle   = descStyle()
 		)
 		if m.keyDown == k {
 			localActionStyle = localActionStyle.Underline(true)
@@ -219,24 +208,24 @@ func (m *Menu) String() string {
 			isGroupEnd := false
 			for _, group := range groups {
 				if i == group.end-1 {
-					s.WriteString(sepStyle.Render(verticalSeparator))
+					s.WriteString(sepStyle().Render(verticalSeparator))
 					isGroupEnd = true
 					break
 				}
 			}
 			if !isGroupEnd {
-				s.WriteString(sepStyle.Render(separator))
+				s.WriteString(sepStyle().Render(separator))
 			}
 		}
 	}
 
 	// While naming a new session, show which repo it will be created in.
 	if m.state == StateNewInstance && m.newInstanceHint != "" {
-		s.WriteString(sepStyle.Render(verticalSeparator))
-		s.WriteString(keyStyle.Render("in "))
-		s.WriteString(descStyle.Render(m.newInstanceHint))
+		s.WriteString(sepStyle().Render(verticalSeparator))
+		s.WriteString(keyStyle().Render("in "))
+		s.WriteString(descStyle().Render(m.newInstanceHint))
 	}
 
-	centeredMenuText := menuStyle.Render(s.String())
+	centeredMenuText := menuStyle().Render(s.String())
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, centeredMenuText)
 }

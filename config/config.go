@@ -52,6 +52,11 @@ type Config struct {
 	// starts (and has no initial prompt). nil means use the default (on), so the
 	// feature stays enabled for config files written before it existed.
 	AutoAttach *bool `json:"auto_attach,omitempty"`
+	// Theme selects the UI color/glyph theme by name (see ui/theme registry:
+	// "tokyo-night", "catppuccin-mocha", "unicode"). Empty falls back to the
+	// default. The "unicode" theme avoids Nerd-Font glyphs for terminals
+	// without a patched font.
+	Theme string `json:"theme,omitempty"`
 }
 
 // GetAutoAttach reports whether new sessions should auto-attach on creation.
@@ -108,6 +113,7 @@ func DefaultConfig() *Config {
 		DefaultProgram:     program,
 		AutoYes:            false,
 		DaemonPollInterval: 1000,
+		Theme:              "tokyo-night",
 		BranchPrefix: func() string {
 			user, err := user.Current()
 			if err != nil || user == nil || user.Username == "" {

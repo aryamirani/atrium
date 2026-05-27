@@ -4,6 +4,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/tmux"
+	"claude-squad/ui/theme"
 	"fmt"
 	"os"
 	"strings"
@@ -13,11 +14,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var terminalPaneStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
-var terminalFooterStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"})
+// terminalPaneStyle / terminalFooterStyle read the active theme at render time.
+func terminalPaneStyle() lipgloss.Style   { return theme.Current().FgStyle() }
+func terminalFooterStyle() lipgloss.Style { return theme.Current().DimStyle() }
 
 // terminalSession holds a cached tmux session for a specific instance.
 type terminalSession struct {
@@ -65,7 +64,7 @@ func (t *TerminalPane) SetSize(width, height int) {
 // Caller must hold t.mu.
 func (t *TerminalPane) setFallbackState(message string) {
 	t.fallback = true
-	t.fallbackText = lipgloss.JoinVertical(lipgloss.Center, FallBackText, "", message)
+	t.fallbackText = lipgloss.JoinVertical(lipgloss.Center, FallbackBanner(), "", message)
 	t.content = ""
 }
 
@@ -277,7 +276,7 @@ func (t *TerminalPane) String() string {
 			lines = append(lines, strings.Repeat("\n", bottomPadding))
 		}
 
-		return terminalPaneStyle.
+		return terminalPaneStyle().
 			Width(width).
 			Align(lipgloss.Center).
 			Render(strings.Join(lines, ""))
@@ -296,7 +295,7 @@ func (t *TerminalPane) String() string {
 	}
 
 	contentStr := strings.Join(lines, "\n")
-	return terminalPaneStyle.Width(width).Render(contentStr)
+	return terminalPaneStyle().Width(width).Render(contentStr)
 }
 
 // enterScrollMode captures the full terminal history and enters scroll mode.
@@ -312,7 +311,7 @@ func (t *TerminalPane) enterScrollMode() error {
 		return fmt.Errorf("terminal pane: failed to capture full history: %w", err)
 	}
 
-	footer := terminalFooterStyle.Render("ESC to exit scroll mode")
+	footer := terminalFooterStyle().Render("ESC to exit scroll mode")
 	contentWithFooter := lipgloss.JoinVertical(lipgloss.Left, content, footer)
 	t.viewport.SetContent(contentWithFooter)
 	t.viewport.GotoBottom()

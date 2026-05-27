@@ -59,7 +59,7 @@ func TestList_NoHeadersForSingleRepo(t *testing.T) {
 	out := l.String()
 	// With a single repo no header is emitted, so the uppercased header token must
 	// not appear.
-	require.NotContains(t, out, repoHeaderStyle.Render("REPOA"))
+	require.NotContains(t, out, repoHeaderStyle().Render("REPOA"))
 	_ = strings.TrimSpace(out)
 }
 

@@ -1,6 +1,8 @@
 package overlay
 
 import (
+	"claude-squad/ui/theme"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -33,7 +35,7 @@ func NewConfirmationOverlay(message string) *ConfirmationOverlay {
 		width:       50, // Default width
 		ConfirmKey:  "y",
 		CancelKey:   "n",
-		borderColor: lipgloss.Color("#de613e"), // Red color for confirmations
+		borderColor: theme.Current().Palette.Danger, // attention/destructive color
 	}
 }
 
@@ -62,7 +64,7 @@ func (c *ConfirmationOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
 // Render renders the confirmation overlay
 func (c *ConfirmationOverlay) Render(opts ...WhitespaceOption) string {
 	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(theme.Current().Borders.Style).
 		BorderForeground(c.borderColor).
 		Padding(1, 2).
 		Width(c.width)

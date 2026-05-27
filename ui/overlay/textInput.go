@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"claude-squad/config"
+	"claude-squad/ui/theme"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -10,35 +11,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	tiStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
+// Overlay styles read the active theme at render time (package-level style vars
+// would capture the default theme at import, before config selects one).
+func tiStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Border(theme.Current().Borders.Style).
+		BorderForeground(theme.Current().Palette.Accent).
 		Padding(1, 2)
+}
 
-	tiTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("62")).
-			Bold(true).
-			MarginBottom(1)
+func tiTitleStyle() lipgloss.Style {
+	return theme.Current().AccentStyle().Bold(true).MarginBottom(1)
+}
 
-	tiButtonStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("7"))
+func tiButtonStyle() lipgloss.Style { return theme.Current().FgStyle() }
 
-	tiFocusedButtonStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color("62")).
-				Foreground(lipgloss.Color("0"))
+func tiFocusedButtonStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(theme.Current().Palette.Accent).
+		Foreground(theme.Current().Palette.Bg)
+}
 
-	tiDividerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+func tiDividerStyle() lipgloss.Style { return theme.Current().DimStyle() }
 
-	tiLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("62")).
-			Bold(true)
+func tiLabelStyle() lipgloss.Style { return theme.Current().AccentStyle().Bold(true) }
 
-	tiHintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
-			Italic(true)
-)
+func tiHintStyle() lipgloss.Style { return theme.Current().DimStyle().Italic(true) }
 
 // defaultPickerRows / defaultPromptRows are the preferred number of list rows the directory
 // and branch pickers render and the preferred prompt-textarea height. They are also the
@@ -563,7 +561,7 @@ func (t *TextInputOverlay) Render() string {
 	t.titleInput.Width = innerWidth
 
 	// Build a horizontal divider line
-	divider := tiDividerStyle.Render(strings.Repeat("─", innerWidth))
+	divider := tiDividerStyle().Render(strings.Repeat("─", innerWidth))
 
 	if t.isCreateForm {
 		return t.renderCreateForm(divider)
@@ -572,15 +570,15 @@ func (t *TextInputOverlay) Render() string {
 	// Plain prompt overlay (the `p` flow): no pickers — just a title, the prompt textarea,
 	// and the submit button.
 	var content string
-	content += tiTitleStyle.Render(t.Title) + "\n"
+	content += tiTitleStyle().Render(t.Title) + "\n"
 	content += t.textarea.View() + "\n\n"
 	content += divider + "\n\n"
 	if t.submitOnEnter {
-		content += tiHintStyle.Render("enter send · ⌥enter newline · esc cancel") + "\n"
+		content += tiHintStyle().Render("enter send · ⌥enter newline · esc cancel") + "\n"
 	}
 	content += t.renderEnterButton()
 
-	return tiStyle.Render(content)
+	return tiStyle().Render(content)
 }
 
 // renderCreateForm renders the unified new-session form. Every section is constant-height
@@ -596,9 +594,9 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 		b.WriteString(divider + "\n")
 	}
 
-	b.WriteString(tiTitleStyle.Render(t.Title) + "\n")
-	section(tiLabelStyle.Render("Title") + "  " + t.titleInput.View())
-	section(tiLabelStyle.Render("Prompt") + "\n" + t.textarea.View())
+	b.WriteString(tiTitleStyle().Render(t.Title) + "\n")
+	section(tiLabelStyle().Render("Title") + "  " + t.titleInput.View())
+	section(tiLabelStyle().Render("Prompt") + "\n" + t.textarea.View())
 	if t.directoryPicker != nil {
 		section(t.directoryPicker.Render())
 	}
@@ -609,17 +607,20 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 		section(t.branchPicker.Render())
 	}
 
-	b.WriteString(tiHintStyle.Render(createFormHelp) + "\n")
+	b.WriteString(tiHintStyle().Render(createFormHelp) + "\n")
 	b.WriteString(t.renderEnterButton())
 
-	return tiStyle.Render(b.String())
+	return tiStyle().Render(b.String())
 }
 
 // renderEnterButton renders the submit button, highlighted when it holds focus.
 func (t *TextInputOverlay) renderEnterButton() string {
 	enterButton := " Enter "
-	if t.isEnterButton() {
-		return tiFocusedButtonStyle.Render(enterButton)
+	if t.isCreateForm {
+		enterButton = " Create " // matches the ⌃S create hint in the footer
 	}
-	return tiButtonStyle.Render(enterButton)
+	if t.isEnterButton() {
+		return tiFocusedButtonStyle().Render(enterButton)
+	}
+	return tiButtonStyle().Render(enterButton)
 }

@@ -9,6 +9,7 @@ import (
 	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
+	"claude-squad/ui/theme"
 	"context"
 	"fmt"
 	"os"
@@ -24,12 +25,6 @@ import (
 )
 
 const GlobalInstanceLimit = 10
-
-// contentTopPadding is the blank row View() places above the list/preview block.
-// It is chrome the height budget must account for, otherwise the composed frame
-// is one row taller than the terminal — which scrolls the terminal and desyncs
-// bubbletea's renderer. Kept here so View() and the size handler can't drift.
-const contentTopPadding = 1
 
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
@@ -100,6 +95,10 @@ type home struct {
 	// keySent is used to manage underlining menu items
 	keySent bool
 
+	// welcomeChecked guards the one-time first-launch welcome so it is only
+	// attempted once per process (its seen-bit handles persistence across runs).
+	welcomeChecked bool
+
 	// instanceStarting is true while a background instance start is in progress.
 	// Prevents double-submission and guards against interacting with a not-yet-started instance.
 	instanceStarting bool
@@ -132,6 +131,10 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
+	// Activate the configured UI theme before any component is constructed, so
+	// theme.Current() is correct everywhere it's read. Set once, never mutated.
+	theme.Set(appConfig.Theme)
+
 	// Load application state
 	appState := config.LoadState()
 
@@ -143,8 +146,11 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	}
 
 	h := &home{
-		ctx:          ctx,
-		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		ctx: ctx,
+		spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
+			Frames: theme.Current().Glyphs.SpinnerFrames,
+			FPS:    theme.Current().Glyphs.SpinnerFPS,
+		})),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
@@ -188,13 +194,13 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	tabsWidth := msg.Width - listWidth
 
 	// Menu takes 10% of height, list and window take 90%. The vertical budget is
-	// contentTopPadding (View's blank row) + contentHeight + menuHeight + 1 (error
-	// box) == msg.Height, so the composed frame never exceeds the terminal.
+	// contentHeight + menuHeight + 1 (error box) == msg.Height, so the composed
+	// frame never exceeds the terminal.
 	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1 - contentTopPadding // error box + top padding row
+	menuHeight := msg.Height - contentHeight - 1 // error box row
 	if menuHeight < 1 {
 		// Tiny terminal: protect the menu/error rows by borrowing from content.
-		contentHeight = max(1, msg.Height-1-contentTopPadding-1)
+		contentHeight = max(1, msg.Height-1-1)
 		menuHeight = 1
 	}
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
@@ -265,8 +271,6 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recordRecentPath(inst.Path)
 
-		m.showHelpScreen(helpStart(inst), nil)
-
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		if recoverLostInstances(msg.results, m.lostStrikes) {
@@ -329,6 +333,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
 		m.updateHandleWindowSizeEvent(msg)
+		// First launch ever: show the one-time welcome once the size is known.
+		m.maybeShowWelcome()
 		return m, nil
 	case error:
 		// Handle errors from confirmation actions
@@ -362,24 +368,18 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.shouldAutoOpen(msg.instance) {
 			// Drop straight into the new session, mirroring the KeyEnter attach path.
-			// helpTypeInstanceAttach teaches ctrl-q to detach (shown once). Attach the
-			// instance directly rather than via m.list.Attach(): this callback runs when
-			// the help overlay is dismissed, by which point a background instanceStartedMsg
-			// from another freshly-created session could have moved the list selection.
-			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-				ch, err := msg.instance.Attach()
-				if err != nil {
-					m.handleError(err)
-					return
-				}
-				<-ch
-				m.state = stateDefault
-				m.instanceChanged()
-			})
+			// Attach msg.instance directly rather than via m.list.Attach(): a background
+			// instanceStartedMsg from another freshly-created session could have moved
+			// the list selection by now. Attaching blocks until the user detaches
+			// (ctrl-q); the hint bar carries the detach reminder, so no teaching modal.
+			ch, err := msg.instance.Attach()
+			if err != nil {
+				return m, m.handleError(err)
+			}
+			<-ch
+			m.state = stateDefault
 			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 		}
-
-		m.showHelpScreen(helpStart(msg.instance), nil)
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case spinner.TickMsg:
@@ -819,15 +819,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 
-		// Show help screen before pausing
-		m.showHelpScreen(helpTypeInstanceCheckout{}, func() {
-			if err := selected.Pause(); err != nil {
-				m.handleError(err)
-			}
-			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
-			m.instanceChanged()
-		})
-		return m, nil
+		// Checkout: commit changes and pause. The branch name is copied to the
+		// clipboard inside Pause(); the always-on hint bar carries the reminder.
+		if err := selected.Pause(); err != nil {
+			return m, m.handleError(err)
+		}
+		m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
+		return m, m.instanceChanged()
 	case keys.KeyMoveUp:
 		if m.list.MoveUp() {
 			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
@@ -893,31 +891,24 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
 			return m, nil
 		}
-		// Terminal tab: attach to terminal session
+		// Terminal tab: attach to terminal session. Attaching blocks until the
+		// user detaches (ctrl-q); the hint bar carries the detach reminder.
 		if m.tabbedWindow.IsInTerminalTab() {
-			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-				ch, err := m.tabbedWindow.AttachTerminal()
-				if err != nil {
-					m.handleError(err)
-					return
-				}
-				<-ch
-				m.state = stateDefault
-			})
-			return m, nil
-		}
-		// Show help screen before attaching
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
+			ch, err := m.tabbedWindow.AttachTerminal()
 			if err != nil {
-				m.handleError(err)
-				return
+				return m, m.handleError(err)
 			}
 			<-ch
 			m.state = stateDefault
-			m.instanceChanged()
-		})
-		return m, nil
+			return m, nil
+		}
+		ch, err := m.list.Attach()
+		if err != nil {
+			return m, m.handleError(err)
+		}
+		<-ch
+		m.state = stateDefault
+		return m, m.instanceChanged()
 	default:
 		return m, nil
 	}
@@ -1390,12 +1381,10 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 }
 
 func (m *home) View() string {
-	listWithPadding := lipgloss.NewStyle().PaddingTop(contentTopPadding).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(contentTopPadding).Render(m.tabbedWindow.String())
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
+	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
 	mainView := lipgloss.JoinVertical(
-		lipgloss.Center,
+		lipgloss.Left,
 		listAndPreview,
 		m.menu.String(),
 		m.errBox.String(),

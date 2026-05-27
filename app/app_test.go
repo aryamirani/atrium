@@ -18,16 +18,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMain runs before all tests to set up the test environment
+// TestMain runs before all tests to set up the test environment.
 func TestMain(m *testing.M) {
+	// Sandbox HOME so tests never read or overwrite the real ~/.claude-squad
+	// state/config — config.GetConfigDir resolves under $HOME, and LoadConfig
+	// writes a default config.json on first run.
+	tmpHome, err := os.MkdirTemp("", "cs-test-home-")
+	if err == nil {
+		os.Setenv("HOME", tmpHome)
+	}
+
 	// Initialize the logger before any tests run
 	log.Initialize(false)
-	defer log.Close()
 
-	// Run all tests
 	exitCode := m.Run()
 
-	// Exit with the same code as the tests
+	log.Close()
+	if tmpHome != "" {
+		os.RemoveAll(tmpHome)
+	}
 	os.Exit(exitCode)
 }
 
