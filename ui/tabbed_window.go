@@ -93,11 +93,12 @@ func (w *TabbedWindow) SetSize(width, height int) {
 	w.height = height
 
 	// Calculate the content height by subtracting:
-	// 1. Tab height (including border and padding)
-	// 2. Window style vertical frame size
-	// 3. Additional padding/spacing (2 for the newline and spacing)
+	// 1. Tab height (tab border top+bottom + 1 label row)
+	// 2. Window style vertical frame size (bottom border)
+	// The tab strip's top border is the pane's visual top edge, so it aligns
+	// with the list panel's top border at row 0 — no leading blank rows.
 	tabHeight := activeTabStyle().GetVerticalFrameSize() + 1
-	contentHeight := height - tabHeight - windowStyle().GetVerticalFrameSize() - 2
+	contentHeight := height - tabHeight - windowStyle().GetVerticalFrameSize()
 	contentWidth := w.width - windowStyle().GetHorizontalFrameSize()
 
 	w.preview.SetSize(contentWidth, contentHeight)
@@ -276,8 +277,8 @@ func (w *TabbedWindow) String() string {
 	}
 	window := windowStyle().Render(
 		lipgloss.Place(
-			w.width, w.height-2-windowStyle().GetVerticalFrameSize()-tabHeight,
+			w.width, w.height-windowStyle().GetVerticalFrameSize()-tabHeight,
 			lipgloss.Left, lipgloss.Top, content))
 
-	return lipgloss.JoinVertical(lipgloss.Left, "\n", row, window)
+	return lipgloss.JoinVertical(lipgloss.Left, row, window)
 }

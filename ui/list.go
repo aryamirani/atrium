@@ -130,31 +130,6 @@ func (l *List) NumInstances() int {
 	return len(l.items)
 }
 
-// StatusCounts tallies session states for the top status bar. Ready (idle) is
-// the quiet default and is intentionally not surfaced as a count.
-type StatusCounts struct {
-	Working int // Running or Loading
-	Waiting int // NeedsInput — blocked on the user
-	Paused  int
-}
-
-// Counts derives the status tally from the current items at call time (pulled,
-// not pushed, so it can't drift from what's displayed).
-func (l *List) Counts() StatusCounts {
-	var c StatusCounts
-	for _, it := range l.items {
-		switch it.Status {
-		case session.Running, session.Loading:
-			c.Working++
-		case session.NeedsInput:
-			c.Waiting++
-		case session.Paused:
-			c.Paused++
-		}
-	}
-	return c
-}
-
 // InstanceRenderer handles rendering of session.Instance objects
 type InstanceRenderer struct {
 	spinner *spinner.Model

@@ -26,12 +26,6 @@ import (
 
 const GlobalInstanceLimit = 10
 
-// contentTopPadding is the blank row View() places above the list/preview block.
-// It is chrome the height budget must account for, otherwise the composed frame
-// is one row taller than the terminal — which scrolls the terminal and desyncs
-// bubbletea's renderer. Kept here so View() and the size handler can't drift.
-const contentTopPadding = 1
-
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
 	p := tea.NewProgram(
@@ -121,8 +115,6 @@ type home struct {
 	tabbedWindow *ui.TabbedWindow
 	// errBox displays error messages
 	errBox *ui.ErrBox
-	// statusBar is the top bar: app title + global working/waiting/paused summary
-	statusBar *ui.StatusBar
 	// global spinner instance. we plumb this down to where it's needed
 	spinner spinner.Model
 	// textInputOverlay handles text input with state
@@ -162,7 +154,6 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
-		statusBar:    ui.NewStatusBar(),
 		storage:      storage,
 		lostStrikes:  make(map[*session.Instance]int),
 		appConfig:    appConfig,
@@ -203,17 +194,16 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	tabsWidth := msg.Width - listWidth
 
 	// Menu takes 10% of height, list and window take 90%. The vertical budget is
-	// contentTopPadding (View's blank row) + contentHeight + menuHeight + 1 (error
-	// box) == msg.Height, so the composed frame never exceeds the terminal.
+	// contentHeight + menuHeight + 1 (error box) == msg.Height, so the composed
+	// frame never exceeds the terminal.
 	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1 - contentTopPadding // error box + top padding row
+	menuHeight := msg.Height - contentHeight - 1 // error box row
 	if menuHeight < 1 {
 		// Tiny terminal: protect the menu/error rows by borrowing from content.
-		contentHeight = max(1, msg.Height-1-contentTopPadding-1)
+		contentHeight = max(1, msg.Height-1-1)
 		menuHeight = 1
 	}
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
-	m.statusBar.SetSize(msg.Width, 1)                // top bar takes 1 row (replaces top padding)
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
@@ -1357,14 +1347,10 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 }
 
 func (m *home) View() string {
-	// The top status bar occupies the row that used to be blank top padding, so
-	// the height budget is unchanged (see updateHandleWindowSizeEvent).
-	m.statusBar.SetCounts(m.list.Counts())
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Left,
-		m.statusBar.String(),
 		listAndPreview,
 		m.menu.String(),
 		m.errBox.String(),

@@ -23,33 +23,6 @@ func instWithStatus(t *testing.T, title string, st session.Status) *session.Inst
 	return inst
 }
 
-func TestList_Counts(t *testing.T) {
-	s := spinner.New()
-	l := NewList(&s, false)
-	l.AddInstance(instWithStatus(t, "a", session.Running))()
-	l.AddInstance(instWithStatus(t, "b", session.Loading))()
-	l.AddInstance(instWithStatus(t, "c", session.NeedsInput))()
-	l.AddInstance(instWithStatus(t, "d", session.Paused))()
-	l.AddInstance(instWithStatus(t, "e", session.Ready))()
-
-	c := l.Counts()
-	require.Equal(t, 2, c.Working, "Running + Loading are 'working'")
-	require.Equal(t, 1, c.Waiting)
-	require.Equal(t, 1, c.Paused)
-}
-
-func TestStatusBar_ShowsNonzeroCounts(t *testing.T) {
-	t.Cleanup(theme.Set("unicode"))
-	sb := NewStatusBar()
-	sb.SetSize(80, 1)
-	sb.SetCounts(StatusCounts{Working: 3, Waiting: 1, Paused: 0})
-	out := sb.String()
-	require.Contains(t, out, "claude-squad")
-	require.Contains(t, out, "3 working")
-	require.Contains(t, out, "1 waiting")
-	require.NotContains(t, out, "paused", "zero paused is omitted")
-}
-
 func TestRender_AutoBadge(t *testing.T) {
 	t.Cleanup(theme.Set("unicode")) // AutoBadge glyph is empty here, so the chip is plain "AUTO"
 	s := spinner.New()

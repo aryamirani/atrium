@@ -43,7 +43,6 @@ func newCreateFormHome(t *testing.T) *home {
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
-		statusBar:    ui.NewStatusBar(),
 		appConfig:    config.DefaultConfig(),
 		appState:     config.DefaultState(),
 		program:      "echo",
