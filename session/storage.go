@@ -77,13 +77,32 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 	return s.state.SaveInstances(jsonData)
 }
 
+// loadInstanceData deserializes the persisted JSON into InstanceData records without
+// reconstructing live Instance objects (no tmux/PTY sessions are opened).
+func (s *Storage) loadInstanceData() ([]InstanceData, error) {
+	jsonData := s.state.GetInstances()
+	var data []InstanceData
+	if err := json.Unmarshal(jsonData, &data); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal instances: %w", err)
+	}
+	return data, nil
+}
+
+// saveInstanceData marshals a slice of InstanceData and persists it without
+// constructing any live Instance objects.
+func (s *Storage) saveInstanceData(data []InstanceData) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instances: %w", err)
+	}
+	return s.state.SaveInstances(jsonData)
+}
+
 // LoadInstances loads the list of instances from disk
 func (s *Storage) LoadInstances() ([]*Instance, error) {
-	jsonData := s.state.GetInstances()
-
-	var instancesData []InstanceData
-	if err := json.Unmarshal(jsonData, &instancesData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal instances: %w", err)
+	instancesData, err := s.loadInstanceData()
+	if err != nil {
+		return nil, err
 	}
 
 	instances := make([]*Instance, len(instancesData))
@@ -98,19 +117,20 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 	return instances, nil
 }
 
-// DeleteInstance removes an instance from storage
+// DeleteInstance removes an instance from storage by title.
+// It operates directly on the serialized InstanceData so it never opens PTY
+// sessions for the surviving instances.
 func (s *Storage) DeleteInstance(title string) error {
-	instances, err := s.LoadInstances()
+	all, err := s.loadInstanceData()
 	if err != nil {
 		return fmt.Errorf("failed to load instances: %w", err)
 	}
 
 	found := false
-	newInstances := make([]*Instance, 0)
-	for _, instance := range instances {
-		data := instance.ToInstanceData()
-		if data.Title != title {
-			newInstances = append(newInstances, instance)
+	keep := make([]InstanceData, 0, len(all))
+	for _, d := range all {
+		if d.Title != title {
+			keep = append(keep, d)
 		} else {
 			found = true
 		}
@@ -120,32 +140,33 @@ func (s *Storage) DeleteInstance(title string) error {
 		return fmt.Errorf("instance not found: %s", title)
 	}
 
-	return s.SaveInstances(newInstances)
+	return s.saveInstanceData(keep)
 }
 
-// UpdateInstance updates an existing instance in storage
+// UpdateInstance updates an existing instance in storage.
+// It operates directly on the serialized InstanceData so it never opens PTY
+// sessions for the other instances.
 func (s *Storage) UpdateInstance(instance *Instance) error {
-	instances, err := s.LoadInstances()
+	all, err := s.loadInstanceData()
 	if err != nil {
 		return fmt.Errorf("failed to load instances: %w", err)
 	}
 
-	data := instance.ToInstanceData()
+	updated := instance.ToInstanceData()
 	found := false
-	for i, existing := range instances {
-		existingData := existing.ToInstanceData()
-		if existingData.Title == data.Title {
-			instances[i] = instance
+	for i, d := range all {
+		if d.Title == updated.Title {
+			all[i] = updated
 			found = true
 			break
 		}
 	}
 
 	if !found {
-		return fmt.Errorf("instance not found: %s", data.Title)
+		return fmt.Errorf("instance not found: %s", updated.Title)
 	}
 
-	return s.SaveInstances(instances)
+	return s.saveInstanceData(all)
 }
 
 // DeleteAllInstances removes all stored instances
