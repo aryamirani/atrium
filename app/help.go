@@ -50,6 +50,7 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("space")+descStyle.Render("     - Collapse/expand the selected repo group"),
 		keyStyle.Render("Z")+descStyle.Render("         - Collapse/expand all repo groups"),
 		keyStyle.Render("↵/o")+descStyle.Render("       - Attach to the selected session"),
+		keyStyle.Render("→")+descStyle.Render("         - Send a message to the selected session (without attaching)"),
 		keyStyle.Render("ctrl-q")+descStyle.Render("    - Detach from session"),
 		"",
 		headerStyle.Render("Handoff:"),

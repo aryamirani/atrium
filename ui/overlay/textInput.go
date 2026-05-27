@@ -135,6 +135,7 @@ type TextInputOverlay struct {
 	branchPicker    *BranchPicker
 	stops           []focusStop // ordered focusable stops actually present
 	isCreateForm    bool        // true for the new-session form (has a title field)
+	submitOnEnter   bool        // true for the quick-send overlay: Enter submits, Alt+Enter is a newline
 }
 
 // NewTextInputOverlay creates a new text input overlay with the given title and initial value.
@@ -147,6 +148,16 @@ func NewTextInputOverlay(title string, initialValue string) *TextInputOverlay {
 	}
 	overlay.focusStop(stopTextarea)
 	return overlay
+}
+
+// NewQuickSendOverlay creates the compose-and-send overlay used to fire an ad-hoc message at
+// the selected running session without attaching. It is the same single textarea + submit button
+// as NewTextInputOverlay, but Enter submits immediately (Alt+Enter inserts a newline) so a short
+// reply is one keystroke away — see HandleKeyPress and the submitOnEnter hint in Render.
+func NewQuickSendOverlay(title string) *TextInputOverlay {
+	o := NewTextInputOverlay(title, "")
+	o.submitOnEnter = true
+	return o
 }
 
 // NewSessionCreateOverlay creates the unified new-session form: a title field, a prompt
@@ -383,8 +394,22 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			}
 			return true, false
 		}
-		// In the prompt textarea, Enter inserts a newline.
 		if t.isTextarea() {
+			// Quick-send: bare Enter sends, Alt+Enter is the newline. The textarea's newline
+			// binding matches the literal "enter", so an Alt-modified Enter would be ignored if
+			// forwarded — insert the newline explicitly instead.
+			if t.submitOnEnter {
+				if msg.Alt {
+					t.textarea.InsertRune('\n')
+					return false, false
+				}
+				t.Submitted = true
+				if t.OnSubmit != nil {
+					t.OnSubmit()
+				}
+				return true, false
+			}
+			// In the create-form prompt, Enter inserts a newline.
 			t.textarea, _ = t.textarea.Update(msg)
 			return false, false
 		}
@@ -550,6 +575,9 @@ func (t *TextInputOverlay) Render() string {
 	content += tiTitleStyle.Render(t.Title) + "\n"
 	content += t.textarea.View() + "\n\n"
 	content += divider + "\n\n"
+	if t.submitOnEnter {
+		content += tiHintStyle.Render("enter send · ⌥enter newline · esc cancel") + "\n"
+	}
 	content += t.renderEnterButton()
 
 	return tiStyle.Render(content)

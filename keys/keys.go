@@ -42,6 +42,8 @@ const (
 	KeyCollapseAll
 
 	KeyRename // Rename the selected session's display label
+
+	KeyQuickSend // Open a compose box to send a message to the selected session without attaching
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -64,6 +66,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"n":          KeyNew,
 	"D":          KeyKill,
 	"R":          KeyRename,
+	"right":      KeyQuickSend,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
 	"c":          KeyCheckout,
@@ -105,6 +108,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyRename: key.NewBinding(
 		key.WithKeys("R"),
 		key.WithHelp("R", "rename"),
+	),
+	KeyQuickSend: key.NewBinding(
+		key.WithKeys("right"),
+		key.WithHelp("→", "send"),
 	),
 	KeyHelp: key.NewBinding(
 		key.WithKeys("?"),

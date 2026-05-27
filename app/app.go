@@ -547,7 +547,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.createSessionFromForm(prompt)
 			}
 
-			// Plain prompt overlay: send the prompt to the selected running session.
+			// Quick-send overlay: fire the message at the selected running session and drop
+			// straight back to the list (no new-session help — the session is already up).
 			selected := m.list.GetSelectedInstance()
 			if selected == nil {
 				m.textInputOverlay = nil
@@ -559,14 +560,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 			m.textInputOverlay = nil
 			m.state = stateDefault
-			return m, tea.Sequence(
-				tea.WindowSize(),
-				func() tea.Msg {
-					m.menu.SetState(ui.StateDefault)
-					m.showHelpScreen(helpStart(selected), nil)
-					return nil
-				},
-			)
+			m.menu.SetState(ui.StateDefault)
+			return m, tea.Sequence(tea.WindowSize(), m.instanceChanged())
 		}
 
 		// If the target directory changed in the picker, re-scope the branch search to
@@ -719,6 +714,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.menu.SetNewInstanceHint(filepath.Base(m.newSessionPath))
 
 		return m, nil
+	case keys.KeyQuickSend:
+		// Open a compose box to fire an ad-hoc message at the selected running session
+		// without attaching. Only meaningful when the agent is up and accepting input, so
+		// this is a no-op for an empty/loading/paused selection.
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || !selected.Started() || selected.Paused() || selected.Status == session.Loading {
+			return m, nil
+		}
+		m.state = statePrompt
+		m.menu.SetState(ui.StatePrompt)
+		m.textInputOverlay = overlay.NewQuickSendOverlay("Send to " + selected.DisplayName())
+		return m, tea.WindowSize()
 	case keys.KeyUp:
 		m.list.Up()
 		return m, m.instanceChanged()

@@ -26,6 +26,38 @@ func TestTextInputOverlay_GetSelectedPathNilWithoutPicker(t *testing.T) {
 	assert.Equal(t, "", o.GetSelectedPath())
 }
 
+func TestQuickSendOverlay_EnterSubmits(t *testing.T) {
+	o := NewQuickSendOverlay("Send to foo")
+	assert.True(t, o.isTextarea(), "focus should start on the textarea")
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("yes")})
+
+	shouldClose, _ := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+	assert.True(t, shouldClose, "Enter should close the quick-send overlay")
+	assert.True(t, o.IsSubmitted(), "Enter should submit in quick-send mode")
+	assert.False(t, o.IsCanceled())
+	assert.Equal(t, "yes", o.GetValue())
+}
+
+func TestQuickSendOverlay_AltEnterInsertsNewline(t *testing.T) {
+	o := NewQuickSendOverlay("Send to foo")
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line one")})
+
+	shouldClose, _ := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	assert.False(t, shouldClose, "Alt+Enter must not submit")
+	assert.False(t, o.IsSubmitted(), "Alt+Enter must not submit")
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line two")})
+	assert.Equal(t, "line one\nline two", o.GetValue(), "Alt+Enter should insert a newline")
+}
+
+func TestQuickSendOverlay_EscCancels(t *testing.T) {
+	o := NewQuickSendOverlay("Send to foo")
+	shouldClose, _ := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+	assert.True(t, shouldClose)
+	assert.True(t, o.IsCanceled())
+	assert.False(t, o.IsSubmitted())
+}
+
 func TestTextInputOverlay_InvalidateBumpsVersion(t *testing.T) {
 	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
 	before := o.BranchFilterVersion()
