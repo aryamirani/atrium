@@ -48,6 +48,11 @@ type Config struct {
 	// config for cs sessions instead of the bundled managed config. When empty,
 	// cs materializes and uses its own config.
 	TmuxConfigOverride string `json:"tmux_config_override,omitempty"`
+	// Theme selects the UI color/glyph theme by name (see ui/theme registry:
+	// "tokyo-night", "catppuccin-mocha", "unicode"). Empty falls back to the
+	// default. The "unicode" theme avoids Nerd-Font glyphs for terminals
+	// without a patched font.
+	Theme string `json:"theme,omitempty"`
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and
@@ -97,6 +102,7 @@ func DefaultConfig() *Config {
 		DefaultProgram:     program,
 		AutoYes:            false,
 		DaemonPollInterval: 1000,
+		Theme:              "tokyo-night",
 		BranchPrefix: func() string {
 			user, err := user.Current()
 			if err != nil || user == nil || user.Username == "" {

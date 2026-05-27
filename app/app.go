@@ -9,6 +9,7 @@ import (
 	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
+	"claude-squad/ui/theme"
 	"context"
 	"fmt"
 	"os"
@@ -100,6 +101,10 @@ type home struct {
 	// keySent is used to manage underlining menu items
 	keySent bool
 
+	// welcomeChecked guards the one-time first-launch welcome so it is only
+	// attempted once per process (its seen-bit handles persistence across runs).
+	welcomeChecked bool
+
 	// instanceStarting is true while a background instance start is in progress.
 	// Prevents double-submission and guards against interacting with a not-yet-started instance.
 	instanceStarting bool
@@ -132,6 +137,10 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
+	// Activate the configured UI theme before any component is constructed, so
+	// theme.Current() is correct everywhere it's read. Set once, never mutated.
+	theme.Set(appConfig.Theme)
+
 	// Load application state
 	appState := config.LoadState()
 
@@ -143,8 +152,11 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	}
 
 	h := &home{
-		ctx:          ctx,
-		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		ctx: ctx,
+		spinner: spinner.New(spinner.WithSpinner(spinner.Spinner{
+			Frames: theme.Current().Glyphs.SpinnerFrames,
+			FPS:    theme.Current().Glyphs.SpinnerFPS,
+		})),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
@@ -265,8 +277,6 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recordRecentPath(inst.Path)
 
-		m.showHelpScreen(helpStart(inst), nil)
-
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		if recoverLostInstances(msg.results, m.lostStrikes) {
@@ -329,6 +339,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
 		m.updateHandleWindowSizeEvent(msg)
+		// First launch ever: show the one-time welcome once the size is known.
+		m.maybeShowWelcome()
 		return m, nil
 	case error:
 		// Handle errors from confirmation actions
@@ -359,7 +371,6 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (see deliverReadyPrompts). Sending here races the agent's boot and lands
 		// keystrokes in the trust dialog instead of the input box.
 		m.menu.SetState(ui.StateDefault)
-		m.showHelpScreen(helpStart(msg.instance), nil)
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case spinner.TickMsg:
@@ -543,7 +554,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				tea.WindowSize(),
 				func() tea.Msg {
 					m.menu.SetState(ui.StateDefault)
-					m.showHelpScreen(helpStart(selected), nil)
 					return nil
 				},
 			)
@@ -792,15 +802,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 
-		// Show help screen before pausing
-		m.showHelpScreen(helpTypeInstanceCheckout{}, func() {
-			if err := selected.Pause(); err != nil {
-				m.handleError(err)
-			}
-			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
-			m.instanceChanged()
-		})
-		return m, nil
+		// Checkout: commit changes and pause. The branch name is copied to the
+		// clipboard inside Pause(); the always-on hint bar carries the reminder.
+		if err := selected.Pause(); err != nil {
+			return m, m.handleError(err)
+		}
+		m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
+		return m, m.instanceChanged()
 	case keys.KeyMoveUp:
 		if m.list.MoveUp() {
 			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
@@ -866,31 +874,24 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
 			return m, nil
 		}
-		// Terminal tab: attach to terminal session
+		// Terminal tab: attach to terminal session. Attaching blocks until the
+		// user detaches (ctrl-q); the hint bar carries the detach reminder.
 		if m.tabbedWindow.IsInTerminalTab() {
-			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-				ch, err := m.tabbedWindow.AttachTerminal()
-				if err != nil {
-					m.handleError(err)
-					return
-				}
-				<-ch
-				m.state = stateDefault
-			})
-			return m, nil
-		}
-		// Show help screen before attaching
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
+			ch, err := m.tabbedWindow.AttachTerminal()
 			if err != nil {
-				m.handleError(err)
-				return
+				return m, m.handleError(err)
 			}
 			<-ch
 			m.state = stateDefault
-			m.instanceChanged()
-		})
-		return m, nil
+			return m, nil
+		}
+		ch, err := m.list.Attach()
+		if err != nil {
+			return m, m.handleError(err)
+		}
+		<-ch
+		m.state = stateDefault
+		return m, m.instanceChanged()
 	default:
 		return m, nil
 	}

@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"claude-squad/ui/theme"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -64,8 +65,8 @@ func (r *RenameOverlay) SetWidth(width int) { r.width = width }
 // Render renders the rename overlay as a bordered box.
 func (r *RenameOverlay) Render() string {
 	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
+		Border(theme.Current().Borders.Style).
+		BorderForeground(theme.Current().Palette.Accent).
 		Padding(1, 2).
 		Width(r.width)
 

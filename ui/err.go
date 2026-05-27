@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 
+	"claude-squad/ui/theme"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -11,11 +13,6 @@ type ErrBox struct {
 	height, width int
 	err           error
 }
-
-var errStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
-	Light: "#FF0000",
-	Dark:  "#FF0000",
-})
 
 func NewErrBox() *ErrBox {
 	return &ErrBox{}
@@ -44,5 +41,5 @@ func (e *ErrBox) String() string {
 			err = runewidth.Truncate(err, e.width-3, "...")
 		}
 	}
-	return lipgloss.Place(e.width, e.height, lipgloss.Center, lipgloss.Center, errStyle.Render(err))
+	return lipgloss.Place(e.width, e.height, lipgloss.Center, lipgloss.Center, theme.Current().DangerStyle().Render(err))
 }
