@@ -626,15 +626,22 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		submitted := m.renameOverlay.IsSubmitted()
 		value := m.renameOverlay.Value()
+		deep := m.renameOverlay.IsDeep()
 		m.renameOverlay = nil
 		m.state = stateDefault
 		m.menu.SetState(ui.StateDefault)
 
 		if submitted {
 			if selected := m.list.GetSelectedInstance(); selected != nil {
-				selected.SetDisplayName(value)
-				if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-					return m, m.handleError(err)
+				if deep {
+					if err := m.deepRename(selected, value); err != nil {
+						return m, m.handleError(err)
+					}
+				} else {
+					selected.SetDisplayName(value)
+					if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+						return m, m.handleError(err)
+					}
 				}
 			}
 		}
@@ -935,6 +942,27 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 // instanceChanged updates the preview pane, menu, and diff pane based on the selected instance. It returns an error
 // Cmd if there was any error.
+// deepRename renames the selected instance's title, git branch, worktree directory, and tmux
+// session to value, then clears the cosmetic label so the list shows the corrected name. It
+// rejects an empty title or one already used by another instance (Title is the storage key).
+// Runs synchronously on the main event loop — the rename is a handful of instant subprocesses,
+// and the git/tmux structs guard the fields the background poll loop reads.
+func (m *home) deepRename(selected *session.Instance, value string) error {
+	if value == "" {
+		return fmt.Errorf("session name cannot be empty")
+	}
+	for _, inst := range m.list.GetInstances() {
+		if inst != selected && inst.Title == value {
+			return fmt.Errorf("a session named %q already exists", value)
+		}
+	}
+	if err := selected.Rename(value); err != nil {
+		return err
+	}
+	selected.SetDisplayName("")
+	return m.storage.SaveInstances(m.list.GetInstances())
+}
+
 func (m *home) instanceChanged() tea.Cmd {
 	// selected may be nil
 	selected := m.list.GetSelectedInstance()

@@ -490,6 +490,45 @@ func (i *Instance) SetTitle(title string) error {
 	return nil
 }
 
+// Rename performs an in-place "deep" rename of a started instance to newTitle: it renames
+// the tmux session, then the git branch and worktree directory, then updates Title and the
+// rendered Branch field. Unlike SetDisplayName (which only changes the cosmetic label) this
+// fixes the identity everywhere it surfaces — git, GitHub/PRs, the worktree path — without
+// killing the running agent. The order (tmux → git) keeps rollback exact: a git failure only
+// has to undo the tmux rename (reversible by name), never a worktree move that already minted
+// a fresh path. Title/Branch are written here on the main thread; no background reader touches
+// them, so they need no lock (the git/tmux structs guard their own fields).
+func (i *Instance) Rename(newTitle string) error {
+	newTitle = strings.TrimSpace(newTitle)
+	if newTitle == "" {
+		return fmt.Errorf("cannot rename to an empty title")
+	}
+	if !i.started {
+		return fmt.Errorf("cannot deep-rename an instance that has not been started")
+	}
+
+	oldTitle := i.Title
+
+	// 1. Rename the tmux session first: atomic and exactly reversible by name.
+	if err := i.tmuxSession.Rename(newTitle); err != nil {
+		return fmt.Errorf("failed to rename tmux session: %w", err)
+	}
+
+	// 2. Rename the git branch + move the worktree. On failure (incl. its own internal
+	// rollback of a half-done branch rename), roll the tmux session back to its old name.
+	if err := i.gitWorktree.Rename(newTitle); err != nil {
+		if rbErr := i.tmuxSession.Rename(oldTitle); rbErr != nil {
+			log.ErrorLog.Printf("failed to roll back tmux rename %q->%q: %v", newTitle, oldTitle, rbErr)
+		}
+		return fmt.Errorf("failed to rename git worktree: %w", err)
+	}
+
+	// 3. Adopt the corrected identity.
+	i.Title = newTitle
+	i.Branch = i.gitWorktree.GetBranchName()
+	return nil
+}
+
 // DisplayName returns the cosmetic label shown for the instance, falling back to Title when
 // no custom label has been set.
 func (i *Instance) DisplayName() string {

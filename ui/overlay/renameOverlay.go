@@ -17,6 +17,9 @@ type RenameOverlay struct {
 	submitted bool
 	canceled  bool
 	width     int
+	// deep selects whether submitting renames the underlying git branch, worktree, and
+	// tmux session (true) or only the cosmetic display label (false). Tab toggles it.
+	deep bool
 }
 
 // NewRenameOverlay creates a rename dialog pre-filled with the instance's current label,
@@ -29,11 +32,15 @@ func NewRenameOverlay(currentLabel string) *RenameOverlay {
 	return &RenameOverlay{
 		input: in,
 		width: 50,
+		// Default to the safe, non-destructive label-only rename (the historical R
+		// behavior). A deep rename mutates git refs, the worktree dir, and a live tmux
+		// session, so it should be a deliberate opt-in via Tab rather than the reflex.
+		deep: false,
 	}
 }
 
 // HandleKeyPress processes a key press and returns true if the overlay should be closed.
-// enter submits, esc/ctrl+c cancel, everything else edits the field.
+// enter submits, esc/ctrl+c cancel, tab toggles deep/label-only, everything else edits.
 func (r *RenameOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
 	switch msg.String() {
 	case "enter":
@@ -42,11 +49,18 @@ func (r *RenameOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
 	case "esc", "ctrl+c":
 		r.canceled = true
 		return true
+	case "tab":
+		r.deep = !r.deep
+		return false
 	default:
 		r.input, _ = r.input.Update(msg)
 		return false
 	}
 }
+
+// IsDeep reports whether the user chose a deep rename (branch + worktree + tmux session)
+// rather than a cosmetic label-only change.
+func (r *RenameOverlay) IsDeep() bool { return r.deep }
 
 // Value returns the trimmed label the user entered.
 func (r *RenameOverlay) Value() string {
@@ -70,7 +84,17 @@ func (r *RenameOverlay) Render() string {
 		Padding(1, 2).
 		Width(r.width)
 
-	hint := lipgloss.NewStyle().Faint(true).Render("enter to save · esc to cancel")
-	content := "Rename session\n\n" + r.input.View() + "\n\n" + hint
+	deepMark, labelMark := "○", "○"
+	if r.deep {
+		deepMark = "●"
+	} else {
+		labelMark = "●"
+	}
+	// List the default (label only) first so the leading option is the one that's selected
+	// on open; deep rename is the deliberate opt-in below it.
+	mode := lipgloss.NewStyle().Faint(true).Render(
+		"mode: " + labelMark + " label only\n      " + deepMark + " deep (branch + worktree)")
+	hint := lipgloss.NewStyle().Faint(true).Render("tab toggle · enter save · esc cancel")
+	content := "Rename session\n\n" + r.input.View() + "\n\n" + mode + "\n\n" + hint
 	return style.Render(content)
 }
