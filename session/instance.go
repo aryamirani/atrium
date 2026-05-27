@@ -165,9 +165,24 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		switch {
 		case sess.DoesSessionExist():
 			// Normal case: the session survived (cs detaches, it doesn't kill),
-			// so reattach to it.
+			// so reattach to it. If the attach (Restore) fails, kill the stale
+			// session and apply the same worktree-valid/Paused fallback as below
+			// rather than aborting the entire load.
 			if err := instance.Start(false); err != nil {
-				return nil, err
+				log.ErrorLog.Printf("failed to restore session %s, attempting recovery: %v", instance.Title, err)
+				if closeErr := sess.Close(); closeErr != nil {
+					log.ErrorLog.Printf("failed to close stale session %s: %v", instance.Title, closeErr)
+				}
+				if valid, validErr := instance.gitWorktree.IsValidWorktree(); validErr == nil && valid {
+					if startErr := sess.Start(instance.gitWorktree.GetWorktreePath()); startErr != nil {
+						return nil, startErr
+					}
+					instance.started = true
+					instance.SetStatus(Running)
+				} else {
+					instance.started = true
+					instance.SetStatus(Paused)
+				}
 			}
 		default:
 			// The tmux session is gone — e.g. after a reboot, or the one-time
@@ -648,7 +663,12 @@ func (i *Instance) Resume() error {
 		// Session exists, just restore PTY connection to it
 		if err := i.tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Print(err)
-			// If restore fails, fall back to creating new session
+			// Restore failed — the stale session must be killed before Start()
+			// can create a new one (Start guards against duplicate session names).
+			if closeErr := i.tmuxSession.Close(); closeErr != nil {
+				log.ErrorLog.Print(closeErr)
+			}
+			// Fall back to creating new session
 			if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 				log.ErrorLog.Print(err)
 				// Cleanup git worktree if tmux session creation fails
