@@ -54,6 +54,21 @@ func busyMarkers(program string) []string {
 	return nil
 }
 
+// continueProgram returns the launch command that resumes the prior conversation for
+// claude, and the unchanged program for every other agent. Used only when resurrecting a
+// session whose tmux pane has died, so the relaunched claude picks up where it left off
+// instead of starting blank. tmux word-splits the trailing command string itself (the
+// same reason "aider --model x" works), so appending " --continue" to the single program
+// argv element is sufficient — no shell wrapping. The claude predicate matches the same
+// HasSuffix check used by busyMarkers/detectPrompt, so an absolute path like
+// /usr/local/bin/claude is recognized and the flag lands after it.
+func continueProgram(program string) string {
+	if strings.HasSuffix(program, ProgramClaude) {
+		return program + " --continue"
+	}
+	return program
+}
+
 // detectPrompt reports whether region (the bottom chrome of the pane) shows a prompt that
 // blocks on the user's answer. Claude has two shapes: the tool-permission dialog, and any
 // interactive selection (AskUserQuestion, plan approval, etc.). The selection footer is
@@ -196,6 +211,20 @@ func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec 
 // Start creates and starts a new tmux session, then attaches to it. Program is the command to run in
 // the session (ex. claude). workdir is the git worktree directory.
 func (t *TmuxSession) Start(workDir string) error {
+	return t.start(workDir, t.program)
+}
+
+// StartContinue starts the session resuming the prior conversation when the program
+// supports it (claude --continue). It is used only on resurrection — the agent process
+// died and we are relaunching it — never on PTY reattach (Restore), where the process is
+// still alive. The continue command is computed transiently; t.program, the value
+// persisted via Instance, is never mutated.
+func (t *TmuxSession) StartContinue(workDir string) error {
+	return t.start(workDir, continueProgram(t.program))
+}
+
+// start creates a new detached tmux session running program in workDir, then attaches.
+func (t *TmuxSession) start(workDir string, program string) error {
 	// Check if the session already exists
 	if t.DoesSessionExist() {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
@@ -203,7 +232,7 @@ func (t *TmuxSession) Start(workDir string) error {
 
 	// Create a new detached tmux session and start claude in it. -n gives the
 	// window the human-readable title (the conf disables auto-rename).
-	cmd := tmuxCommand("new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName, t.program)
+	cmd := tmuxCommand("new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName, program)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {

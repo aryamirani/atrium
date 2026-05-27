@@ -178,7 +178,9 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			// keeps the instance usable. If the worktree is also gone, leave it
 			// Paused so the branch is preserved and Resume can recover it.
 			if valid, err := instance.gitWorktree.IsValidWorktree(); err == nil && valid {
-				if err := sess.Start(instance.gitWorktree.GetWorktreePath()); err != nil {
+				// The agent process died with the tmux session, so resume its prior
+				// conversation rather than starting blank (no-op for non-claude agents).
+				if err := sess.StartContinue(instance.gitWorktree.GetWorktreePath()); err != nil {
 					return nil, err
 				}
 				instance.started = true
@@ -660,8 +662,9 @@ func (i *Instance) Resume() error {
 			}
 		}
 	} else {
-		// Create new tmux session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+		// The tmux session is gone, so the agent process died with it: resume its prior
+		// conversation rather than starting blank (no-op for non-claude agents).
+		if err := i.tmuxSession.StartContinue(i.gitWorktree.GetWorktreePath()); err != nil {
 			log.ErrorLog.Print(err)
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {

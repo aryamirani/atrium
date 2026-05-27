@@ -400,3 +400,80 @@ func TestStartTmuxSession(t *testing.T) {
 	_, err = ptyFactory.files[1].Stat()
 	require.NoError(t, err)
 }
+
+func TestContinueProgram(t *testing.T) {
+	cases := []struct {
+		name    string
+		program string
+		want    string
+	}{
+		{"bare claude gets --continue", "claude", "claude --continue"},
+		{"absolute claude path gets --continue", "/usr/local/bin/claude", "/usr/local/bin/claude --continue"},
+		{"aider unchanged", "aider --model x", "aider --model x"},
+		{"gemini unchanged", "gemini", "gemini"},
+		// HasSuffix, not Contains: a binary merely containing "claude" is not matched.
+		{"claude as non-suffix unchanged", "claude-wrapper", "claude-wrapper"},
+		// A claude program carrying flags does not end in "claude", so it is not matched —
+		// deliberately consistent with busyMarkers/detectPrompt/containsStartupGate, which
+		// use the same HasSuffix predicate and likewise ignore flag-bearing claude profiles.
+		{"claude with trailing flags unchanged", "claude --model opus", "claude --model opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, continueProgram(tc.program))
+		})
+	}
+}
+
+// startMockExec mirrors TestStartTmuxSession's executor: the first has-session check
+// reports "not found" so start's entry guard passes, and every later check succeeds so
+// the poll loop sees the session and breaks.
+func startMockExec() cmd_test.MockCmdExec {
+	created := false
+	return cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			return []byte("output"), nil
+		},
+	}
+}
+
+func TestStartContinueAppendsContinueForClaude(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("cont-test", "claude", ptyFactory, startMockExec())
+
+	require.NoError(t, session.StartContinue(t.TempDir()))
+
+	// cmds[0] is the new-session launch; cmds[1] is the trailing attach from Restore.
+	newSession := cmd2.ToString(ptyFactory.cmds[0])
+	require.Contains(t, newSession, "claude --continue")
+	// The session name is keyed off the session, not the program, so it is unchanged.
+	require.Contains(t, newSession, "new-session -d -s claudesquad_cont-test")
+}
+
+func TestStartContinueLeavesNonClaudeUnchanged(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("cont-test", "aider --model x", ptyFactory, startMockExec())
+
+	require.NoError(t, session.StartContinue(t.TempDir()))
+
+	newSession := cmd2.ToString(ptyFactory.cmds[0])
+	require.NotContains(t, newSession, "--continue")
+	require.Contains(t, newSession, "aider --model x")
+}
+
+// Plain Start must never append --continue, even for claude — that is the first-time and
+// PTY-reattach path, where there is nothing to continue.
+func TestStartDoesNotAppendContinue(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("cont-test", "claude", ptyFactory, startMockExec())
+
+	require.NoError(t, session.Start(t.TempDir()))
+	require.NotContains(t, cmd2.ToString(ptyFactory.cmds[0]), "--continue")
+}
