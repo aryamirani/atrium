@@ -92,6 +92,7 @@ func TestIsReadyForPrompt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ptyFactory := NewMockPtyFactory(t)
 			cmdExec := cmd_test.MockCmdExec{
+				RunFunc: func(cmd *exec.Cmd) error { return nil }, // session exists
 				OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 					return []byte(tc.content), nil
 				},
@@ -124,6 +125,75 @@ func TestContainsStartupGate(t *testing.T) {
 			require.Equal(t, tc.want, containsStartupGate(tc.program, tc.content))
 		})
 	}
+}
+
+// A dead/missing tmux session must not be probed: the pollers should short-circuit
+// without ever running capture-pane, so a single dead session can't flood the log
+// and error box with "error capturing pane content: exit status 1" every tick.
+func TestPollersSkipCaptureWhenSessionDead(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	captured := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			// has-session fails => the session no longer exists.
+			return fmt.Errorf("can't find session")
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			captured = true
+			return nil, fmt.Errorf("error capturing pane content: exit status 1")
+		},
+	}
+	session := newTmuxSession("dead", "claude", ptyFactory, cmdExec)
+
+	updated, hasPrompt := session.HasUpdated()
+	require.False(t, updated)
+	require.False(t, hasPrompt)
+	require.False(t, session.IsReadyForPrompt())
+	require.False(t, captured, "capture-pane must not run when the tmux session is dead")
+}
+
+// The happy path must keep working: an alive session still captures and reports
+// freshly seen content as updated.
+func TestHasUpdatedCapturesWhenSessionAlive(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc:    func(cmd *exec.Cmd) error { return nil }, // session exists
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("hello"), nil },
+	}
+	session := newTmuxSession("alive", "claude", ptyFactory, cmdExec)
+	session.monitor = newStatusMonitor() // normally set by Start/Restore
+
+	updated, _ := session.HasUpdated()
+	require.True(t, updated, "first capture of new content should report updated")
+}
+
+// TestSessionDeathStopsProbing drives a REAL tmux session (not mocks) to reproduce the
+// production flood: once a started session's pane is killed out from under cs, the
+// pollers must report "not alive" and stop capturing, instead of running capture-pane
+// and getting "exit status 1" on every tick.
+func TestSessionDeathStopsProbing(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+
+	name := fmt.Sprintf("death-%s-%d", t.Name(), rand.Int31())
+	session := NewTmuxSession(name, "sleep 300")
+	require.NoError(t, session.Start(t.TempDir()))
+	t.Cleanup(func() { _ = session.Close() })
+
+	// While alive: detectable, and a probe runs without panicking.
+	require.True(t, session.DoesSessionExist())
+	_, _ = session.HasUpdated()
+
+	// Kill the session out from under cs (simulates a crash / external kill).
+	require.NoError(t, exec.Command("tmux", "kill-session", "-t", session.sanitizedName).Run())
+
+	// The pollers must now short-circuit cleanly rather than erroring every tick.
+	require.False(t, session.DoesSessionExist())
+	updated, hasPrompt := session.HasUpdated()
+	require.False(t, updated)
+	require.False(t, hasPrompt)
+	require.False(t, session.IsReadyForPrompt())
 }
 
 func TestStartTmuxSession(t *testing.T) {

@@ -347,6 +347,13 @@ func (i *Instance) Preview() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", nil
 	}
+	// A started session whose tmux pane has died (server restart, the agent
+	// process exited, an external kill) would fail capture every refresh and
+	// escalate to the error box. Treat a missing session as empty; the metadata
+	// loop detects it via TmuxAlive() and recovers the instance to Paused.
+	if !i.TmuxAlive() {
+		return "", nil
+	}
 	return i.tmuxSession.CapturePaneContent()
 }
 
@@ -444,8 +451,23 @@ func (i *Instance) TmuxAlive() bool {
 	return i.tmuxSession.DoesSessionExist()
 }
 
-// Pause stops the tmux session and removes the worktree, preserving the branch
+// Pause stops the tmux session and removes the worktree, preserving the branch.
+// It copies the branch name to the clipboard so the user can check it out elsewhere.
 func (i *Instance) Pause() error {
+	return i.pause(true)
+}
+
+// RecoverLostSession transitions an instance whose tmux pane has died (server
+// restart, agent exit, external kill) into Paused, so the metadata loop stops
+// polling it and the user can bring it back with Resume. It reuses the Pause path —
+// committing any uncommitted work and removing the worktree — but does not copy the
+// branch to the clipboard, since the user did not initiate the transition.
+func (i *Instance) RecoverLostSession() error {
+	return i.pause(false)
+}
+
+// pause stops the tmux session and removes the worktree, preserving the branch.
+func (i *Instance) pause(copyBranchToClipboard bool) error {
 	if !i.started {
 		return fmt.Errorf("cannot pause instance that has not been started")
 	}
@@ -478,7 +500,9 @@ func (i *Instance) Pause() error {
 			log.ErrorLog.Print(err)
 		}
 		i.SetStatus(Paused)
-		_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
+		if copyBranchToClipboard {
+			_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
+		}
 		return i.combineErrors(errs)
 	}
 
@@ -522,7 +546,9 @@ func (i *Instance) Pause() error {
 	}
 
 	i.SetStatus(Paused)
-	_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
+	if copyBranchToClipboard {
+		_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
+	}
 
 	if err := i.combineErrors(errs); err != nil {
 		log.ErrorLog.Print(err)

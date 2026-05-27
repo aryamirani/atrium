@@ -35,6 +35,9 @@ type TmuxSession struct {
 	ptyFactory PtyFactory
 	// cmdExec is used to execute commands in the tmux session.
 	cmdExec cmd.Executor
+	// captureErrLog throttles capture-pane error logging so a persistent failure
+	// can't flood the log with hundreds of identical lines per second.
+	captureErrLog *log.Every
 
 	// Initialized by Start or Restore
 	//
@@ -83,6 +86,7 @@ func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec 
 		program:       program,
 		ptyFactory:    ptyFactory,
 		cmdExec:       cmdExec,
+		captureErrLog: log.NewEvery(60 * time.Second),
 	}
 }
 
@@ -192,6 +196,9 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 // gate, so a queued first message can be submitted into its input box. It is a
 // read-only check: it captures the pane once and never sends keystrokes.
 func (t *TmuxSession) IsReadyForPrompt() bool {
+	if !t.DoesSessionExist() {
+		return false
+	}
 	content, err := t.CapturePaneContent()
 	if err != nil || strings.TrimSpace(content) == "" {
 		return false
@@ -253,9 +260,19 @@ func (t *TmuxSession) SendKeys(keys string) error {
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
+	// A dead/missing session can never have updated content; probing it would
+	// fail every tick and flood the log. The caller (metadata loop) detects the
+	// dead session separately and recovers the instance to Paused.
+	if !t.DoesSessionExist() {
+		return false, false
+	}
 	content, err := t.CapturePaneContent()
 	if err != nil {
-		log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
+		// The session exists but capture failed transiently; throttle so a
+		// persistent failure can't gain hundreds of identical lines per second.
+		if t.captureErrLog.ShouldLog() {
+			log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
+		}
 		return false, false
 	}
 

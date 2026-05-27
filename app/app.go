@@ -59,6 +59,9 @@ type home struct {
 
 	// storage is the interface for saving/loading data to/from the app's state
 	storage *session.Storage
+	// lostStrikes counts consecutive ticks each instance has been seen with a dead
+	// tmux session, debouncing auto-recovery to Paused (see recoverLostInstances).
+	lostStrikes map[*session.Instance]int
 	// appConfig stores persistent application configuration
 	appConfig *config.Config
 	// appState stores persistent application state like seen help screens
@@ -135,6 +138,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
 		storage:      storage,
+		lostStrikes:  make(map[*session.Instance]int),
 		appConfig:    appConfig,
 		program:      program,
 		autoYes:      autoYes,
@@ -244,9 +248,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
+		if recoverLostInstances(msg.results, m.lostStrikes) {
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				log.ErrorLog.Printf("failed to persist recovered sessions: %v", err)
+			}
+		}
 		for _, r := range msg.results {
-			// Skip instances that were paused while metadata was being computed
-			if r.instance.Status == session.Paused {
+			// Skip instances that were paused while metadata was being computed, or
+			// that were just recovered to Paused above because their session died.
+			if r.sessionLost || r.instance.Status == session.Paused {
 				continue
 			}
 			if r.updated {
@@ -904,7 +914,10 @@ type instanceMetaResult struct {
 	updated        bool
 	hasPrompt      bool
 	readyForPrompt bool
-	diffStats      *git.DiffStats
+	// sessionLost is set when a started, non-paused instance's tmux pane no longer
+	// exists. The main thread recovers it to Paused (see recoverLostInstances).
+	sessionLost bool
+	diffStats   *git.DiffStats
 }
 
 // sendPromptCmd submits a queued initial prompt to an instance off the UI thread,
@@ -931,6 +944,38 @@ func deliverReadyPrompts(results []instanceMetaResult) []tea.Cmd {
 		}
 	}
 	return cmds
+}
+
+// lostSessionRecoverThreshold is how many consecutive ticks an instance must be seen
+// with a dead tmux session before it is recovered to Paused. Recovery commits any WIP
+// and removes the worktree, so a single transient `tmux has-session` miss (server
+// blip, load spike) must not trigger it — require confirmation across ticks.
+const lostSessionRecoverThreshold = 2
+
+// recoverLostInstances moves instances whose tmux session has died (flagged
+// sessionLost by the metadata tick) into Paused, so they stop being polled and can be
+// brought back with Resume. It debounces using strikes (a per-instance count of
+// consecutive dead observations, owned by the caller): a session is only recovered
+// after lostSessionRecoverThreshold consecutive misses; any live observation resets
+// the count. Returns whether any instance was recovered so the caller can persist.
+// Runs on the main thread — the only place model state may be mutated.
+func recoverLostInstances(results []instanceMetaResult, strikes map[*session.Instance]int) (recovered bool) {
+	for _, r := range results {
+		if !r.sessionLost || r.instance.Paused() {
+			delete(strikes, r.instance) // alive (or already paused): clear any prior strikes
+			continue
+		}
+		strikes[r.instance]++
+		if strikes[r.instance] < lostSessionRecoverThreshold {
+			continue // not yet confirmed dead; re-check next tick
+		}
+		delete(strikes, r.instance)
+		if err := r.instance.RecoverLostSession(); err != nil {
+			log.ErrorLog.Printf("failed to recover lost session %q: %v", r.instance.Title, err)
+		}
+		recovered = true
+	}
+	return recovered
 }
 
 // metadataUpdateDoneMsg is sent when the background metadata update completes.
@@ -991,6 +1036,13 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 				defer wg.Done()
 				r := &results[i]
 				r.instance = instance
+				// A started session whose tmux pane has died would fail every probe
+				// (capture, diff) and flood the log/error box. Detect it once here
+				// (read-only) and skip polling; the main thread recovers it to Paused.
+				if instance.Started() && !instance.Paused() && !instance.TmuxAlive() {
+					r.sessionLost = true
+					return
+				}
 				r.updated, r.hasPrompt = instance.HasUpdated()
 				// Only probe readiness while a prompt is actually queued (a brief
 				// window after a new session), so the extra pane capture is rare.
