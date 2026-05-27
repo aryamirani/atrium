@@ -114,6 +114,18 @@ The menu at the bottom of the screen shows available commands:
 
 Claude Squad stores its configuration in `~/.claude-squad/config.json`. You can find the exact path by running `cs debug`.
 
+#### Auto-attach
+
+By default, Claude Squad attaches you to a new session as soon as it starts, so you land directly in the agent. Detach with `ctrl-q` to return to the session list. When you create a session with the `N` form and provide an initial prompt, auto-attach is skipped — the session stays in the list so the prompt is delivered automatically once the agent is ready, and you can attach with `↵`/`o` whenever you like.
+
+To disable auto-attach and always return to the list after creating a session, set `auto_attach` to `false`:
+
+```json
+{
+  "auto_attach": false
+}
+```
+
 #### Profiles
 
 Profiles let you define multiple named program configurations and switch between them when creating a new session. When more than one profile is defined, the session creation overlay shows a profile picker that you can navigate with `←`/`→`.

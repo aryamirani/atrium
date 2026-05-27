@@ -673,3 +673,37 @@ func TestStateNew_TypingSurvivesSelectionHijack(t *testing.T) {
 	require.Equal(t, "y", newInst.Title, "title must follow the tracked new instance, not the selection")
 	require.Equal(t, "b", trailing.Title, "the now-selected instance must be untouched")
 }
+
+// TestShouldAutoOpen covers the auto-attach gating policy. An instance built via
+// NewInstance is never started, so Started() is false — which both encodes the
+// "never attach a session that didn't come up" guard and keeps these (and any future)
+// tests off the real-PTY attach path. The positive path is exercised by manual verification.
+func TestShouldAutoOpen(t *testing.T) {
+	newHomeWithAutoAttach := func(enabled bool) *home {
+		cfg := config.DefaultConfig()
+		cfg.AutoAttach = &enabled
+		return &home{ctx: context.Background(), appConfig: cfg}
+	}
+	newInst := func(prompt string) *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title:   "t",
+			Path:    t.TempDir(),
+			Program: "claude",
+		})
+		require.NoError(t, err)
+		inst.Prompt = prompt
+		return inst
+	}
+
+	t.Run("flag off, no prompt", func(t *testing.T) {
+		assert.False(t, newHomeWithAutoAttach(false).shouldAutoOpen(newInst("")))
+	})
+	t.Run("flag on, prompt set", func(t *testing.T) {
+		assert.False(t, newHomeWithAutoAttach(true).shouldAutoOpen(newInst("do a thing")))
+	})
+	t.Run("flag on, no prompt, but not started", func(t *testing.T) {
+		// The most eligible case by policy, yet still false because the session is not
+		// running — the Started/TmuxAlive guard holds.
+		assert.False(t, newHomeWithAutoAttach(true).shouldAutoOpen(newInst("")))
+	})
+}

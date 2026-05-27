@@ -48,6 +48,16 @@ type Config struct {
 	// config for cs sessions instead of the bundled managed config. When empty,
 	// cs materializes and uses its own config.
 	TmuxConfigOverride string `json:"tmux_config_override,omitempty"`
+	// AutoAttach, when true, automatically attaches to a new session as soon as it
+	// starts (and has no initial prompt). nil means use the default (on), so the
+	// feature stays enabled for config files written before it existed.
+	AutoAttach *bool `json:"auto_attach,omitempty"`
+}
+
+// GetAutoAttach reports whether new sessions should auto-attach on creation.
+// A nil AutoAttach (e.g. an older config file with no such key) defaults to on.
+func (c *Config) GetAutoAttach() bool {
+	return c.AutoAttach == nil || *c.AutoAttach
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and
@@ -93,6 +103,7 @@ func DefaultConfig() *Config {
 		program = defaultProgram
 	}
 
+	autoAttach := true
 	return &Config{
 		DefaultProgram:     program,
 		AutoYes:            false,
@@ -105,6 +116,7 @@ func DefaultConfig() *Config {
 			}
 			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
 		}(),
+		AutoAttach: &autoAttach,
 	}
 }
 

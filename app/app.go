@@ -359,6 +359,26 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (see deliverReadyPrompts). Sending here races the agent's boot and lands
 		// keystrokes in the trust dialog instead of the input box.
 		m.menu.SetState(ui.StateDefault)
+
+		if m.shouldAutoOpen(msg.instance) {
+			// Drop straight into the new session, mirroring the KeyEnter attach path.
+			// helpTypeInstanceAttach teaches ctrl-q to detach (shown once). Attach the
+			// instance directly rather than via m.list.Attach(): this callback runs when
+			// the help overlay is dismissed, by which point a background instanceStartedMsg
+			// from another freshly-created session could have moved the list selection.
+			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
+				ch, err := msg.instance.Attach()
+				if err != nil {
+					m.handleError(err)
+					return
+				}
+				<-ch
+				m.state = stateDefault
+				m.instanceChanged()
+			})
+			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+		}
+
 		m.showHelpScreen(helpStart(msg.instance), nil)
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
@@ -943,6 +963,17 @@ type instanceChangedMsg struct{}
 type instanceStartedMsg struct {
 	instance *session.Instance
 	err      error
+}
+
+// shouldAutoOpen reports whether a freshly started session should be attached
+// automatically. It is gated by the auto_attach config flag and skipped when the
+// instance carries an initial prompt (delivered asynchronously by the metadata tick,
+// which is paused while attached). The Started/TmuxAlive guards avoid attaching a
+// session that did not come up — and, because Started() short-circuits before
+// TmuxAlive() (which dereferences tmuxSession), keep unstarted instances (e.g. in
+// tests) off both the panic and the attach path.
+func (m *home) shouldAutoOpen(inst *session.Instance) bool {
+	return m.appConfig.GetAutoAttach() && inst.Prompt == "" && inst.Started() && inst.TmuxAlive()
 }
 
 // branchSearchDebounceMsg fires after the debounce interval to trigger a search.

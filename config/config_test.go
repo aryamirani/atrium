@@ -303,3 +303,20 @@ func TestSaveConfig(t *testing.T) {
 		assert.Equal(t, testConfig.BranchPrefix, loadedConfig.BranchPrefix)
 	})
 }
+
+func TestGetAutoAttach(t *testing.T) {
+	t.Run("default config is on", func(t *testing.T) {
+		assert.True(t, DefaultConfig().GetAutoAttach())
+	})
+	t.Run("nil field (older config) defaults on", func(t *testing.T) {
+		assert.True(t, (&Config{}).GetAutoAttach())
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		v := true
+		assert.True(t, (&Config{AutoAttach: &v}).GetAutoAttach())
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		v := false
+		assert.False(t, (&Config{AutoAttach: &v}).GetAutoAttach())
+	})
+}
