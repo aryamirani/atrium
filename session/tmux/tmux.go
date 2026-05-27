@@ -24,6 +24,62 @@ const ProgramClaude = "claude"
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
 
+// PaneState is the classification of a tmux pane derived from its content. Unlike a
+// raw "did the content change" signal, these are *level* signals: each is decided by
+// what the pane currently shows, so they are stable across ticks while the underlying
+// situation is unchanged (no flicker).
+type PaneState int
+
+const (
+	// PaneUnknown means the pane could not be read this tick; callers keep the prior status.
+	PaneUnknown PaneState = iota
+	// PaneWorking means the agent is actively processing.
+	PaneWorking
+	// PanePrompt means a yes/no prompt is on screen awaiting an answer.
+	PanePrompt
+	// PaneIdle means the agent has settled with nothing pending.
+	PaneIdle
+)
+
+// busyMarkers returns substrings that, when present in the pane, prove the agent is
+// actively working. The marker is a level signal: it stays on screen for the whole turn
+// (including silent tool calls), and its own ticking elapsed-time counter no longer
+// matters because we test for presence, not byte-equality. Programs without a known
+// marker fall back to content-change detection in Poll. Extend the slice when an agent's
+// UI changes; the failure mode of a stale marker is a visible "always idle", not flicker.
+func busyMarkers(program string) []string {
+	if strings.HasSuffix(program, ProgramClaude) {
+		return []string{"esc to interrupt"}
+	}
+	return nil
+}
+
+// detectPrompt reports whether region (the bottom chrome of the pane) shows a prompt that
+// blocks on the user's answer. Claude has two shapes: the tool-permission dialog, and any
+// interactive selection (AskUserQuestion, plan approval, etc.). The selection footer is
+// matched by its co-occurring tokens on one line ("Esc to cancel" + navigate/select) so a
+// sentence merely mentioning "Esc to cancel" cannot trip it.
+func detectPrompt(program, region string) bool {
+	switch {
+	case strings.HasSuffix(program, ProgramClaude):
+		if strings.Contains(region, "No, and tell Claude what to do differently") {
+			return true
+		}
+		for _, line := range strings.Split(region, "\n") {
+			if strings.Contains(line, "Esc to cancel") &&
+				(strings.Contains(line, "to navigate") || strings.Contains(line, "to select")) {
+				return true
+			}
+		}
+		return false
+	case strings.HasPrefix(program, ProgramAider):
+		return strings.Contains(region, "(Y)es/(N)o/(D)on't ask again")
+	case strings.HasPrefix(program, ProgramGemini):
+		return strings.Contains(region, "Yes, allow once")
+	}
+	return false
+}
+
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
 	// Initialized by NewTmuxSession
@@ -64,6 +120,47 @@ const TmuxPrefix = "claudesquad_"
 
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 
+// ansiRegex matches ANSI/SGR escape sequences. The pane is captured with `-e` (the
+// preview pane needs the colors), but for state detection we strip them so a cursor
+// blink or color toggle no longer counts as a content change, and so marker/prompt
+// substring matches are not split by SGR codes embedded mid-text.
+var ansiRegex = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]")
+
+// cleanForDetection strips ANSI escapes and trailing whitespace per line, yielding the
+// stable text used for hashing and substring matching in Poll.
+func cleanForDetection(content string) string {
+	content = ansiRegex.ReplaceAllString(content, "")
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// liveChromeLines returns the last n non-empty lines of the pane — the region where
+// Claude renders its live status bar, prompt, and input box. Marker detection must be
+// confined here: capture-pane returns the whole visible pane including the scrolled-back
+// transcript, so the same strings ("esc to interrupt", a prompt footer) can appear in the
+// conversation body, and only their presence in the bottom chrome reflects the live state.
+func liveChromeLines(content string, n int) string {
+	lines := strings.Split(content, "\n")
+	var kept []string
+	for i := len(lines) - 1; i >= 0 && len(kept) < n; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			kept = append(kept, lines[i])
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// Window sizes for marker detection within the bottom chrome. The working status bar is
+// the last line, so a tight window is safest; a prompt block (question + options + footer,
+// possibly with a todo tracker below) needs a taller one.
+const (
+	workChromeLines   = 3
+	promptChromeLines = 15
+)
+
 func toClaudeSquadTmuxName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
@@ -87,6 +184,7 @@ func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec 
 		ptyFactory:    ptyFactory,
 		cmdExec:       cmdExec,
 		captureErrLog: log.NewEvery(60 * time.Second),
+		monitor:       newStatusMonitor(program),
 	}
 }
 
@@ -213,18 +311,29 @@ func (t *TmuxSession) Restore() error {
 		return fmt.Errorf("error opening PTY: %w", err)
 	}
 	t.ptmx = ptmx
-	t.monitor = newStatusMonitor()
+	t.monitor = newStatusMonitor(t.program)
 	return nil
 }
 
 type statusMonitor struct {
+	program string
 	// Store hashes to save memory.
 	prevOutputHash []byte
+	// lastReported is the last committed PaneState, used by the working→idle hysteresis.
+	lastReported PaneState
+	// idleStreak counts consecutive idle observations since the agent was last working.
+	idleStreak int
 }
 
-func newStatusMonitor() *statusMonitor {
-	return &statusMonitor{}
+func newStatusMonitor(program string) *statusMonitor {
+	return &statusMonitor{program: program}
 }
+
+// idleConfirmTicks is how many consecutive idle observations are required before a
+// working→idle transition is committed. At the 500ms metadata tick this is ~1s, which
+// absorbs the brief output gap at the end of a turn (and streaming pauses for agents on
+// the content-change fallback) without delaying the working indicator going up.
+const idleConfirmTicks = 2
 
 // hash hashes the string.
 func (m *statusMonitor) hash(s string) []byte {
@@ -257,39 +366,84 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
-// HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
-// the tmux pane has a prompt for aider or claude code.
-func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
-	// A dead/missing session can never have updated content; probing it would
-	// fail every tick and flood the log. The caller (metadata loop) detects the
-	// dead session separately and recovers the instance to Paused.
+// Poll classifies the current pane into a PaneState. It reads level signals (a prompt
+// on screen, a busy marker, otherwise content stability) rather than treating any byte
+// change as "working", which is what makes the result stable while the agent is idle.
+func (t *TmuxSession) Poll() PaneState {
+	// A dead/missing session can never be working; probing it would fail every tick
+	// and flood the log. The caller (metadata loop) detects the dead session
+	// separately and recovers the instance to Paused.
 	if !t.DoesSessionExist() {
-		return false, false
+		return PaneUnknown
 	}
-	content, err := t.CapturePaneContent()
+	raw, err := t.CapturePaneContent()
 	if err != nil {
 		// The session exists but capture failed transiently; throttle so a
-		// persistent failure can't gain hundreds of identical lines per second.
+		// persistent failure can't log hundreds of identical lines per second.
 		if t.captureErrLog.ShouldLog() {
 			log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
 		}
-		return false, false
+		return PaneUnknown
+	}
+	content := cleanForDetection(raw)
+
+	// Track content change for the no-marker fallback. Always update so the comparison
+	// is relative to the previous tick regardless of which path decided the state.
+	h := t.monitor.hash(content)
+	changed := !bytes.Equal(h, t.monitor.prevOutputHash)
+	t.monitor.prevOutputHash = h
+
+	// A prompt awaiting an answer takes precedence over "working": when an agent stops to
+	// ask, it is not processing, and this is the state a caller most needs to surface.
+	// Match only within the bottom chrome so the same strings in the scrolled-back
+	// transcript (e.g. the agent discussing these UIs) don't false-trigger.
+	if detectPrompt(t.program, liveChromeLines(content, promptChromeLines)) {
+		t.monitor.idleStreak = 0
+		t.monitor.lastReported = PanePrompt
+		return PanePrompt
 	}
 
-	// Only set hasPrompt for claude and aider. Use these strings to check for a prompt.
-	if t.program == ProgramClaude {
-		hasPrompt = strings.Contains(content, "No, and tell Claude what to do differently")
-	} else if strings.HasPrefix(t.program, ProgramAider) {
-		hasPrompt = strings.Contains(content, "(Y)es/(N)o/(D)on't ask again")
-	} else if strings.HasPrefix(t.program, ProgramGemini) {
-		hasPrompt = strings.Contains(content, "Yes, allow once")
+	working := false
+	if markers := busyMarkers(t.program); markers != nil {
+		// The busy marker lives in the status bar (the last line), so confine the match
+		// tightly to the bottom chrome rather than the whole pane.
+		workRegion := liveChromeLines(content, workChromeLines)
+		for _, m := range markers {
+			if strings.Contains(workRegion, m) {
+				working = true
+				break
+			}
+		}
+	} else {
+		// No known marker for this program: fall back to content-change detection.
+		working = changed
 	}
 
-	if !bytes.Equal(t.monitor.hash(content), t.monitor.prevOutputHash) {
-		t.monitor.prevOutputHash = t.monitor.hash(content)
-		return true, hasPrompt
+	if working {
+		t.monitor.idleStreak = 0
+		t.monitor.lastReported = PaneWorking
+		return PaneWorking
 	}
-	return false, hasPrompt
+
+	// Hysteresis: only the working→idle transition is debounced. Hold "working" for up to
+	// idleConfirmTicks-1 idle observations to absorb the end-of-turn output gap; going up
+	// to working stays immediate.
+	if t.monitor.lastReported == PaneWorking {
+		t.monitor.idleStreak++
+		if t.monitor.idleStreak < idleConfirmTicks {
+			return PaneWorking
+		}
+	}
+	t.monitor.lastReported = PaneIdle
+	return PaneIdle
+}
+
+// HasUpdated reports whether the agent is working and whether a prompt awaits an answer.
+// It is a thin shim over Poll, kept for the daemon (which only consults hasPrompt) and
+// for back-compat with existing callers.
+func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
+	s := t.Poll()
+	return s == PaneWorking, s == PanePrompt
 }
 
 func (t *TmuxSession) Attach() (chan struct{}, error) {

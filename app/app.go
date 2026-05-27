@@ -6,6 +6,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/git"
+	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
@@ -263,13 +264,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if r.sessionLost || r.instance.Status == session.Paused {
 				continue
 			}
-			if r.updated {
-				r.instance.SetStatus(session.Running)
-			} else if r.hasPrompt {
-				r.instance.TapEnter()
-			} else {
-				r.instance.SetStatus(session.Ready)
-			}
+			applyPaneState(r.instance, r.state)
 			if r.diffStats != nil && r.diffStats.Error != nil {
 				if !strings.Contains(r.diffStats.Error.Error(), "base commit SHA not set") {
 					log.WarningLog.Printf("could not update diff stats: %v", r.diffStats.Error)
@@ -949,13 +944,32 @@ func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
 // computed in a background goroutine.
 type instanceMetaResult struct {
 	instance       *session.Instance
-	updated        bool
-	hasPrompt      bool
+	state          tmux.PaneState
 	readyForPrompt bool
 	// sessionLost is set when a started, non-paused instance's tmux pane no longer
 	// exists. The main thread recovers it to Paused (see recoverLostInstances).
 	sessionLost bool
 	diffStats   *git.DiffStats
+}
+
+// applyPaneState maps a polled pane state onto an instance's status. Prompt handling
+// depends on AutoYes: with it on, auto-answer (TapEnter is a no-op otherwise); with it
+// off the session is blocked on the user, so surface NeedsInput rather than a spinner.
+// PaneUnknown (an unreadable pane) leaves the status untouched.
+func applyPaneState(inst *session.Instance, state tmux.PaneState) {
+	switch state {
+	case tmux.PaneWorking:
+		inst.SetStatus(session.Running)
+	case tmux.PanePrompt:
+		if inst.AutoYes {
+			inst.TapEnter()
+		} else {
+			inst.SetStatus(session.NeedsInput)
+		}
+	case tmux.PaneIdle:
+		inst.SetStatus(session.Ready)
+	case tmux.PaneUnknown:
+	}
 }
 
 // sendPromptCmd submits a queued initial prompt to an instance off the UI thread,
@@ -1081,13 +1095,13 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 					r.sessionLost = true
 					return
 				}
-				r.updated, r.hasPrompt = instance.HasUpdated()
+				r.state = instance.Poll()
 				// Only probe readiness while a prompt is actually queued (a brief
 				// window after a new session), so the extra pane capture is rare.
-				// Require one stable tick (!updated) to avoid the post-trust
+				// Require the pane to not be mid-work to avoid the post-trust
 				// "loading" transition window.
 				if instance.Prompt != "" {
-					r.readyForPrompt = !r.updated && instance.IsReadyForPrompt()
+					r.readyForPrompt = r.state != tmux.PaneWorking && instance.IsReadyForPrompt()
 				}
 				if instance == selected {
 					r.diffStats = instance.ComputeDiff()

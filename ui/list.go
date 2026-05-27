@@ -15,9 +15,20 @@ import (
 
 const readyIcon = "● "
 const pausedIcon = "⏸ "
+const needsInputIcon = "◆ "
 
 var readyStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
+
+// workingStyle tints the busy spinner cyan: a cool, low-attention "in progress" that
+// reads distinctly from the green ready dot without competing with it.
+var workingStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#39c5cf"})
+
+// needsInputStyle (amber) marks a session blocked on a prompt — the one state that wants
+// your attention, so it gets the attention color.
+var needsInputStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#b8860b", Dark: "#d79921"})
 
 var addedLinesStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
@@ -179,9 +190,11 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 	var join string
 	switch i.Status {
 	case session.Running, session.Loading:
-		join = fmt.Sprintf("%s ", r.spinner.View())
+		join = fmt.Sprintf("%s ", workingStyle.Render(r.spinner.View()))
 	case session.Ready:
 		join = readyStyle.Render(readyIcon)
+	case session.NeedsInput:
+		join = needsInputStyle.Render(needsInputIcon)
 	case session.Paused:
 		join = pausedStyle.Render(pausedIcon)
 	default:

@@ -4,6 +4,7 @@ import (
 	"claude-squad/config"
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
@@ -127,6 +128,48 @@ func TestRecoverLostInstances(t *testing.T) {
 	})
 	// The actual lost-session -> Paused transition is covered against a real worktree
 	// by session.TestRecoverLostSessionTransitionsToPaused.
+}
+
+func TestApplyPaneState(t *testing.T) {
+	newInst := func(autoYes bool) *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "s", Path: t.TempDir(), Program: "claude",
+		})
+		require.NoError(t, err)
+		inst.AutoYes = autoYes
+		inst.SetStatus(session.Loading) // a recognizable prior state
+		return inst
+	}
+
+	t.Run("working → Running", func(t *testing.T) {
+		inst := newInst(false)
+		applyPaneState(inst, tmux.PaneWorking)
+		require.Equal(t, session.Running, inst.Status)
+	})
+
+	t.Run("idle → Ready", func(t *testing.T) {
+		inst := newInst(false)
+		applyPaneState(inst, tmux.PaneIdle)
+		require.Equal(t, session.Ready, inst.Status)
+	})
+
+	t.Run("prompt with AutoYes off → NeedsInput", func(t *testing.T) {
+		inst := newInst(false)
+		applyPaneState(inst, tmux.PanePrompt)
+		require.Equal(t, session.NeedsInput, inst.Status)
+	})
+
+	t.Run("prompt with AutoYes on → not NeedsInput (auto-answered)", func(t *testing.T) {
+		inst := newInst(true)
+		applyPaneState(inst, tmux.PanePrompt)
+		require.NotEqual(t, session.NeedsInput, inst.Status)
+	})
+
+	t.Run("unknown → status unchanged", func(t *testing.T) {
+		inst := newInst(false)
+		applyPaneState(inst, tmux.PaneUnknown)
+		require.Equal(t, session.Loading, inst.Status, "an unreadable pane must not flip the status")
+	})
 }
 
 // TestConfirmationModalStateTransitions tests state transitions without full instance setup

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	cmd2 "claude-squad/cmd"
+	"claude-squad/log"
 	"fmt"
 	"math/rand"
 	"os"
@@ -152,16 +153,16 @@ func TestPollersSkipCaptureWhenSessionDead(t *testing.T) {
 	require.False(t, captured, "capture-pane must not run when the tmux session is dead")
 }
 
-// The happy path must keep working: an alive session still captures and reports
-// freshly seen content as updated.
+// The happy path must keep working: an alive session still captures. For a program with
+// no busy marker, freshly seen content classifies as working (the content-change path),
+// which the HasUpdated shim reports as updated.
 func TestHasUpdatedCapturesWhenSessionAlive(t *testing.T) {
 	ptyFactory := NewMockPtyFactory(t)
 	cmdExec := cmd_test.MockCmdExec{
 		RunFunc:    func(cmd *exec.Cmd) error { return nil }, // session exists
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("hello"), nil },
 	}
-	session := newTmuxSession("alive", "claude", ptyFactory, cmdExec)
-	session.monitor = newStatusMonitor() // normally set by Start/Restore
+	session := newTmuxSession("alive", "aider", ptyFactory, cmdExec)
 
 	updated, _ := session.HasUpdated()
 	require.True(t, updated, "first capture of new content should report updated")
@@ -194,6 +195,149 @@ func TestSessionDeathStopsProbing(t *testing.T) {
 	require.False(t, updated)
 	require.False(t, hasPrompt)
 	require.False(t, session.IsReadyForPrompt())
+}
+
+// pollSession builds a TmuxSession whose CapturePaneContent returns *content (or an
+// error when *fail is true), so a test can drive Poll across ticks by mutating them.
+// RunFunc reports the session as alive so Poll's liveness guard does not short-circuit.
+func pollSession(t *testing.T, program string, content *string, fail *bool) *TmuxSession {
+	t.Helper()
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error { return nil }, // session exists
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			if fail != nil && *fail {
+				return nil, fmt.Errorf("capture failed")
+			}
+			return []byte(*content), nil
+		},
+	}
+	return newTmuxSession("poll-test", program, NewMockPtyFactory(t), cmdExec)
+}
+
+func TestCleanForDetection(t *testing.T) {
+	require.Equal(t, "hello", cleanForDetection("\x1b[31mhel\x1b[0mlo"))
+	require.Equal(t, "a\nb", cleanForDetection("a  \t\nb   "))
+}
+
+// A Claude pane showing the busy marker is PaneWorking, and stays PaneWorking even as the
+// marker line's elapsed-time counter ticks — proving the counter no longer flips state.
+func TestPollClaudeBusyMarkerIsStable(t *testing.T) {
+	content := "✻ Cogitating… (5s · esc to interrupt)"
+	c := content
+	s := pollSession(t, "claude", &c, nil)
+
+	require.Equal(t, PaneWorking, s.Poll())
+	c = "✻ Cogitating… (6s · esc to interrupt)" // counter advanced, marker still present
+	require.Equal(t, PaneWorking, s.Poll())
+	c = "✻ Cogitating… (7s · esc to interrupt)"
+	require.Equal(t, PaneWorking, s.Poll())
+}
+
+func TestPollClaudeIdleAndPrompt(t *testing.T) {
+	idle := "╭───╮\n│ > │  ? for shortcuts\n╰───╯"
+	c := idle
+	s := pollSession(t, "claude", &c, nil)
+	require.Equal(t, PaneIdle, s.Poll(), "idle input box with no marker is idle immediately")
+
+	c = "Do this? \n  No, and tell Claude what to do differently"
+	require.Equal(t, PanePrompt, s.Poll(), "a tool-permission y/n prompt takes precedence")
+}
+
+// An interactive selection prompt (AskUserQuestion / plan approval) blocks on the user
+// just like the permission dialog, even though it shows no permission text. Its footer
+// is the signal — and the real idle/working footers must not trip it.
+func TestPollClaudeSelectionPrompt(t *testing.T) {
+	selection := "How do you want to be notified?\n  1. Telegram\n  2. Email\n" +
+		"Enter to select · ↑/↓ to navigate · Esc to cancel"
+	c := selection
+	s := pollSession(t, "claude", &c, nil)
+	require.Equal(t, PanePrompt, s.Poll(), "a selection prompt is a needs-input state")
+
+	// Footers captured from live idle/working panes must classify as idle/working,
+	// never as a prompt.
+	for _, footer := range []string{
+		"❯ \n⏵⏵ auto mode on · 1 shell · ctrl+t to hide tasks · ← for agents · ↓ to manage",
+		"❯ \n⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
+	} {
+		c = footer
+		s := pollSession(t, "claude", &c, nil)
+		require.Equal(t, PaneIdle, s.Poll(), "idle footer must not be read as a prompt: %q", footer)
+	}
+}
+
+// Regression: capture-pane includes the scrolled-back transcript, so the marker strings
+// can appear in the agent's own words. Detection must look only at the bottom chrome, and
+// the selection footer must require its structural tokens — a bare "Esc to cancel"
+// sentence in prose must not trigger the prompt state.
+func TestPollIgnoresMarkersInScrollback(t *testing.T) {
+	body := "I added the \"esc to interrupt\" marker and matched the\n" +
+		"\"Esc to cancel\" footer, plus the literal option text\n" +
+		"\"No, and tell Claude what to do differently\".\n"
+	pad := strings.Repeat("a normal line of build output\n", 20)
+	idleFooter := "❯ \n⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+	c := body + pad + idleFooter
+	s := pollSession(t, "claude", &c, nil)
+	require.Equal(t, PaneIdle, s.Poll(),
+		"markers and a bare \"Esc to cancel\" in the scrolled-back body must be ignored")
+}
+
+// Hysteresis: working commits instantly; the first idle after working is held; the second
+// consecutive idle commits; a new working observation resets the streak.
+func TestPollHysteresis(t *testing.T) {
+	busy := "working… esc to interrupt"
+	idle := "│ > │ done"
+	c := busy
+	s := pollSession(t, "claude", &c, nil)
+
+	require.Equal(t, PaneWorking, s.Poll())
+	c = idle
+	require.Equal(t, PaneWorking, s.Poll(), "first idle after working is held")
+	require.Equal(t, PaneIdle, s.Poll(), "second consecutive idle commits")
+	c = busy
+	require.Equal(t, PaneWorking, s.Poll(), "working resets the streak")
+	c = idle
+	require.Equal(t, PaneWorking, s.Poll(), "held again after reset")
+}
+
+// Programs without a known marker use content-change detection on ANSI-stripped text, so
+// color/cursor churn does not register as working.
+func TestPollFallbackNormalization(t *testing.T) {
+	c := "\x1b[32mthinking\x1b[0m"
+	s := pollSession(t, "aider", &c, nil)
+
+	require.Equal(t, PaneWorking, s.Poll(), "first observation is treated as active")
+	// Same visible text, different ANSI only → not a change. Drain the hysteresis hold.
+	c = "\x1b[33mthinking\x1b[0m"
+	require.Equal(t, PaneWorking, s.Poll(), "held (idleStreak 1)")
+	c = "\x1b[31mthinking\x1b[0m"
+	require.Equal(t, PaneIdle, s.Poll(), "ANSI-only churn settles to idle")
+	// A real text change flips back to working.
+	c = "\x1b[31mthinking more\x1b[0m"
+	require.Equal(t, PaneWorking, s.Poll())
+}
+
+func TestPollCaptureErrorIsUnknown(t *testing.T) {
+	log.Initialize(false) // Poll logs on capture error; ErrorLog is otherwise nil in tests
+	c := "anything"
+	fail := false
+	s := pollSession(t, "claude", &c, &fail)
+	require.Equal(t, PaneIdle, s.Poll())
+	fail = true
+	require.Equal(t, PaneUnknown, s.Poll(), "capture failure yields PaneUnknown")
+}
+
+func TestHasUpdatedShim(t *testing.T) {
+	busy := "esc to interrupt"
+	c := busy
+	s := pollSession(t, "claude", &c, nil)
+	u, p := s.HasUpdated()
+	require.True(t, u)
+	require.False(t, p)
+
+	c = "No, and tell Claude what to do differently"
+	u, p = s.HasUpdated()
+	require.False(t, u)
+	require.True(t, p)
 }
 
 func TestStartTmuxSession(t *testing.T) {

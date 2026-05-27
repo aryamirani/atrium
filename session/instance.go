@@ -25,6 +25,10 @@ const (
 	Loading
 	// Paused is if the instance is paused (worktree removed but branch preserved).
 	Paused
+	// NeedsInput is if the agent is blocked on a prompt awaiting the user's answer
+	// (a tool-permission y/n prompt with AutoYes off). Appended last so previously
+	// serialized Status values keep their meaning.
+	NeedsInput
 )
 
 // Instance is a running instance of claude code.
@@ -370,6 +374,15 @@ func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 		return false, false
 	}
 	return i.tmuxSession.HasUpdated()
+}
+
+// Poll classifies the agent's current pane state. Returns PaneUnknown for a not-yet-started
+// instance so callers leave its status untouched.
+func (i *Instance) Poll() tmux.PaneState {
+	if !i.started {
+		return tmux.PaneUnknown
+	}
+	return i.tmuxSession.Poll()
 }
 
 // CheckAndHandleTrustPrompt checks for and dismisses the trust prompt for supported programs.
