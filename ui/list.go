@@ -103,6 +103,19 @@ func repoKey(i *session.Instance) string {
 	return filepath.Base(i.Path)
 }
 
+// distinctRepoCount returns how many distinct repo groups are present across the current
+// items, computed from the items themselves via repoKey. Deriving it at render time (rather
+// than tracking an incrementally-maintained counter) makes it impossible for the header
+// decision to drift from what is actually displayed — the counter could fall out of sync
+// during churn, since it was only updated when an instance was started.
+func (l *List) distinctRepoCount() int {
+	seen := make(map[string]struct{}, len(l.items))
+	for _, item := range l.items {
+		seen[repoKey(item)] = struct{}{}
+	}
+	return len(seen)
+}
+
 // renderRepoHeader renders a repo group header as an uppercased name followed by a
 // dim rule filling the rest of the panel width, so it reads as a section divider.
 func (l *List) renderRepoHeader(key string) string {
@@ -122,17 +135,12 @@ type List struct {
 	height, width int
 	renderer      *InstanceRenderer
 	autoyes       bool
-
-	// map of repo name to number of instances using it. Used to display the repo name only if there are
-	// multiple repos in play.
-	repos map[string]int
 }
 
 func NewList(spinner *spinner.Model, autoYes bool) *List {
 	return &List{
 		items:    []*session.Instance{},
 		renderer: &InstanceRenderer{spinner: spinner},
-		repos:    make(map[string]int),
 		autoyes:  autoYes,
 	}
 }
@@ -348,7 +356,7 @@ func (l *List) String() string {
 	// are emitted within the item loop (not as selectable rows), so selectedIdx stays a
 	// flat index into l.items and navigation/reorder are unaffected. Items are not sorted:
 	// headers annotate the runs in the user's existing (reorderable) order.
-	showRepos := len(l.repos) > 1
+	showRepos := l.distinctRepoCount() > 1
 	prevRepo := ""
 	for i, item := range l.items {
 		key := repoKey(item)
@@ -400,14 +408,6 @@ func (l *List) Kill() {
 		defer l.Up()
 	}
 
-	// Unregister the reponame.
-	repoName, err := targetInstance.RepoName()
-	if err != nil {
-		log.ErrorLog.Printf("could not get repo name: %v", err)
-	} else {
-		l.rmRepo(repoName)
-	}
-
 	// Since there's items after this, the selectedIdx can stay the same.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
 }
@@ -429,27 +429,12 @@ func (l *List) Up() {
 	}
 }
 
-func (l *List) addRepo(repo string) {
-	if _, ok := l.repos[repo]; !ok {
-		l.repos[repo] = 0
-	}
-	l.repos[repo]++
-}
-
-func (l *List) rmRepo(repo string) {
-	if _, ok := l.repos[repo]; !ok {
-		log.ErrorLog.Printf("repo %s not found", repo)
-		return
-	}
-	l.repos[repo]--
-	if l.repos[repo] == 0 {
-		delete(l.repos, repo)
-	}
-}
-
-// AddInstance adds a new instance to the list. It returns a finalizer function that should be called when the instance
-// is started. If the instance was restored from storage or is paused, you can call the finalizer immediately.
-// When creating a new one and entering the name, you want to call the finalizer once the name is done.
+// AddInstance adds a new instance to the list. It returns a finalizer function that callers
+// invoke once the instance has started (restored/paused instances may call it immediately;
+// the new-session flow calls it once the name is entered). The finalizer is currently a
+// no-op — repo grouping is derived from the items at render time (see distinctRepoCount), so
+// there is no per-instance state to register on start — but it is retained as the start-time
+// lifecycle hook the new-session flow is built around.
 //
 // The instance is inserted immediately after the last existing item sharing its repoKey, so it becomes the next entry
 // in that repo's group; if no item shares the key, it is appended as a new group. This keeps same-repo instances
@@ -470,16 +455,7 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 	if insertAt <= l.selectedIdx && len(l.items) > 1 {
 		l.selectedIdx++
 	}
-	// The finalizer registers the repo name once the instance is started.
-	return func() {
-		repoName, err := instance.RepoName()
-		if err != nil {
-			log.ErrorLog.Printf("could not get repo name: %v", err)
-			return
-		}
-
-		l.addRepo(repoName)
-	}
+	return func() {}
 }
 
 // GetSelectedInstance returns the currently selected instance
