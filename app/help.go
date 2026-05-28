@@ -64,7 +64,7 @@ func (h helpTypeGeneral) toContent() string {
 		helpHeaderStyle().Render("Manage"),
 		helpRow("n", "new session (inline)"),
 		helpRow("N", "new session with a prompt"),
-		helpRow("R", "rename session (label only)"),
+		helpRow("R", "rename session  (tab: branch+dir)"),
 		helpRow("D", "kill session"),
 		"",
 		helpHeaderStyle().Render("Handoff"),
