@@ -114,6 +114,13 @@ func (w *TabbedWindow) Toggle() {
 	w.activeTab = (w.activeTab + 1) % len(w.tabs)
 }
 
+// ToggleReverse cycles to the previous tab, wrapping from the first tab to the
+// last. It is the complement of Toggle. The + len(w.tabs) term keeps the
+// operand non-negative, since Go's % can return a negative result.
+func (w *TabbedWindow) ToggleReverse() {
+	w.activeTab = (w.activeTab - 1 + len(w.tabs)) % len(w.tabs)
+}
+
 // UpdatePreview updates the content of the preview pane. instance may be nil.
 func (w *TabbedWindow) UpdatePreview(instance *session.Instance) error {
 	if w.activeTab != PreviewTab {
