@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/ui/theme"
 	"errors"
 	"fmt"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"path/filepath"
 	"sort"
 	"strings"

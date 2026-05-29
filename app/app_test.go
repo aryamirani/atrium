@@ -1,14 +1,14 @@
 package app
 
 import (
-	"claude-squad/config"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/session/tmux"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
 	"context"
 	"fmt"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/tmux"
+	"github.com/ZviBaratz/atrium/ui"
+	"github.com/ZviBaratz/atrium/ui/overlay"
 	"os"
 	"testing"
 

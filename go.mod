@@ -1,4 +1,4 @@
-module claude-squad
+module github.com/ZviBaratz/atrium
 
 go 1.23.0
 

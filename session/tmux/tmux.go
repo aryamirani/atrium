@@ -2,12 +2,13 @@ package tmux
 
 import (
 	"bytes"
-	"claude-squad/cmd"
-	"claude-squad/log"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/log"
 	"io"
 	"os"
 	"os/exec"
@@ -135,7 +136,12 @@ type TmuxSession struct {
 	wg     *sync.WaitGroup
 }
 
-const TmuxPrefix = "claudesquad_"
+// TmuxPrefix is the prefix applied to every Atrium-managed tmux session name. It
+// derives from config.RuntimeName so legacy installs keep the "claudesquad_"
+// prefix and can still find and clean up their pre-rebrand sessions.
+func TmuxPrefix() string {
+	return config.RuntimeName() + "_"
+}
 
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 
@@ -183,7 +189,7 @@ const (
 func toClaudeSquadTmuxName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
-	return fmt.Sprintf("%s%s", TmuxPrefix, str)
+	return fmt.Sprintf("%s%s", TmuxPrefix(), str)
 }
 
 // NewTmuxSession creates a new TmuxSession with the given name and program.
@@ -266,8 +272,8 @@ func (t *TmuxSession) start(workDir string, program string) error {
 	}
 	ptmx.Close()
 
-	// history-limit and mouse are set server-globally by the bundled config
-	// (claudesquad.conf), so no per-session set-option is needed here.
+	// history-limit and mouse are set server-globally by the bundled managed
+	// config, so no per-session set-option is needed here.
 
 	err = t.Restore()
 	if err != nil {
@@ -716,7 +722,7 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 		return fmt.Errorf("failed to list tmux sessions: %v", err)
 	}
 
-	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix))
+	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix()))
 	matches := re.FindAllString(string(output), -1)
 	for i, match := range matches {
 		matches[i] = match[:strings.Index(match, ":")]

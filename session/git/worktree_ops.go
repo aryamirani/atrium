@@ -1,8 +1,8 @@
 package git
 
 import (
-	"claude-squad/log"
 	"fmt"
+	"github.com/ZviBaratz/atrium/log"
 	"os"
 	"os/exec"
 	"path/filepath"

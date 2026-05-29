@@ -5,20 +5,26 @@ import (
 	"os"
 	"path/filepath"
 
-	"claude-squad/config"
+	"github.com/ZviBaratz/atrium/config"
 )
 
-const (
-	// tmuxSocketName is the dedicated tmux socket cs runs all of its sessions on.
-	// Using a private socket (tmux -L) gives cs a fresh server, which is what makes
-	// the -f config below take effect (tmux only reads -f when a server starts) and
-	// keeps cs sessions out of the user's default `tmux ls`.
-	tmuxSocketName = "claudesquad"
-	// tmuxConfigFileName is the managed config materialized under the config dir.
-	tmuxConfigFileName = "claudesquad.conf"
-)
+// socketName is the dedicated tmux socket Atrium runs all of its sessions on.
+// Using a private socket (tmux -L) gives Atrium a fresh server, which is what
+// makes the -f config below take effect (tmux only reads -f when a server starts)
+// and keeps Atrium sessions out of the user's default `tmux ls`. It derives from
+// config.RuntimeName so legacy installs stay on the "claudesquad" socket and keep
+// their live sessions reachable after the rebrand.
+func socketName() string {
+	return config.RuntimeName()
+}
 
-//go:embed claudesquad.conf
+// managedConfigFileName is the managed config materialized under the config dir,
+// named to match the active brand (atrium.conf / claudesquad.conf).
+func managedConfigFileName() string {
+	return config.RuntimeName() + ".conf"
+}
+
+//go:embed atrium.conf
 var embeddedTmuxConfig []byte
 
 // configOverridePath, when non-empty and pointing at an existing file, is used as
@@ -26,10 +32,10 @@ var embeddedTmuxConfig []byte
 var configOverridePath string
 
 // Init records an optional user-supplied tmux config override and, when none is
-// set, materializes the bundled config to ~/.claude-squad/claudesquad.conf. The
-// managed file is overwritten on every launch so it stays in sync with the binary.
-// Call once at startup; it is idempotent and safe to call from both the TUI and
-// daemon processes.
+// set, materializes the bundled config into the config dir. The managed file is
+// overwritten on every launch so it stays in sync with the binary. Call once at
+// startup; it is idempotent and safe to call from both the TUI and daemon
+// processes.
 func Init(overridePath string) error {
 	configOverridePath = overridePath
 	if overridePath != "" {
@@ -42,7 +48,7 @@ func Init(overridePath string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, tmuxConfigFileName), embeddedTmuxConfig, 0o644)
+	return os.WriteFile(filepath.Join(dir, managedConfigFileName()), embeddedTmuxConfig, 0o644)
 }
 
 // tmuxConfigPath returns the path to pass via tmux -f: the override when it is set
@@ -60,7 +66,7 @@ func tmuxConfigPath() string {
 	if err != nil {
 		return ""
 	}
-	managed := filepath.Join(dir, tmuxConfigFileName)
+	managed := filepath.Join(dir, managedConfigFileName())
 	if _, err := os.Stat(managed); err != nil {
 		return ""
 	}

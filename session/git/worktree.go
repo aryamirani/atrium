@@ -1,9 +1,9 @@
 package git
 
 import (
-	"claude-squad/config"
-	"claude-squad/log"
 	"fmt"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/log"
 	"path/filepath"
 	"time"
 )

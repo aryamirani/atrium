@@ -3,7 +3,7 @@ package ui
 import (
 	"strings"
 
-	"claude-squad/ui/theme"
+	"github.com/ZviBaratz/atrium/ui/theme"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"

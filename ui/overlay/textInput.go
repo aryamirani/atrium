@@ -1,8 +1,8 @@
 package overlay
 
 import (
-	"claude-squad/config"
-	"claude-squad/ui/theme"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"

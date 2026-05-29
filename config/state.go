@@ -1,9 +1,9 @@
 package config
 
 import (
-	"claude-squad/log"
 	"encoding/json"
 	"fmt"
+	"github.com/ZviBaratz/atrium/log"
 	"os"
 	"path/filepath"
 )

@@ -1,8 +1,8 @@
 package app
 
 import (
-	"claude-squad/session"
 	"fmt"
+	"github.com/ZviBaratz/atrium/session"
 	"strings"
 	"testing"
 

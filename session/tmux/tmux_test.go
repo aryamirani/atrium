@@ -1,9 +1,9 @@
 package tmux
 
 import (
-	cmd2 "claude-squad/cmd"
-	"claude-squad/log"
 	"fmt"
+	cmd2 "github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-squad/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/cmd/cmd_test"
 
 	"github.com/stretchr/testify/require"
 )
@@ -44,10 +44,10 @@ func NewMockPtyFactory(t *testing.T) *MockPtyFactory {
 
 func TestSanitizeName(t *testing.T) {
 	session := NewTmuxSession("asdf", "program")
-	require.Equal(t, TmuxPrefix+"asdf", session.sanitizedName)
+	require.Equal(t, TmuxPrefix()+"asdf", session.sanitizedName)
 
 	session = NewTmuxSession("a sd f . . asdf", "program")
-	require.Equal(t, TmuxPrefix+"asdf__asdf", session.sanitizedName)
+	require.Equal(t, TmuxPrefix()+"asdf__asdf", session.sanitizedName)
 }
 
 func TestIsReadyForPrompt(t *testing.T) {
@@ -346,7 +346,7 @@ func TestTmuxCommandInjectsIsolationFlags(t *testing.T) {
 	// subcommand (tmux requires -L/-f before the command).
 	require.Equal(t, "tmux", cmd.Args[0])
 	require.Equal(t, "-L", cmd.Args[1])
-	require.Equal(t, tmuxSocketName, cmd.Args[2])
+	require.Equal(t, socketName(), cmd.Args[2])
 	// The subcommand and its args must still be present and last.
 	require.Contains(t, cmd.Args, "has-session")
 	require.Equal(t, "-t=foo", cmd.Args[len(cmd.Args)-1])
@@ -376,20 +376,20 @@ func TestStartTmuxSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, len(ptyFactory.cmds))
 
-	// cs runs on a dedicated socket with a bundled config, so every command is
-	// prefixed with `-L claudesquad -f <conf>`. The conf path is absolute and
-	// machine-dependent, so assert the load-bearing parts rather than the exact
-	// string.
+	// Atrium runs on a dedicated socket with a bundled config, so every command is
+	// prefixed with `-L <socket> -f <conf>`. The conf path is absolute and
+	// machine-dependent, and the socket/prefix follow the active brand, so assert
+	// the load-bearing parts via the same helpers rather than a literal string.
 	newSession := cmd2.ToString(ptyFactory.cmds[0])
-	require.Contains(t, newSession, "-L claudesquad")
-	require.Contains(t, newSession, "new-session -d -s claudesquad_test-session")
+	require.Contains(t, newSession, "-L "+socketName())
+	require.Contains(t, newSession, "new-session -d -s "+TmuxPrefix()+"test-session")
 	require.Contains(t, newSession, "-c "+workdir)
 	require.Contains(t, newSession, "-n test-session")
 	require.Contains(t, newSession, "claude")
 
 	attach := cmd2.ToString(ptyFactory.cmds[1])
-	require.Contains(t, attach, "-L claudesquad")
-	require.Contains(t, attach, "attach-session -t claudesquad_test-session")
+	require.Contains(t, attach, "-L "+socketName())
+	require.Contains(t, attach, "attach-session -t "+TmuxPrefix()+"test-session")
 
 	require.Equal(t, 2, len(ptyFactory.files))
 
@@ -454,7 +454,7 @@ func TestStartContinueAppendsContinueForClaude(t *testing.T) {
 	newSession := cmd2.ToString(ptyFactory.cmds[0])
 	require.Contains(t, newSession, "claude --continue")
 	// The session name is keyed off the session, not the program, so it is unchanged.
-	require.Contains(t, newSession, "new-session -d -s claudesquad_cont-test")
+	require.Contains(t, newSession, "new-session -d -s "+TmuxPrefix()+"cont-test")
 }
 
 func TestStartContinueLeavesNonClaudeUnchanged(t *testing.T) {

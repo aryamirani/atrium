@@ -1,9 +1,9 @@
 package ui
 
 import (
-	"claude-squad/session"
-	"claude-squad/session/git"
-	"claude-squad/ui/theme"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"os"
 	"path/filepath"
 	"strings"

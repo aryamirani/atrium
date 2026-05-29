@@ -1,17 +1,17 @@
 package app
 
 import (
-	"claude-squad/config"
-	"claude-squad/keys"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/session/git"
-	"claude-squad/session/tmux"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
-	"claude-squad/ui/theme"
 	"context"
 	"fmt"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/keys"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/session/tmux"
+	"github.com/ZviBaratz/atrium/ui"
+	"github.com/ZviBaratz/atrium/ui/overlay"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"os"
 	"path/filepath"
 	"strings"
@@ -818,7 +818,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// Create the push action as a tea.Cmd
 		pushAction := func() tea.Msg {
 			// Default commit message with timestamp
-			commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s", selected.DisplayName(), time.Now().Format(time.RFC822))
+			commitMsg := fmt.Sprintf("[atrium] update from '%s' on %s", selected.DisplayName(), time.Now().Format(time.RFC822))
 			worktree, err := selected.GetGitWorktree()
 			if err != nil {
 				return err

@@ -1,10 +1,10 @@
 package app
 
 import (
-	"claude-squad/log"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
-	"claude-squad/ui/theme"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/ui"
+	"github.com/ZviBaratz/atrium/ui/overlay"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"

@@ -1,7 +1,7 @@
 package config
 
 import (
-	"claude-squad/log"
+	"github.com/ZviBaratz/atrium/log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -118,7 +118,7 @@ func TestGetConfigDir(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.NotEmpty(t, configDir)
-		assert.True(t, strings.HasSuffix(configDir, ".claude-squad"))
+		assert.True(t, strings.HasSuffix(configDir, ".atrium"))
 
 		// Verify it's an absolute path
 		assert.True(t, filepath.IsAbs(configDir))
@@ -289,8 +289,8 @@ func TestSaveConfig(t *testing.T) {
 		err := SaveConfig(testConfig)
 		assert.NoError(t, err)
 
-		// Verify the file was created
-		configDir := filepath.Join(tempHome, ".claude-squad")
+		// Verify the file was created (fresh HOME → new ~/.atrium layout)
+		configDir := filepath.Join(tempHome, ".atrium")
 		configPath := filepath.Join(configDir, ConfigFileName)
 
 		assert.FileExists(t, configPath)

@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"claude-squad/session"
+	"github.com/ZviBaratz/atrium/session"
 	"path/filepath"
 	"strings"
 	"testing"

@@ -1,9 +1,9 @@
 package config
 
 import (
-	"claude-squad/log"
 	"encoding/json"
 	"fmt"
+	"github.com/ZviBaratz/atrium/log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -17,13 +17,27 @@ const (
 	defaultProgram = "claude"
 )
 
-// GetConfigDir returns the path to the application's configuration directory
+// GetConfigDir returns the path to the application's data/config directory.
+//
+// It prefers the new ~/.atrium layout, falls back to an existing legacy
+// ~/.claude-squad directory without moving it, and otherwise defaults to
+// ~/.atrium for fresh installs. The directory holds config.json, state.json, and
+// the worktrees/ tree; the worktree and tmux paths recorded inside are absolute,
+// so a legacy install must keep using its existing directory rather than be
+// migrated. See RuntimeName for the matching tmux/socket identifiers.
 func GetConfigDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get config home directory: %w", err)
 	}
-	return filepath.Join(homeDir, ".claude-squad"), nil
+	newDir := filepath.Join(homeDir, configDirName)
+	if dirExists(newDir) {
+		return newDir, nil
+	}
+	if legacy := filepath.Join(homeDir, legacyConfigDirName); dirExists(legacy) {
+		return legacy, nil
+	}
+	return newDir, nil
 }
 
 // Profile represents a named program configuration

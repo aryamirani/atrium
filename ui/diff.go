@@ -1,10 +1,10 @@
 package ui
 
 import (
-	"claude-squad/session"
-	"claude-squad/session/git"
-	"claude-squad/ui/theme"
 	"fmt"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"

@@ -1,11 +1,11 @@
 package ui
 
 import (
-	"claude-squad/keys"
-	"claude-squad/ui/theme"
+	"github.com/ZviBaratz/atrium/keys"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"strings"
 
-	"claude-squad/session"
+	"github.com/ZviBaratz/atrium/session"
 
 	"github.com/charmbracelet/lipgloss"
 )
