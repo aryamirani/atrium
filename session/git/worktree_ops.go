@@ -91,7 +91,7 @@ func (g *GitWorktree) setupNewWorktree() error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve start point %s: %w", startPoint, err)
 	}
-	g.baseCommitSHA = strings.TrimSpace(string(output))
+	g.baseCommitSHA = strings.TrimSpace(output)
 
 	// Create a new worktree on its own branch from the start point. Starting from a commit
 	// (rather than the current worktree) gives the session a clean slate without inheriting
@@ -273,7 +273,7 @@ func CleanupWorktrees() error {
 			}
 
 			// Remove the worktree directory
-			os.RemoveAll(worktreePath)
+			_ = os.RemoveAll(worktreePath)
 		}
 	}
 
