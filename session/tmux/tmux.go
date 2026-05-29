@@ -251,7 +251,7 @@ func (t *TmuxSession) start(workDir string, program string) error {
 		if t.DoesSessionExist() {
 			cleanupCmd := tmuxCommand("kill-session", "-t", t.sanitizedName)
 			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 			}
 		}
 		return fmt.Errorf("error starting tmux session: %w", err)
@@ -264,9 +264,9 @@ func (t *TmuxSession) start(workDir string, program string) error {
 		select {
 		case <-timeout:
 			if cleanupErr := t.Close(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 			}
-			return fmt.Errorf("timed out waiting for tmux session %s: %v", t.sanitizedName, err)
+			return fmt.Errorf("timed out waiting for tmux session %s: %w", t.sanitizedName, err)
 		default:
 			time.Sleep(sleepDuration)
 			// Exponential backoff up to 50ms max
@@ -275,7 +275,7 @@ func (t *TmuxSession) start(workDir string, program string) error {
 			}
 		}
 	}
-	ptmx.Close()
+	_ = ptmx.Close()
 
 	// history-limit and mouse are set server-globally by the bundled managed
 	// config, so no per-session set-option is needed here.
@@ -283,7 +283,7 @@ func (t *TmuxSession) start(workDir string, program string) error {
 	err = t.Restore()
 	if err != nil {
 		if cleanupErr := t.Close(); cleanupErr != nil {
-			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+			err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 		}
 		return fmt.Errorf("error restoring tmux session: %w", err)
 	}
@@ -703,7 +703,7 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("error capturing pane content: %v", err)
+		return "", fmt.Errorf("error capturing pane content: %w", err)
 	}
 	return string(output), nil
 }
@@ -715,7 +715,7 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
+		return "", fmt.Errorf("failed to capture tmux pane content with options: %w", err)
 	}
 	return string(output), nil
 }
@@ -729,10 +729,11 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 	// If there's an error and it's because no server is running, that's fine
 	// Exit code 1 typically means no sessions exist
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil // No sessions to clean up
 		}
-		return fmt.Errorf("failed to list tmux sessions: %v", err)
+		return fmt.Errorf("failed to list tmux sessions: %w", err)
 	}
 
 	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix()))
@@ -744,7 +745,7 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 	for _, match := range matches {
 		log.InfoLog.Printf("cleaning up session: %s", match)
 		if err := cmdExec.Run(tmuxCommand("kill-session", "-t", match)); err != nil {
-			return fmt.Errorf("failed to kill tmux session %s: %v", match, err)
+			return fmt.Errorf("failed to kill tmux session %s: %w", match, err)
 		}
 	}
 	return nil

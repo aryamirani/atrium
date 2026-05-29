@@ -1214,15 +1214,6 @@ type instanceStartDoneMsg struct {
 	err      error
 }
 
-// runInstanceStartCmd returns a Cmd that performs the expensive instance.Start(true)
-// in a background goroutine so the main event loop stays responsive.
-func runInstanceStartCmd(instance *session.Instance) tea.Cmd {
-	return func() tea.Msg {
-		err := instance.Start(true)
-		return instanceStartDoneMsg{instance: instance, err: err}
-	}
-}
-
 // autoNameDoneMsg is sent when a background name generation completes. instance
 // identifies which session the name was generated for, so the result lands on the
 // right one even if the selection moved meanwhile.

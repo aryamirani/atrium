@@ -120,7 +120,7 @@ func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 
 		if innerErr := item.SetPreviewSize(width, height); innerErr != nil {
 			err = errors.Join(
-				err, fmt.Errorf("could not set preview size for instance %d: %v", i, innerErr))
+				err, fmt.Errorf("could not set preview size for instance %d: %w", i, innerErr))
 		}
 	}
 	return
