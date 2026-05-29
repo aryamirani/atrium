@@ -44,6 +44,8 @@ const (
 	KeyRename // Rename the selected session's display label
 
 	KeyQuickSend // Open a compose box to send a message to the selected session without attaching
+
+	KeyAutoName // Auto-generate a display name for the selected session via claude
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -66,6 +68,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"n":          KeyNew,
 	"D":          KeyKill,
 	"R":          KeyRename,
+	"A":          KeyAutoName,
 	"right":      KeyQuickSend,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
@@ -108,6 +111,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyRename: key.NewBinding(
 		key.WithKeys("R"),
 		key.WithHelp("R", "rename"),
+	),
+	KeyAutoName: key.NewBinding(
+		key.WithKeys("A"),
+		key.WithHelp("A", "auto-name"),
 	),
 	KeyQuickSend: key.NewBinding(
 		key.WithKeys("right"),
