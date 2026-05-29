@@ -10,6 +10,7 @@ import (
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -673,11 +674,24 @@ func (t *TmuxSession) SetDetachedSize(width, height int) error {
 	return t.updateWindowSize(width, height)
 }
 
+// clampUint16 bounds an int into the uint16 range. PTY winsize fields are
+// uint16; terminal dimensions are always small and positive in practice, but
+// clamping makes the conversion provably safe (and satisfies gosec G115).
+func clampUint16(n int) uint16 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(n)
+}
+
 // updateWindowSize updates the window size of the PTY.
 func (t *TmuxSession) updateWindowSize(cols, rows int) error {
 	return pty.Setsize(t.ptmx, &pty.Winsize{
-		Rows: uint16(rows),
-		Cols: uint16(cols),
+		Rows: clampUint16(rows),
+		Cols: clampUint16(cols),
 		X:    0,
 		Y:    0,
 	})
