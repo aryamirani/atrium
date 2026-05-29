@@ -21,12 +21,12 @@ builds:
     mod_timestamp: '{{ .CommitTimestamp }}'
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 # Software bill of materials per archive (requires syft on the release runner).
 sboms:
