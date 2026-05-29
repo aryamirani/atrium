@@ -132,9 +132,9 @@ var (
 			if err != nil {
 				return fmt.Errorf("failed to get config directory: %w", err)
 			}
-			configJson, _ := json.MarshalIndent(cfg, "", "  ")
+			configJSON, _ := json.MarshalIndent(cfg, "", "  ")
 
-			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJson)
+			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJSON)
 
 			return nil
 		},
