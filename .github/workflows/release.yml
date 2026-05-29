@@ -26,10 +26,26 @@ jobs:
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0
 
+      # Per-tag release notes override: if .github/release-notes/<tag>.md exists,
+      # use it as the release body (bypasses the auto-generated changelog).
+      # Without it, GoReleaser's grouped changelog runs as normal.
+      - name: Determine GoReleaser args
+        id: gr
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          NOTES=".github/release-notes/${TAG}.md"
+          if [ -f "$NOTES" ]; then
+            echo "Using manual release notes from $NOTES"
+            echo "args=release --clean --release-notes ${NOTES}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No per-tag notes file; auto-changelog will be used."
+            echo "args=release --clean" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
-          args: release --clean
+          args: ${{ steps.gr.outputs.args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
