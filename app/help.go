@@ -57,7 +57,7 @@ func (h helpTypeGeneral) toContent() string {
 		"",
 		helpHeaderStyle().Render("Navigate"),
 		helpRow("↑/k ↓/j", "move selection"),
-		helpRow("tab", "preview / diff / terminal"),
+		helpRow("tab / shift-tab", "next / prev pane"),
 		helpRow("shift-↑↓", "scroll the active pane"),
 		helpRow("esc", "exit scroll mode"),
 		"",
