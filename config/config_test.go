@@ -1,25 +1,27 @@
 package config
 
 import (
-	"github.com/ZviBaratz/atrium/log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/ZviBaratz/atrium/internal/testutil"
+	"github.com/ZviBaratz/atrium/log"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestMain runs before all tests to set up the test environment
+// TestMain initializes the logger and sandboxes HOME so config tests resolve the
+// data dir under a throwaway directory — never the developer's real ~/.atrium or
+// legacy ~/.claude-squad. Tests that need a specific layout override HOME locally.
 func TestMain(m *testing.M) {
-	// Initialize the logger before any tests run
 	log.Initialize(false)
-	defer log.Close()
-
-	exitCode := m.Run()
-	os.Exit(exitCode)
+	code := testutil.SandboxHomeMain(m)
+	log.Close()
+	os.Exit(code)
 }
 
 func TestGetClaudeCommand(t *testing.T) {
