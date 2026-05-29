@@ -1,7 +1,9 @@
-version: 2.9
+version: 2
+
+project_name: atrium
 
 builds:
-  - binary: claude-squad
+  - binary: atrium
     goos:
       - darwin
       - linux
@@ -11,6 +13,12 @@ builds:
       - arm64
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    # Reproducible builds: stamp artifacts with the commit time, not build time.
+    mod_timestamp: '{{ .CommitTimestamp }}'
 
 archives:
   - format: tar.gz
@@ -19,6 +27,10 @@ archives:
     format_overrides:
       - goos: windows
         format: zip
+
+# Software bill of materials per archive (requires syft on the release runner).
+sboms:
+  - artifacts: archive
 
 release:
   prerelease: auto
@@ -30,7 +42,15 @@ checksum:
 
 changelog:
   use: github
-
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.*$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.*$'
+      order: 1
+    - title: Others
+      order: 999
   filters:
     exclude:
       - "^docs:"
