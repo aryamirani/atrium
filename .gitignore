@@ -4,3 +4,10 @@ claude-squad
 **.DS_Store
 cs
 .superpowers/
+
+# Build artifacts
+/atrium
+/atr
+/bin/
+/dist/
+coverage.out
