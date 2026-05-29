@@ -613,6 +613,11 @@ func (t *TextInputOverlay) fitOverlay(content string, innerWidth int) string {
 // trailing, and any line carrying visible content are preserved) until the slice is
 // at most budget lines long or no removable blanks remain. It is the graceful
 // degradation for terminals too short to hold the form at its natural spacing.
+//
+// It never drops visible content, so a terminal shorter than the form's irreducible
+// height (its content rows plus the few unavoidable blanks) still overflows by the
+// residual rows. The supported floor is 24 rows: at 80×24 the create form has enough
+// removable blanks to fit, which TestViewFitsTerminalBounds and the unit tests pin.
 func dropBlankLinesToFit(lines []string, budget int) []string {
 	excess := len(lines) - budget
 	if excess <= 0 {
