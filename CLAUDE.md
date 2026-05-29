@@ -8,6 +8,45 @@ entrypoint in `main.go`.
 
 Module path: `github.com/ZviBaratz/atrium`. Binary: `atrium` (alias `atr`).
 
+## Architecture
+
+The control flow is **Cobra → Bubble Tea → Instance → (tmux + git worktree)**:
+
+- **`main.go`** — Cobra root command and subcommands (`reset`, `debug`, `version`).
+  The bare `atrium` invocation loads config, initializes tmux, then calls
+  `app.Run`. A hidden `--daemon` flag reuses the same binary as a *separate
+  process* (see daemon below).
+- **`app/`** — the Bubble Tea program. `home` (in `app.go`) is the root model: it
+  owns the instance list, the discrete UI `state` (default / new / prompt / help /
+  confirm / rename), and a per-tick poll loop that refreshes each session's status
+  and diff. This is the orchestrator everything else hangs off.
+- **`session/`** — `Instance` is the core domain object: one agent = one
+  `Instance`, which lazily composes a `tmux.TmuxSession` + `git.GitWorktree` on
+  `Start()`. Its `Status` (Running / Ready / Loading / Paused / NeedsInput) drives
+  list rendering and daemon behavior. `naming.go` derives branch/session names from
+  the immutable `Title`; `displayName` is a cosmetic, freely-mutable label.
+  `storage.go` persists instances via `config.State`.
+- **`session/tmux/`** — wraps a real tmux server on a *dedicated socket*. Each
+  session runs the agent program in a pty; `Poll()` captures pane content and
+  classifies it (busy markers, prompt detection) into a `PaneState`. tmux/git calls
+  go through a `cmd.Executor` interface (`cmd/`) so tests can fake them.
+- **`session/git/`** — `GitWorktree` manages the isolated worktree + branch:
+  `Setup`/`Cleanup`/`Remove`, `CommitChanges`, `PushChanges` (uses `gh`). "Pause"
+  removes the worktree but keeps the branch; "resume" recreates it.
+- **`daemon/`** — autoyes runs as a background process, **not** a goroutine. When
+  autoyes is on, the TUI launches `atrium --daemon`, which polls all stored
+  instances and taps Enter on prompts; the TUI kills it on startup/exit.
+- **`config/`** — two persisted artifacts in the data dir: `config.json`
+  (`Config`: program, profiles, auto-attach) and `state.json` (`State`: serialized
+  instances plus UI state like collapsed repos and recent paths). See the
+  identity/live-state section before touching path resolution.
+- **`ui/`** — presentational Bubble Tea components (list, preview, diff,
+  tabbed window, menu, overlays); they hold view state but defer domain actions to
+  `home`.
+- **`web/`** — **a standalone Next.js marketing site, not part of the Go binary.**
+  It has its own npm toolchain (`cd web && npm run dev`); `just`, `go test`, and
+  `fmt-check` deliberately exclude it. Don't apply Go conventions here.
+
 ## Commands (use `just`)
 
 All development tasks go through the `justfile` — discover them with `just --list`.
