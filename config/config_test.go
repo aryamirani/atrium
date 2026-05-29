@@ -100,6 +100,69 @@ func TestGetClaudeCommand(t *testing.T) {
 	})
 }
 
+func TestResolveClaudeCandidate(t *testing.T) {
+	// Provide a real, executable `claude` on PATH so the candidates that are
+	// expected to resolve can succeed.
+	tempDir := t.TempDir()
+	claudePath := filepath.Join(tempDir, "claude")
+	require.NoError(t, os.WriteFile(claudePath, []byte("#!/bin/sh\n"), 0o755))
+
+	t.Setenv("PATH", tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// The multi-line body `which claude` prints when `claude` is a zsh function.
+	// The alias regex captures "$?" from `local ret=$?`; that token is not a
+	// runnable program, so resolution must report no match.
+	functionBody := "claude () {\n" +
+		"\tif [[ -n \"$TMUX\" ]]\n" +
+		"\tthen\n" +
+		"\t\ttmux setw monitor-activity off\n" +
+		"\t\tcommand claude \"$@\"\n" +
+		"\t\tlocal ret=$?\n" +
+		"\t\ttmux setw monitor-activity on\n" +
+		"\t\treturn $ret\n" +
+		"\telse\n" +
+		"\t\tcommand claude \"$@\"\n" +
+		"\tfi\n" +
+		"}"
+
+	// A function body whose first `=` assignment has a right-hand side that is a
+	// real binary on PATH (here, `claude` itself). The alias regex captures that
+	// token; without the multi-line guard it would resolve via exec.LookPath and
+	// be wrongly accepted as the program to launch.
+	functionBodyResolvable := "claude () {\n" +
+		"\tlocal helper=claude\n" +
+		"\tcommand claude \"$@\"\n" +
+		"}"
+
+	tests := []struct {
+		name     string
+		output   string
+		wantOK   bool
+		wantPath string
+	}{
+		{"plain absolute path", claudePath, true, claudePath},
+		{"alias definition", "claude: aliased to " + claudePath, true, claudePath},
+		{"bare name resolved via PATH", "claude", true, claudePath},
+		{"shell function body is rejected", functionBody, false, ""},
+		{"function body whose first assignment resolves on PATH is rejected", functionBodyResolvable, false, ""},
+		{"empty output", "   \n\t", false, ""},
+		{"non-executable alias target", "claude=/nonexistent/definitely/not/here", false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := resolveClaudeCandidate(tt.output)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.wantPath, got)
+			} else {
+				assert.Empty(t, got)
+				assert.NotEqual(t, "$?", got, "must never return the mis-parsed function-body token")
+			}
+		})
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	t.Run("creates config with default values", func(t *testing.T) {
 		config := DefaultConfig()
