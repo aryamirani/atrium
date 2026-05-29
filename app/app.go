@@ -130,6 +130,13 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 	// renameOverlay handles editing a session's display label
 	renameOverlay *overlay.RenameOverlay
+	// renameTarget is the instance the rename overlay was opened for. It is captured
+	// when the overlay opens so the new label lands on the right session even if the
+	// list selection moves while the overlay is open (e.g. during async auto-naming).
+	renameTarget *session.Instance
+	// generatingName guards against launching a second auto-name request while one
+	// is already in flight, and drives the "Generating name…" hint-bar state.
+	generatingName bool
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -291,6 +298,21 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordRecentPath(inst.Path)
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case autoNameDoneMsg:
+		m.generatingName = false
+		if msg.err != nil {
+			// Restore the normal hint bar and surface the failure; leave the name
+			// untouched rather than applying a fallback or junk value.
+			m.menu.SetState(ui.StateDefault)
+			return m, m.handleError(msg.err)
+		}
+		// Offer the generated name through the existing rename overlay so the user
+		// can confirm or edit it before it commits.
+		m.renameTarget = msg.instance
+		m.renameOverlay = overlay.NewRenameOverlay(msg.name)
+		m.state = stateRename
+		m.menu.SetState(ui.StatePrompt)
+		return m, nil
 	case metadataUpdateDoneMsg:
 		if recoverLostInstances(msg.results, m.lostStrikes) {
 			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
@@ -626,13 +648,23 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		submitted := m.renameOverlay.IsSubmitted()
 		value := m.renameOverlay.Value()
+		deep := m.renameOverlay.IsDeep()
+		// Apply to the instance the overlay was opened for, not the currently
+		// selected one — they can differ if the selection moved while the overlay
+		// was open (notably during async auto-naming).
+		target := m.renameTarget
 		m.renameOverlay = nil
+		m.renameTarget = nil
 		m.state = stateDefault
 		m.menu.SetState(ui.StateDefault)
 
-		if submitted {
-			if selected := m.list.GetSelectedInstance(); selected != nil {
-				selected.SetDisplayName(value)
+		if submitted && target != nil {
+			if deep {
+				if err := m.deepRename(target, value); err != nil {
+					return m, m.handleError(err)
+				}
+			} else {
+				target.SetDisplayName(value)
 				if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 					return m, m.handleError(err)
 				}
@@ -805,10 +837,21 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Status == session.Loading {
 			return m, nil
 		}
+		m.renameTarget = selected
 		m.renameOverlay = overlay.NewRenameOverlay(selected.DisplayName())
 		m.state = stateRename
 		m.menu.SetState(ui.StatePrompt)
 		return m, nil
+	case keys.KeyAutoName:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Status == session.Loading || m.generatingName {
+			return m, nil
+		}
+		// The model call (and the full diff it needs) happen in the background Cmd so
+		// the UI stays responsive; only the instance and prompt are captured here.
+		m.generatingName = true
+		m.menu.SetState(ui.StateGeneratingName)
+		return m, runAutoNameCmd(m.ctx, selected, selected.Prompt)
 	case keys.KeySubmit:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.Status == session.Loading {
@@ -935,6 +978,27 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 // instanceChanged updates the preview pane, menu, and diff pane based on the selected instance. It returns an error
 // Cmd if there was any error.
+// deepRename renames the selected instance's title, git branch, worktree directory, and tmux
+// session to value, then clears the cosmetic label so the list shows the corrected name. It
+// rejects an empty title or one already used by another instance (Title is the storage key).
+// Runs synchronously on the main event loop — the rename is a handful of instant subprocesses,
+// and the git/tmux structs guard the fields the background poll loop reads.
+func (m *home) deepRename(selected *session.Instance, value string) error {
+	if value == "" {
+		return fmt.Errorf("session name cannot be empty")
+	}
+	for _, inst := range m.list.GetInstances() {
+		if inst != selected && inst.Title == value {
+			return fmt.Errorf("a session named %q already exists", value)
+		}
+	}
+	if err := selected.Rename(value); err != nil {
+		return err
+	}
+	selected.SetDisplayName("")
+	return m.storage.SaveInstances(m.list.GetInstances())
+}
+
 func (m *home) instanceChanged() tea.Cmd {
 	// selected may be nil
 	selected := m.list.GetSelectedInstance()
@@ -1143,6 +1207,36 @@ func runInstanceStartCmd(instance *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		err := instance.Start(true)
 		return instanceStartDoneMsg{instance: instance, err: err}
+	}
+}
+
+// autoNameDoneMsg is sent when a background name generation completes. instance
+// identifies which session the name was generated for, so the result lands on the
+// right one even if the selection moved meanwhile.
+type autoNameDoneMsg struct {
+	instance *session.Instance
+	name     string
+	err      error
+}
+
+// runAutoNameCmd returns a Cmd that generates a display name in a background
+// goroutine (the claude subprocess can take a few seconds) so the UI stays
+// responsive.
+func runAutoNameCmd(ctx context.Context, instance *session.Instance, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		// Compute the full diff here, off the UI thread. The cached stats are often the
+		// lightweight numstat form (Content empty) — that's all that's kept for a
+		// session unless it is the selected one during a diff poll — which would starve
+		// the namer of signal and yield a confabulated name. ComputeDiff is
+		// goroutine-safe; fall back to the cached stats if it can't run (e.g. paused).
+		stats := instance.ComputeDiff()
+		if stats == nil || stats.Content == "" {
+			if cached := instance.GetDiffStats(); cached != nil {
+				stats = cached
+			}
+		}
+		name, err := session.GenerateName(ctx, prompt, stats)
+		return autoNameDoneMsg{instance: instance, name: name, err: err}
 	}
 }
 

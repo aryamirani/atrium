@@ -98,6 +98,11 @@ func detectPrompt(program, region string) bool {
 
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
+	// mu guards sanitizedName/windowName against a deep Rename, which mutates them while
+	// the metadata poll loop reads sanitizedName from a background goroutine. Rename holds
+	// the write lock across its rename-session subprocess and the field swap, so a reader
+	// never observes the brief window where the old session name no longer exists.
+	mu sync.RWMutex
 	// Initialized by NewTmuxSession
 	//
 	// The name of the tmux session and the sanitized name used for tmux commands.
@@ -680,14 +685,22 @@ func (t *TmuxSession) updateWindowSize(cols, rows int) error {
 
 func (t *TmuxSession) DoesSessionExist() bool {
 	// Using "-t name" does a prefix match, which is wrong. `-t=` does an exact match.
-	existsCmd := tmuxCommand("has-session", fmt.Sprintf("-t=%s", t.sanitizedName))
+	existsCmd := tmuxCommand("has-session", fmt.Sprintf("-t=%s", t.snapshotName()))
 	return t.cmdExec.Run(existsCmd) == nil
+}
+
+// snapshotName reads sanitizedName under the read lock so background polling can't race
+// the in-place field swap a deep Rename performs.
+func (t *TmuxSession) snapshotName() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.sanitizedName
 }
 
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
@@ -699,7 +712,7 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
+	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)

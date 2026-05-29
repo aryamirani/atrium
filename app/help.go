@@ -65,6 +65,7 @@ func (h helpTypeGeneral) toContent() string {
 		helpRow("n", "new session (inline)"),
 		helpRow("N", "new session with a prompt"),
 		helpRow("R", "rename session (label only)"),
+		helpRow("A", "auto-name session (via claude)"),
 		helpRow("D", "kill session"),
 		"",
 		helpHeaderStyle().Render("Handoff"),

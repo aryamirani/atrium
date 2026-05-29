@@ -29,6 +29,9 @@ const (
 	StateEmpty
 	StateNewInstance
 	StatePrompt
+	// StateGeneratingName is shown while a session name is being generated in the
+	// background; the hint bar reports progress instead of the usual options.
+	StateGeneratingName
 )
 
 type Menu struct {
@@ -80,8 +83,9 @@ func (m *Menu) SetNewInstanceHint(repo string) {
 // SetInstance updates the current instance and refreshes menu options
 func (m *Menu) SetInstance(instance *session.Instance) {
 	m.instance = instance
-	// Only change the state if we're not in a special state (NewInstance or Prompt)
-	if m.state != StateNewInstance && m.state != StatePrompt {
+	// Only change the state if we're not in a special state (NewInstance, Prompt,
+	// or GeneratingName) — those persist across the periodic instanceChanged ticks.
+	if m.state != StateNewInstance && m.state != StatePrompt && m.state != StateGeneratingName {
 		if m.instance != nil {
 			m.state = StateDefault
 		} else {
@@ -114,6 +118,8 @@ func (m *Menu) updateOptions() {
 		m.options = newInstanceMenuOptions
 	case StatePrompt:
 		m.options = promptMenuOptions
+	case StateGeneratingName:
+		m.options = nil
 	}
 }
 
@@ -157,6 +163,13 @@ func (m *Menu) SetSize(width, height int) {
 }
 
 func (m *Menu) String() string {
+	// While generating a name, the hint bar shows a single status line rather than
+	// the usual option groups.
+	if m.state == StateGeneratingName {
+		msg := actionGroupStyle().Render("✨ Generating name…")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, msg)
+	}
+
 	var s strings.Builder
 
 	// Define group boundaries
