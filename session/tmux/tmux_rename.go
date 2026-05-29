@@ -1,8 +1,8 @@
 package tmux
 
 import (
-	"claude-squad/log"
 	"fmt"
+	"github.com/ZviBaratz/atrium/log"
 )
 
 // Rename renames the live tmux session and its window to match newName, then swaps the

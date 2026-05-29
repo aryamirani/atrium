@@ -1,13 +1,13 @@
 package tmux
 
 import (
-	cmd2 "claude-squad/cmd"
 	"fmt"
+	cmd2 "github.com/ZviBaratz/atrium/cmd"
 	"os/exec"
 	"strings"
 	"testing"
 
-	"claude-squad/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/cmd/cmd_test"
 
 	"github.com/stretchr/testify/require"
 )
@@ -49,7 +49,7 @@ func TestRename_LiveSessionRenamesSessionAndWindow(t *testing.T) {
 		t.Fatalf("Rename() error = %v", err)
 	}
 
-	wantSanitized := TmuxPrefix + "formalize-packaging"
+	wantSanitized := TmuxPrefix() + "formalize-packaging"
 	require.Equal(t, wantSanitized, sess.sanitizedName)
 	require.Equal(t, "formalize-packaging", sess.windowName)
 
@@ -78,7 +78,7 @@ func TestRename_NotLiveUpdatesFieldsOnly(t *testing.T) {
 		t.Fatalf("Rename() error = %v", err)
 	}
 
-	require.Equal(t, TmuxPrefix+"alpha-fixed", sess.sanitizedName)
+	require.Equal(t, TmuxPrefix()+"alpha-fixed", sess.sanitizedName)
 	require.Equal(t, "alpha-fixed", sess.windowName)
 	for _, s := range ran {
 		if strings.Contains(s, "rename-session") || strings.Contains(s, "rename-window") {

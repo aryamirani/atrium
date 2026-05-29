@@ -1,10 +1,10 @@
 package session
 
 import (
-	cmd2 "claude-squad/cmd"
-	"claude-squad/cmd/cmd_test"
-	"claude-squad/session/git"
-	"claude-squad/session/tmux"
+	cmd2 "github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/session/tmux"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,8 +115,11 @@ func TestInstanceRename_RollsBackTmuxOnGitFailure(t *testing.T) {
 	require.NoError(t, statErr, "worktree dir must be intact after rollback")
 
 	// The tmux session was renamed forward then rolled back to its original name.
-	requireSubstr(t, ran, "rename-session", "claudesquad_alpha", "claudesquad_alpha-fixed")
-	requireSubstr(t, ran, "rename-session", "claudesquad_alpha-fixed", "claudesquad_alpha")
+	// The prefix follows the active brand (see tmux.TmuxPrefix), so resolve it
+	// dynamically rather than hardcoding the legacy claudesquad_ value.
+	prefix := tmux.TmuxPrefix()
+	requireSubstr(t, ran, "rename-session", prefix+"alpha", prefix+"alpha-fixed")
+	requireSubstr(t, ran, "rename-session", prefix+"alpha-fixed", prefix+"alpha")
 }
 
 func TestInstanceRename_RejectsUnstarted(t *testing.T) {

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"claude-squad/config"
-	"claude-squad/session"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/ui"
+	"github.com/ZviBaratz/atrium/ui/overlay"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"

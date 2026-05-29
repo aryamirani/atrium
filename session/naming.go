@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"claude-squad/cmd"
-	"claude-squad/config"
-	"claude-squad/session/git"
+	"github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/session/git"
 )
 
 // namingInstruction is the prompt handed to `claude -p`; the session context is

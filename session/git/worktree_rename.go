@@ -1,9 +1,9 @@
 package git
 
 import (
-	"claude-squad/config"
-	"claude-squad/log"
 	"fmt"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/log"
 )
 
 // Rename renames the session branch and moves the worktree dir to match newSessionName.

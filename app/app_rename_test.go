@@ -1,8 +1,8 @@
 package app
 
 import (
-	"claude-squad/session"
-	"claude-squad/ui"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/ui"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
