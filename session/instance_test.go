@@ -1,11 +1,11 @@
 package session
 
 import (
-	"claude-squad/cmd/cmd_test"
-	"claude-squad/session/git"
-	"claude-squad/session/tmux"
 	"encoding/json"
 	"fmt"
+	"github.com/ZviBaratz/atrium/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/session/tmux"
 	"os"
 	"os/exec"
 	"path/filepath"

@@ -1,10 +1,11 @@
 package ui
 
 import (
-	"claude-squad/log"
-	"claude-squad/session"
 	"errors"
 	"fmt"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/ui/theme"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,86 +15,17 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const readyIcon = "● "
-const pausedIcon = "⏸ "
-const needsInputIcon = "◆ "
+// Row/header/selection styles read the active theme at render time.
+func repoHeaderStyle() lipgloss.Style { return theme.Current().DimStyle().Bold(true).Padding(0, 1) }
+func repoRuleStyle() lipgloss.Style   { return theme.Current().FaintStyle() }
 
-var readyStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
-
-// workingStyle tints the busy spinner cyan: a cool, low-attention "in progress" that
-// reads distinctly from the green ready dot without competing with it.
-var workingStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#39c5cf"})
-
-// needsInputStyle (amber) marks a session blocked on a prompt — the one state that wants
-// your attention, so it gets the attention color.
-var needsInputStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#b8860b", Dark: "#d79921"})
-
-var addedLinesStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
-
-var removedLinesStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#de613e"))
-
-// behindStyle (amber) is the only attention color in the git-context cluster: being
-// behind the base implies an action (consider rebasing). commitsStyle/dirtyStyle are
-// muted because they are status, not problems — this keeps the list scannable.
-var behindStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#b8860b", Dark: "#d79921"})
-
-var commitsStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#999999"})
-
-var dirtyStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#999999"})
-
-var pausedStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
-
-var titleStyle = lipgloss.NewStyle().
-	Padding(0, 1, 0, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
-var listDescStyle = lipgloss.NewStyle().
-	Padding(0, 1, 0, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
-
-var selectedTitleStyle = lipgloss.NewStyle().
-	Padding(0, 1, 0, 1).
-	Bold(true).
-	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#ffffff"})
-
-var selectedDescStyle = lipgloss.NewStyle().
-	Padding(0, 1, 0, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#3a3a3a", Dark: "#bbbbbb"})
-
-var mainTitle = lipgloss.NewStyle().
-	Background(lipgloss.Color("62")).
-	Foreground(lipgloss.Color("230"))
-
-var autoYesStyle = lipgloss.NewStyle().
-	Background(lipgloss.Color("#dde4f0")).
-	Foreground(lipgloss.Color("#1a1a1a"))
-
-var repoHeaderStyle = lipgloss.NewStyle().
-	Padding(0, 1).
-	Bold(true).
-	Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9b9b9b"})
-
-// repoRuleStyle renders the dim divider rule trailing a repo header.
-var repoRuleStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#d7d7d7", Dark: "#3C3C3C"})
-
-// selectedItemStyle draws a left accent bar down the selected item (reusing the
-// panel's violet highlightColor from tabbed_window.go); unselectedItemStyle adds
-// matching left padding so item text stays aligned as the selection moves.
-var selectedItemStyle = lipgloss.NewStyle().
-	Border(lipgloss.Border{Left: "▎"}, false, false, false, true).
-	BorderForeground(highlightColor)
-
-var unselectedItemStyle = lipgloss.NewStyle().PaddingLeft(1)
+// selectedItemStyle draws a left accent bar down the selected row; unselected
+// rows get matching left padding so text stays aligned as the selection moves.
+func selectedItemStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Border(lipgloss.Border{Left: theme.Current().Glyphs.SelectionMark}, false, false, false, true).
+		BorderForeground(theme.Current().Palette.Accent)
+}
 
 // repoKey returns the grouping key for an instance: its repo name once started,
 // falling back to the base name of its repo path for not-yet-started instances.
@@ -121,30 +53,63 @@ func (l *List) distinctRepoCount() int {
 // member count when collapsed), and a dim rule filling the rest of the panel width, so it
 // reads as a section divider. A collapsed group's header doubles as its selectable row, so it
 // gets the same left accent bar as a selected item when selected is true.
-func (l *List) renderRepoHeader(key string, collapsed bool, count int, selected bool) string {
-	marker := "▾ "
+//
+// needsInput is how many sessions in the group are blocked on user input. When the group is
+// collapsed (so its member rows — and their per-row waiting glyphs — are hidden) and the count
+// is non-zero, a "◆N" badge is appended in the attention color so the group still signals that
+// it needs attention without being expanded.
+func (l *List) renderRepoHeader(key string, collapsed bool, count, needsInput int, selected bool) string {
+	g := theme.Current().Glyphs
+	marker := g.FoldOpen + " "
 	if collapsed {
-		marker = "▸ "
+		marker = g.FoldClosed + " "
 	}
 	name := marker + strings.ToUpper(key)
+	badge := ""
 	if collapsed {
 		name = fmt.Sprintf("%s (%d)", name, count)
+		if needsInput > 0 {
+			badge = fmt.Sprintf("%s%d", g.Waiting, needsInput)
+		}
 	}
-	header := repoHeaderStyle.Render(name)
+	header := repoHeaderStyle().Render(name)
 	// repoHeaderStyle pads the name with one space on each side; a selected header also gains
-	// a one-cell left accent bar, so reserve for both when sizing the trailing rule.
-	ruleLen := AdjustPreviewWidth(l.width) - runewidth.StringWidth(name) - 2
+	// a one-cell left accent bar, so reserve for both when sizing the trailing rule (hence -2,
+	// and an extra -1 when selected). The badge sits in the padding's right space and is
+	// followed by one separator space before the rule, so it consumes its plain-text width
+	// (its ANSI styling adds no columns) plus that one space.
+	ruleLen := l.renderer.width - runewidth.StringWidth(name) - 2
+	if badge != "" {
+		ruleLen -= runewidth.StringWidth(badge) + 1
+	}
 	if selected {
 		ruleLen--
 	}
 	if ruleLen < 0 {
 		ruleLen = 0
 	}
-	line := header + repoRuleStyle.Render(strings.Repeat("─", ruleLen))
+	line := header
+	if badge != "" {
+		line += theme.Current().AttentionStyle().Render(badge) + " "
+	}
+	line += repoRuleStyle().Render(strings.Repeat("─", ruleLen))
 	if selected {
-		return selectedItemStyle.Render(line)
+		return selectedItemStyle().Render(line)
 	}
 	return line
+}
+
+// groupNeedsInputCount returns how many sessions in the half-open item range [start, end) are
+// blocked on user input. Used to badge a collapsed repo-group header, whose member rows would
+// otherwise carry the per-row waiting glyph.
+func (l *List) groupNeedsInputCount(start, end int) int {
+	n := 0
+	for _, item := range l.items[start:end] {
+		if item.Status == session.NeedsInput {
+			n++
+		}
+	}
+	return n
 }
 
 type List struct {
@@ -169,11 +134,12 @@ func NewList(spinner *spinner.Model, autoYes bool) *List {
 	}
 }
 
-// SetSize sets the height and width of the list.
+// SetSize sets the OUTER height and width of the list (including its panel
+// border). Rows render to the inner width (width-2).
 func (l *List) SetSize(width, height int) {
 	l.width = width
 	l.height = height
-	l.renderer.setWidth(width)
+	l.renderer.setWidth(width - 2)
 }
 
 // SetSessionPreviewSize sets the height and width for the tmux sessions. This makes the stdout line have the correct
@@ -186,7 +152,7 @@ func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 
 		if innerErr := item.SetPreviewSize(width, height); innerErr != nil {
 			err = errors.Join(
-				err, fmt.Errorf("could not set preview size for instance %d: %v", i, innerErr))
+				err, fmt.Errorf("could not set preview size for instance %d: %w", i, innerErr))
 		}
 	}
 	return
@@ -203,178 +169,166 @@ type InstanceRenderer struct {
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
-	r.width = AdjustPreviewWidth(width)
+	if width < 1 {
+		width = 1
+	}
+	r.width = width
 }
 
-// ɹ and ɻ are other options.
-const branchIcon = "Ꮧ"
-
-func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) string {
-	prefix := fmt.Sprintf(" %d ", idx)
-	titleS := selectedTitleStyle
-	descS := selectedDescStyle
-	if !selected {
-		titleS = titleStyle
-		descS = listDescStyle
-	}
-
-	// add spinner next to title if it's running
-	var join string
+// stateParts returns the glyph, word, and color describing an instance's status.
+// Running/Loading use the animated spinner frame; the others use theme glyphs.
+func (r *InstanceRenderer) stateParts(i *session.Instance, th *theme.Theme) (glyph, word string, color lipgloss.Color) {
 	switch i.Status {
-	case session.Running, session.Loading:
-		join = fmt.Sprintf("%s ", workingStyle.Render(r.spinner.View()))
+	case session.Running:
+		return r.spinner.View(), "working", th.Palette.Working
+	case session.Loading:
+		return r.spinner.View(), "starting", th.Palette.Working
 	case session.Ready:
-		join = readyStyle.Render(readyIcon)
+		return th.Glyphs.Ready, "ready", th.Palette.Success
 	case session.NeedsInput:
-		join = needsInputStyle.Render(needsInputIcon)
+		return th.Glyphs.Waiting, "waiting", th.Palette.Attention
 	case session.Paused:
-		join = pausedStyle.Render(pausedIcon)
+		return th.Glyphs.Paused, "paused", th.Palette.FgDim
 	default:
+		return " ", "", th.Palette.FgDim
+	}
+}
+
+// Render draws a session as two lines: an identity/state line (name + a
+// right-aligned state word) and a dim version-control line (branch, ahead/
+// behind/dirty, and a right-aligned diff stat). The selected row carries a left
+// accent bar and a subtle filled background. idx is unused (kept for the List
+// caller's signature).
+func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) string {
+	_ = idx
+	th := theme.Current()
+	g := th.Glyphs
+
+	// The selected row carries a subtle filled background. Because an ANSI reset
+	// at the end of any styled segment also clears the background, the row bg must
+	// be baked into every segment (and gap) rather than wrapped around the line —
+	// otherwise the fill drops out after the first reset. seg/pad do that; for an
+	// unselected row bg is NoColor, so they're plain.
+	var bg lipgloss.TerminalColor = lipgloss.NoColor{}
+	if selected {
+		bg = th.Palette.BgElevated
+	}
+	seg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c).Background(bg) }
+	pad := func(n int) string {
+		if n < 0 {
+			n = 0
+		}
+		return lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", n))
 	}
 
-	// Cut the title if it's too long
-	titleText := i.DisplayName()
-	widthAvail := r.width - 3 - runewidth.StringWidth(prefix) - 1
-	if widthAvail > 0 && runewidth.StringWidth(titleText) > widthAvail {
-		titleText = runewidth.Truncate(titleText, widthAvail-3, "...")
+	// One column is reserved for the left marker/pad; build content to W.
+	W := r.width - 1
+	if W < 1 {
+		W = 1
 	}
-	title := titleS.Render(lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, fmt.Sprintf("%s %s", prefix, titleText)),
-		" ",
-		join,
-	))
 
+	// --- Line 1: name (left) · state word (right) ---
+	glyph, word, stateColor := r.stateParts(i, th)
+	rightPlain := glyph + " " + word
+	rightStyled := seg(stateColor).Render(glyph) + pad(1) + seg(stateColor).Render(word)
+
+	// Per-session AUTO badge (not while paused) so "yolo" state is unmistakable.
+	if i.AutoYes && i.Status != session.Paused {
+		badge := " " + g.AutoBadge + "AUTO "
+		rightPlain = badge + " " + rightPlain
+		rightStyled = th.BadgeStyle().Render(badge) + pad(1) + rightStyled
+	}
+
+	nameColor := th.Palette.Fg
+	if i.Status == session.NeedsInput {
+		nameColor = th.Palette.Attention // the one state that wants attention
+	}
+	nameStyle := seg(nameColor)
+	if selected {
+		nameStyle = nameStyle.Bold(true)
+	}
+	name := i.DisplayName()
+	rightW := runewidth.StringWidth(rightPlain)
+	nameAvail := W - rightW - 1
+	if nameAvail < 1 {
+		nameAvail = 1
+	}
+	if runewidth.StringWidth(name) > nameAvail {
+		name = runewidth.Truncate(name, nameAvail, "…")
+	}
+	gap1 := W - runewidth.StringWidth(name) - rightW
+	if gap1 < 1 {
+		gap1 = 1
+	}
+	line1 := nameStyle.Render(name) + pad(gap1) + rightStyled
+
+	// --- Line 2: branch + git context (left) · diff stat (right), dim ---
 	stat := i.GetDiffStats()
 
-	var diff string
-	var addedDiff, removedDiff string
-	if stat == nil || stat.Error != nil || stat.IsEmpty() {
-		// Don't show diff stats if there's an error or if they don't exist
-		addedDiff = ""
-		removedDiff = ""
-		diff = ""
-	} else {
-		addedDiff = fmt.Sprintf("+%d", stat.Added)
-		removedDiff = fmt.Sprintf("-%d ", stat.Removed)
-		diff = lipgloss.JoinHorizontal(
-			lipgloss.Center,
-			addedLinesStyle.Background(descS.GetBackground()).Render(addedDiff),
-			lipgloss.Style{}.Background(descS.GetBackground()).Foreground(descS.GetForeground()).Render(","),
-			removedLinesStyle.Background(descS.GetBackground()).Render(removedDiff),
-		)
-	}
-
-	// Build the git-context cluster (behind / commits ahead / dirty), shown just
-	// left of the diff stats. Each segment appears only when meaningful, so the
-	// common steady state is unchanged. ctxPlain mirrors ctxStyled without ANSI so
-	// the width math below stays correct.
-	var ctxPlain, ctxStyled string
+	var gctxPlain, gctxStyled string
+	var diffPlain, diffStyled string
 	if stat != nil && stat.Error == nil {
-		bg := descS.GetBackground()
-		sep := lipgloss.NewStyle().Background(bg).Render(" ")
 		if stat.Behind > 0 {
-			s := fmt.Sprintf("⇣%d", stat.Behind)
-			ctxPlain += s + " "
-			ctxStyled += behindStyle.Background(bg).Render(s) + sep
+			s := " " + g.Behind + fmt.Sprintf("%d", stat.Behind)
+			gctxPlain += s
+			gctxStyled += seg(th.Palette.Attention).Render(s) // behind implies a rebase: attention
 		}
 		if stat.Commits > 0 {
-			s := fmt.Sprintf("⇡%d", stat.Commits)
-			ctxPlain += s + " "
-			ctxStyled += commitsStyle.Background(bg).Render(s) + sep
+			s := " " + g.Ahead + fmt.Sprintf("%d", stat.Commits)
+			gctxPlain += s
+			gctxStyled += seg(th.Palette.FgDim).Render(s)
 		}
 		if stat.Dirty {
-			s := "*"
-			ctxPlain += s + " "
-			ctxStyled += dirtyStyle.Background(bg).Render(s) + sep
+			s := " " + g.Dirty
+			gctxPlain += s
+			gctxStyled += seg(th.Palette.FgDim).Render(s)
+		}
+		if !stat.IsEmpty() {
+			added := fmt.Sprintf("+%d", stat.Added)
+			removed := fmt.Sprintf("-%d", stat.Removed)
+			diffPlain = added + " " + removed
+			diffStyled = seg(th.Palette.Success).Render(added) + pad(1) + seg(th.Palette.Danger).Render(removed)
 		}
 	}
 
-	remainingWidth := r.width
-	remainingWidth -= runewidth.StringWidth(prefix)
-	remainingWidth -= runewidth.StringWidth(branchIcon)
-	remainingWidth -= 2 // for the literal " " and "-" in the branchLine format string
-
-	diffWidth := runewidth.StringWidth(addedDiff) + runewidth.StringWidth(removedDiff)
-	if diffWidth > 0 {
-		diffWidth += 1
-	}
-
-	// Use fixed width for diff stats to avoid layout issues
-	remainingWidth -= diffWidth
-	remainingWidth -= runewidth.StringWidth(ctxPlain)
-
-	// If the context cluster doesn't fit, drop it rather than truncate the branch
-	// to nothing.
-	if remainingWidth < 0 {
-		remainingWidth += runewidth.StringWidth(ctxPlain)
-		ctxStyled = ""
-	}
-
+	// Budget the branch (the only variable-length part) so the line fits W.
+	fixedW := runewidth.StringWidth(g.Branch+" ") + runewidth.StringWidth(gctxPlain) + runewidth.StringWidth(diffPlain)
+	branchBudget := W - fixedW - 1 // 1 = min gap before the diff stat
 	branch := i.Branch
-	// Don't show branch if there's no space for it. Or show ellipsis if it's too long.
-	branchWidth := runewidth.StringWidth(branch)
-	if remainingWidth < 0 {
+	if branchBudget < 1 {
 		branch = ""
-	} else if remainingWidth < branchWidth {
-		if remainingWidth < 3 {
-			branch = ""
-		} else {
-			// We know the remainingWidth is at least 4 and branch is longer than that, so this is safe.
-			branch = runewidth.Truncate(branch, remainingWidth-3, "...")
-		}
+	} else if runewidth.StringWidth(branch) > branchBudget {
+		branch = runewidth.Truncate(branch, branchBudget, "…")
 	}
-	remainingWidth -= runewidth.StringWidth(branch)
-
-	// Add spaces to fill the remaining width.
-	spaces := ""
-	if remainingWidth > 0 {
-		spaces = strings.Repeat(" ", remainingWidth)
+	leftPlain := g.Branch + " " + branch + gctxPlain
+	leftStyled := seg(th.Palette.FgDim).Render(g.Branch+" "+branch) + gctxStyled
+	gap2 := W - runewidth.StringWidth(leftPlain) - runewidth.StringWidth(diffPlain)
+	if gap2 < 1 {
+		gap2 = 1
 	}
+	line2 := leftStyled + pad(gap2) + diffStyled
 
-	branchLine := fmt.Sprintf("%s %s-%s%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, ctxStyled, diff)
-
-	// join title and subtitle
-	text := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		descS.Render(branchLine),
-	)
-
-	// Selected items get a left accent bar; others get matching left padding so the
-	// text stays aligned as the selection moves.
+	// --- Left marker (accent bar when selected) + compose ---
+	marker := pad(1)
 	if selected {
-		return selectedItemStyle.Render(text)
+		marker = seg(th.Palette.Accent).Render(g.SelectionMark)
 	}
-	return unselectedItemStyle.Render(text)
+	return lipgloss.JoinVertical(lipgloss.Left, marker+line1, marker+line2)
 }
 
 func (l *List) String() string {
-	const titleText = " Instances "
-	const autoYesText = " auto-yes "
-
-	// Write the title.
-	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString("\n")
-
-	// Write title line
-	// add padding of 2 because the border on list items adds some extra characters
-	titleWidth := AdjustPreviewWidth(l.width) + 2
-	if !l.autoyes {
-		b.WriteString(lipgloss.Place(
-			titleWidth, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText)))
-	} else {
-		title := lipgloss.Place(
-			titleWidth/2, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText))
-		autoYes := lipgloss.Place(
-			titleWidth-(titleWidth/2), 1, lipgloss.Right, lipgloss.Bottom, autoYesStyle.Render(autoYesText))
-		b.WriteString(lipgloss.JoinHorizontal(
-			lipgloss.Top, title, autoYes))
+	// The list title and global state moved to the top status bar; the list is
+	// now a pure (scrollable) stream of repo groups and session rows.
+	// Build the list as a flat slice of lines (each row is two lines; headers one;
+	// a blank line separates groups), tracking the selected block's line range so
+	// the viewport can scroll to keep it visible.
+	var lines []string
+	selStart, selH := -1, 0
+	appendBlock := func(s string) int {
+		start := len(lines)
+		lines = append(lines, strings.Split(s, "\n")...)
+		return start
 	}
-
-	b.WriteString("\n")
-	b.WriteString("\n")
 
 	// Render the list group by group, in the user's existing (reorderable) order. Headers are
 	// shown only with more than one repo, and are not selectable rows for expanded groups, so
@@ -387,29 +341,84 @@ func (l *List) String() string {
 		start, end := l.groupBounds(i)
 		collapsed := showRepos && l.collapsed[key]
 
-		// Looser spacing before each group; tighter spacing between items is handled below.
+		// Looser spacing before each group (one blank line); items within a group are adjacent.
 		if !first {
-			b.WriteString("\n\n")
+			lines = append(lines, "")
 		}
 		first = false
 
 		if showRepos {
-			b.WriteString(l.renderRepoHeader(key, collapsed, end-start, collapsed && l.selectedIdx == start))
-			if !collapsed {
-				b.WriteString("\n")
+			headerSelected := collapsed && l.selectedIdx == start
+			ni := l.groupNeedsInputCount(start, end)
+			at := appendBlock(l.renderRepoHeader(key, collapsed, end-start, ni, headerSelected))
+			if headerSelected {
+				selStart, selH = at, len(lines)-at
 			}
 		}
 		if !collapsed {
 			for j := start; j < end; j++ {
-				if j > start {
-					b.WriteString("\n")
+				at := appendBlock(l.renderer.Render(l.items[j], j+1, j == l.selectedIdx))
+				if j == l.selectedIdx {
+					selStart, selH = at, len(lines)-at
 				}
-				b.WriteString(l.renderer.Render(l.items[j], j+1, j == l.selectedIdx))
 			}
 		}
 		i = end
 	}
-	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
+
+	// Inner content area inside the panel border (2 cols / 2 rows of chrome).
+	innerH := l.height - 2
+	if innerH < 1 {
+		innerH = 1
+	}
+	lines = l.windowLines(lines, selStart, selH, innerH)
+	content := strings.Join(lines, "\n")
+
+	// The list is the primary navigation surface, so its panel is always drawn
+	// active (accent border). A dynamic focus model can flip this later.
+	return theme.Current().Panel("Sessions", content, l.width, l.height, true)
+}
+
+// windowLines clips lines to the list height, scrolling so the selected block
+// ([selStart, selStart+selH)) stays visible with a one-line margin from either
+// edge. When content is clipped, the top/bottom visible line becomes a faint
+// "↑/↓ N more" indicator (only shown when there is actually more in that
+// direction, so the selection is never hidden behind one).
+func (l *List) windowLines(lines []string, selStart, selH, avail int) []string {
+	if avail < 1 {
+		avail = 1
+	}
+	if len(lines) <= avail {
+		return lines
+	}
+
+	offset := 0
+	if selStart >= 0 {
+		selEnd := selStart + selH
+		if selEnd+1 > offset+avail {
+			offset = selEnd + 1 - avail
+		}
+		if selStart-1 < offset {
+			offset = selStart - 1
+		}
+	}
+	if offset > len(lines)-avail {
+		offset = len(lines) - avail
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	window := make([]string, avail)
+	copy(window, lines[offset:offset+avail])
+	faint := repoRuleStyle()
+	if offset > 0 {
+		window[0] = faint.Render(fmt.Sprintf("  ↑ %d more", offset))
+	}
+	if below := len(lines) - (offset + avail); below > 0 {
+		window[avail-1] = faint.Render(fmt.Sprintf("  ↓ %d more", below))
+	}
+	return window
 }
 
 // Down selects the next visible item in the list, wrapping at the end and skipping the hidden

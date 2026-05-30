@@ -1,32 +1,36 @@
 package main
 
 import (
-	"claude-squad/app"
-	cmd2 "claude-squad/cmd"
-	"claude-squad/config"
-	"claude-squad/daemon"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/session/git"
-	"claude-squad/session/tmux"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ZviBaratz/atrium/app"
+	cmd2 "github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/daemon"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/session/tmux"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	version     = "1.0.18"
+	// version is overridden at build time via -ldflags "-X main.version=...".
+	// GoReleaser injects the tag (e.g. 0.1.0); the justfile injects git describe.
+	// Unstamped builds (plain `go build`) report "dev".
+	version     = "dev"
 	programFlag string
 	autoYesFlag bool
 	daemonFlag  bool
 	binName     string
 	rootCmd     = &cobra.Command{
-		Use:   "claude-squad",
-		Short: "Claude Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp.",
+		Use:   "atrium",
+		Short: "Atrium - A command center for orchestrating multiple AI coding agents like Claude Code, Aider, Codex, and Amp.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			log.Initialize(daemonFlag)
@@ -90,6 +94,19 @@ var (
 			if err != nil {
 				return fmt.Errorf("failed to initialize storage: %w", err)
 			}
+
+			// Capture the repo paths before deleting instances so CleanupWorktrees
+			// can run its git commands in the correct repositories regardless of the
+			// current working directory.
+			instances, err := storage.LoadInstances()
+			if err != nil {
+				return fmt.Errorf("failed to load instances: %w", err)
+			}
+			repoPaths := make([]string, 0, len(instances))
+			for _, inst := range instances {
+				repoPaths = append(repoPaths, inst.GetRepoPath())
+			}
+
 			if err := storage.DeleteAllInstances(); err != nil {
 				return fmt.Errorf("failed to reset storage: %w", err)
 			}
@@ -100,7 +117,7 @@ var (
 			}
 			fmt.Println("Tmux sessions have been cleaned up")
 
-			if err := git.CleanupWorktrees(); err != nil {
+			if err := git.CleanupWorktrees(repoPaths); err != nil {
 				return fmt.Errorf("failed to cleanup worktrees: %w", err)
 			}
 			fmt.Println("Worktrees have been cleaned up")
@@ -128,9 +145,9 @@ var (
 			if err != nil {
 				return fmt.Errorf("failed to get config directory: %w", err)
 			}
-			configJson, _ := json.MarshalIndent(cfg, "", "  ")
+			configJSON, _ := json.MarshalIndent(cfg, "", "  ")
 
-			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJson)
+			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJSON)
 
 			return nil
 		},
@@ -141,7 +158,12 @@ var (
 		Short: "Print the version number",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("%s version %s\n", binName, version)
-			fmt.Printf("https://github.com/smtg-ai/claude-squad/releases/tag/v%s\n", version)
+			// Only link to a release for a clean release version. Dev builds report
+			// "dev" or a `git describe` string (e.g. 0.1.0-5-gabc-dirty) that has no
+			// corresponding release page.
+			if version != "dev" && !strings.Contains(version, "-") {
+				fmt.Printf("https://github.com/ZviBaratz/atrium/releases/tag/v%s\n", version)
+			}
 		},
 	}
 )

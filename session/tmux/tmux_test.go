@@ -1,9 +1,9 @@
 package tmux
 
 import (
-	cmd2 "claude-squad/cmd"
-	"claude-squad/log"
 	"fmt"
+	cmd2 "github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-squad/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/cmd/cmd_test"
 
 	"github.com/stretchr/testify/require"
 )
@@ -44,10 +44,10 @@ func NewMockPtyFactory(t *testing.T) *MockPtyFactory {
 
 func TestSanitizeName(t *testing.T) {
 	session := NewTmuxSession("asdf", "program")
-	require.Equal(t, TmuxPrefix+"asdf", session.sanitizedName)
+	require.Equal(t, TmuxPrefix()+"asdf", session.sanitizedName)
 
 	session = NewTmuxSession("a sd f . . asdf", "program")
-	require.Equal(t, TmuxPrefix+"asdf__asdf", session.sanitizedName)
+	require.Equal(t, TmuxPrefix()+"asdf__asdf", session.sanitizedName)
 }
 
 func TestIsReadyForPrompt(t *testing.T) {
@@ -346,7 +346,7 @@ func TestTmuxCommandInjectsIsolationFlags(t *testing.T) {
 	// subcommand (tmux requires -L/-f before the command).
 	require.Equal(t, "tmux", cmd.Args[0])
 	require.Equal(t, "-L", cmd.Args[1])
-	require.Equal(t, tmuxSocketName, cmd.Args[2])
+	require.Equal(t, socketName(), cmd.Args[2])
 	// The subcommand and its args must still be present and last.
 	require.Contains(t, cmd.Args, "has-session")
 	require.Equal(t, "-t=foo", cmd.Args[len(cmd.Args)-1])
@@ -376,20 +376,20 @@ func TestStartTmuxSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, len(ptyFactory.cmds))
 
-	// cs runs on a dedicated socket with a bundled config, so every command is
-	// prefixed with `-L claudesquad -f <conf>`. The conf path is absolute and
-	// machine-dependent, so assert the load-bearing parts rather than the exact
-	// string.
+	// Atrium runs on a dedicated socket with a bundled config, so every command is
+	// prefixed with `-L <socket> -f <conf>`. The conf path is absolute and
+	// machine-dependent, and the socket/prefix follow the active brand, so assert
+	// the load-bearing parts via the same helpers rather than a literal string.
 	newSession := cmd2.ToString(ptyFactory.cmds[0])
-	require.Contains(t, newSession, "-L claudesquad")
-	require.Contains(t, newSession, "new-session -d -s claudesquad_test-session")
+	require.Contains(t, newSession, "-L "+socketName())
+	require.Contains(t, newSession, "new-session -d -s "+TmuxPrefix()+"test-session")
 	require.Contains(t, newSession, "-c "+workdir)
 	require.Contains(t, newSession, "-n test-session")
 	require.Contains(t, newSession, "claude")
 
 	attach := cmd2.ToString(ptyFactory.cmds[1])
-	require.Contains(t, attach, "-L claudesquad")
-	require.Contains(t, attach, "attach-session -t claudesquad_test-session")
+	require.Contains(t, attach, "-L "+socketName())
+	require.Contains(t, attach, "attach-session -t "+TmuxPrefix()+"test-session")
 
 	require.Equal(t, 2, len(ptyFactory.files))
 
@@ -399,4 +399,81 @@ func TestStartTmuxSession(t *testing.T) {
 	// File should be open
 	_, err = ptyFactory.files[1].Stat()
 	require.NoError(t, err)
+}
+
+func TestContinueProgram(t *testing.T) {
+	cases := []struct {
+		name    string
+		program string
+		want    string
+	}{
+		{"bare claude gets --continue", "claude", "claude --continue"},
+		{"absolute claude path gets --continue", "/usr/local/bin/claude", "/usr/local/bin/claude --continue"},
+		{"aider unchanged", "aider --model x", "aider --model x"},
+		{"gemini unchanged", "gemini", "gemini"},
+		// HasSuffix, not Contains: a binary merely containing "claude" is not matched.
+		{"claude as non-suffix unchanged", "claude-wrapper", "claude-wrapper"},
+		// A claude program carrying flags does not end in "claude", so it is not matched —
+		// deliberately consistent with busyMarkers/detectPrompt/containsStartupGate, which
+		// use the same HasSuffix predicate and likewise ignore flag-bearing claude profiles.
+		{"claude with trailing flags unchanged", "claude --model opus", "claude --model opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, continueProgram(tc.program))
+		})
+	}
+}
+
+// startMockExec mirrors TestStartTmuxSession's executor: the first has-session check
+// reports "not found" so start's entry guard passes, and every later check succeeds so
+// the poll loop sees the session and breaks.
+func startMockExec() cmd_test.MockCmdExec {
+	created := false
+	return cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			return []byte("output"), nil
+		},
+	}
+}
+
+func TestStartContinueAppendsContinueForClaude(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("cont-test", "claude", ptyFactory, startMockExec())
+
+	require.NoError(t, session.StartContinue(t.TempDir()))
+
+	// cmds[0] is the new-session launch; cmds[1] is the trailing attach from Restore.
+	newSession := cmd2.ToString(ptyFactory.cmds[0])
+	require.Contains(t, newSession, "claude --continue")
+	// The session name is keyed off the session, not the program, so it is unchanged.
+	require.Contains(t, newSession, "new-session -d -s "+TmuxPrefix()+"cont-test")
+}
+
+func TestStartContinueLeavesNonClaudeUnchanged(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("cont-test", "aider --model x", ptyFactory, startMockExec())
+
+	require.NoError(t, session.StartContinue(t.TempDir()))
+
+	newSession := cmd2.ToString(ptyFactory.cmds[0])
+	require.NotContains(t, newSession, "--continue")
+	require.Contains(t, newSession, "aider --model x")
+}
+
+// Plain Start must never append --continue, even for claude — that is the first-time and
+// PTY-reattach path, where there is nothing to continue.
+func TestStartDoesNotAppendContinue(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	session := newTmuxSession("cont-test", "claude", ptyFactory, startMockExec())
+
+	require.NoError(t, session.Start(t.TempDir()))
+	require.NotContains(t, cmd2.ToString(ptyFactory.cmds[0]), "--continue")
 }

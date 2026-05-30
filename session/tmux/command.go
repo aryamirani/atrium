@@ -8,7 +8,7 @@ import "os/exec"
 // never appended. The returned command works for both execution paths in this
 // package: ptyFactory.Start(cmd) and cmdExec.Run/Output(cmd).
 func tmuxCommand(args ...string) *exec.Cmd {
-	full := []string{"-L", tmuxSocketName}
+	full := []string{"-L", socketName()}
 	if conf := tmuxConfigPath(); conf != "" {
 		full = append(full, "-f", conf)
 	}

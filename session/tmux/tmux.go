@@ -2,13 +2,15 @@ package tmux
 
 import (
 	"bytes"
-	"claude-squad/cmd"
-	"claude-squad/log"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/log"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -54,6 +56,21 @@ func busyMarkers(program string) []string {
 	return nil
 }
 
+// continueProgram returns the launch command that resumes the prior conversation for
+// claude, and the unchanged program for every other agent. Used only when resurrecting a
+// session whose tmux pane has died, so the relaunched claude picks up where it left off
+// instead of starting blank. tmux word-splits the trailing command string itself (the
+// same reason "aider --model x" works), so appending " --continue" to the single program
+// argv element is sufficient — no shell wrapping. The claude predicate matches the same
+// HasSuffix check used by busyMarkers/detectPrompt, so an absolute path like
+// /usr/local/bin/claude is recognized and the flag lands after it.
+func continueProgram(program string) string {
+	if strings.HasSuffix(program, ProgramClaude) {
+		return program + " --continue"
+	}
+	return program
+}
+
 // detectPrompt reports whether region (the bottom chrome of the pane) shows a prompt that
 // blocks on the user's answer. Claude has two shapes: the tool-permission dialog, and any
 // interactive selection (AskUserQuestion, plan approval, etc.). The selection footer is
@@ -82,6 +99,11 @@ func detectPrompt(program, region string) bool {
 
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
+	// mu guards sanitizedName/windowName against a deep Rename, which mutates them while
+	// the metadata poll loop reads sanitizedName from a background goroutine. Rename holds
+	// the write lock across its rename-session subprocess and the field swap, so a reader
+	// never observes the brief window where the old session name no longer exists.
+	mu sync.RWMutex
 	// Initialized by NewTmuxSession
 	//
 	// The name of the tmux session and the sanitized name used for tmux commands.
@@ -120,7 +142,12 @@ type TmuxSession struct {
 	wg     *sync.WaitGroup
 }
 
-const TmuxPrefix = "claudesquad_"
+// TmuxPrefix is the prefix applied to every Atrium-managed tmux session name. It
+// derives from config.RuntimeName so legacy installs keep the "claudesquad_"
+// prefix and can still find and clean up their pre-rebrand sessions.
+func TmuxPrefix() string {
+	return config.RuntimeName() + "_"
+}
 
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 
@@ -168,7 +195,7 @@ const (
 func toClaudeSquadTmuxName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
-	return fmt.Sprintf("%s%s", TmuxPrefix, str)
+	return fmt.Sprintf("%s%s", TmuxPrefix(), str)
 }
 
 // NewTmuxSession creates a new TmuxSession with the given name and program.
@@ -196,6 +223,20 @@ func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec 
 // Start creates and starts a new tmux session, then attaches to it. Program is the command to run in
 // the session (ex. claude). workdir is the git worktree directory.
 func (t *TmuxSession) Start(workDir string) error {
+	return t.start(workDir, t.program)
+}
+
+// StartContinue starts the session resuming the prior conversation when the program
+// supports it (claude --continue). It is used only on resurrection — the agent process
+// died and we are relaunching it — never on PTY reattach (Restore), where the process is
+// still alive. The continue command is computed transiently; t.program, the value
+// persisted via Instance, is never mutated.
+func (t *TmuxSession) StartContinue(workDir string) error {
+	return t.start(workDir, continueProgram(t.program))
+}
+
+// start creates a new detached tmux session running program in workDir, then attaches.
+func (t *TmuxSession) start(workDir string, program string) error {
 	// Check if the session already exists
 	if t.DoesSessionExist() {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
@@ -203,7 +244,7 @@ func (t *TmuxSession) Start(workDir string) error {
 
 	// Create a new detached tmux session and start claude in it. -n gives the
 	// window the human-readable title (the conf disables auto-rename).
-	cmd := tmuxCommand("new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName, t.program)
+	cmd := tmuxCommand("new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName, program)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
@@ -211,7 +252,7 @@ func (t *TmuxSession) Start(workDir string) error {
 		if t.DoesSessionExist() {
 			cleanupCmd := tmuxCommand("kill-session", "-t", t.sanitizedName)
 			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 			}
 		}
 		return fmt.Errorf("error starting tmux session: %w", err)
@@ -224,9 +265,9 @@ func (t *TmuxSession) Start(workDir string) error {
 		select {
 		case <-timeout:
 			if cleanupErr := t.Close(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 			}
-			return fmt.Errorf("timed out waiting for tmux session %s: %v", t.sanitizedName, err)
+			return fmt.Errorf("timed out waiting for tmux session %s: %w", t.sanitizedName, err)
 		default:
 			time.Sleep(sleepDuration)
 			// Exponential backoff up to 50ms max
@@ -235,15 +276,15 @@ func (t *TmuxSession) Start(workDir string) error {
 			}
 		}
 	}
-	ptmx.Close()
+	_ = ptmx.Close()
 
-	// history-limit and mouse are set server-globally by the bundled config
-	// (claudesquad.conf), so no per-session set-option is needed here.
+	// history-limit and mouse are set server-globally by the bundled managed
+	// config, so no per-session set-option is needed here.
 
 	err = t.Restore()
 	if err != nil {
 		if cleanupErr := t.Close(); cleanupErr != nil {
-			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+			err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 		}
 		return fmt.Errorf("error restoring tmux session: %w", err)
 	}
@@ -471,6 +512,12 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 		}
 	}()
 
+	// Snapshot ptmx before the loop so the goroutine writes through a local copy instead
+	// of re-reading the shared t.ptmx field on every keypress. DetachSafely (called by
+	// lost-session recovery) can set t.ptmx = nil from another goroutine while this one is
+	// blocked on os.Stdin.Read; reading the field in the loop would be a data race on that
+	// pointer. (os.File.Write is nil-safe, so the original code raced rather than panicked.)
+	attachedPtmx := t.ptmx
 	go func() {
 		// Close the channel after 50ms
 		timeoutCh := make(chan struct{})
@@ -511,8 +558,10 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 				return
 			}
 
-			// Forward other input to tmux
-			_, _ = t.ptmx.Write(buf[:nr])
+			// Forward other input to tmux. If DetachSafely closed the pty, this write
+			// returns a "file already closed" error (discarded) rather than racing on
+			// t.ptmx. attachedPtmx is captured live at Attach time, so it is never nil.
+			_, _ = attachedPtmx.Write(buf[:nr])
 		}
 	}()
 
@@ -633,11 +682,24 @@ func (t *TmuxSession) SetDetachedSize(width, height int) error {
 	return t.updateWindowSize(width, height)
 }
 
+// clampUint16 bounds an int into the uint16 range. PTY winsize fields are
+// uint16; terminal dimensions are always small and positive in practice, but
+// clamping makes the conversion provably safe (and satisfies gosec G115).
+func clampUint16(n int) uint16 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(n)
+}
+
 // updateWindowSize updates the window size of the PTY.
 func (t *TmuxSession) updateWindowSize(cols, rows int) error {
 	return pty.Setsize(t.ptmx, &pty.Winsize{
-		Rows: uint16(rows),
-		Cols: uint16(cols),
+		Rows: clampUint16(rows),
+		Cols: clampUint16(cols),
 		X:    0,
 		Y:    0,
 	})
@@ -645,17 +707,25 @@ func (t *TmuxSession) updateWindowSize(cols, rows int) error {
 
 func (t *TmuxSession) DoesSessionExist() bool {
 	// Using "-t name" does a prefix match, which is wrong. `-t=` does an exact match.
-	existsCmd := tmuxCommand("has-session", fmt.Sprintf("-t=%s", t.sanitizedName))
+	existsCmd := tmuxCommand("has-session", fmt.Sprintf("-t=%s", t.snapshotName()))
 	return t.cmdExec.Run(existsCmd) == nil
+}
+
+// snapshotName reads sanitizedName under the read lock so background polling can't race
+// the in-place field swap a deep Rename performs.
+func (t *TmuxSession) snapshotName() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.sanitizedName
 }
 
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("error capturing pane content: %v", err)
+		return "", fmt.Errorf("error capturing pane content: %w", err)
 	}
 	return string(output), nil
 }
@@ -664,10 +734,10 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
+	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
+		return "", fmt.Errorf("failed to capture tmux pane content with options: %w", err)
 	}
 	return string(output), nil
 }
@@ -681,13 +751,14 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 	// If there's an error and it's because no server is running, that's fine
 	// Exit code 1 typically means no sessions exist
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil // No sessions to clean up
 		}
-		return fmt.Errorf("failed to list tmux sessions: %v", err)
+		return fmt.Errorf("failed to list tmux sessions: %w", err)
 	}
 
-	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix))
+	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix()))
 	matches := re.FindAllString(string(output), -1)
 	for i, match := range matches {
 		matches[i] = match[:strings.Index(match, ":")]
@@ -696,7 +767,7 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 	for _, match := range matches {
 		log.InfoLog.Printf("cleaning up session: %s", match)
 		if err := cmdExec.Run(tmuxCommand("kill-session", "-t", match)); err != nil {
-			return fmt.Errorf("failed to kill tmux session %s: %v", match, err)
+			return fmt.Errorf("failed to kill tmux session %s: %w", match, err)
 		}
 	}
 	return nil

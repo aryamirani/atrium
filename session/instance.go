@@ -1,9 +1,9 @@
 package session
 
 import (
-	"claude-squad/log"
-	"claude-squad/session/git"
-	"claude-squad/session/tmux"
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session/git"
+	"github.com/ZviBaratz/atrium/session/tmux"
 	"path/filepath"
 
 	"fmt"
@@ -193,7 +193,9 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			// keeps the instance usable. If the worktree is also gone, leave it
 			// Paused so the branch is preserved and Resume can recover it.
 			if valid, err := instance.gitWorktree.IsValidWorktree(); err == nil && valid {
-				if err := sess.Start(instance.gitWorktree.GetWorktreePath()); err != nil {
+				// The agent process died with the tmux session, so resume its prior
+				// conversation rather than starting blank (no-op for non-claude agents).
+				if err := sess.StartContinue(instance.gitWorktree.GetWorktreePath()); err != nil {
 					return nil, err
 				}
 				instance.started = true
@@ -316,7 +318,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	defer func() {
 		if setupErr != nil {
 			if cleanupErr := i.Kill(); cleanupErr != nil {
-				setupErr = fmt.Errorf("%v (cleanup error: %v)", setupErr, cleanupErr)
+				setupErr = fmt.Errorf("%w (cleanup error: %w)", setupErr, cleanupErr)
 			}
 		} else {
 			i.started = true
@@ -340,7 +342,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 			}
 			setupErr = fmt.Errorf("failed to start new session: %w", err)
 			return setupErr
@@ -489,6 +491,14 @@ func (i *Instance) GetWorktreePath() string {
 	return i.gitWorktree.GetWorktreePath()
 }
 
+// GetRepoPath returns the git repository root for the instance, or empty string if unavailable
+func (i *Instance) GetRepoPath() string {
+	if i.gitWorktree == nil {
+		return ""
+	}
+	return i.gitWorktree.GetRepoPath()
+}
+
 func (i *Instance) Started() bool {
 	return i.started
 }
@@ -500,6 +510,45 @@ func (i *Instance) SetTitle(title string) error {
 		return fmt.Errorf("cannot change title of a started instance")
 	}
 	i.Title = title
+	return nil
+}
+
+// Rename performs an in-place "deep" rename of a started instance to newTitle: it renames
+// the tmux session, then the git branch and worktree directory, then updates Title and the
+// rendered Branch field. Unlike SetDisplayName (which only changes the cosmetic label) this
+// fixes the identity everywhere it surfaces — git, GitHub/PRs, the worktree path — without
+// killing the running agent. The order (tmux → git) keeps rollback exact: a git failure only
+// has to undo the tmux rename (reversible by name), never a worktree move that already minted
+// a fresh path. Title/Branch are written here on the main thread; no background reader touches
+// them, so they need no lock (the git/tmux structs guard their own fields).
+func (i *Instance) Rename(newTitle string) error {
+	newTitle = strings.TrimSpace(newTitle)
+	if newTitle == "" {
+		return fmt.Errorf("cannot rename to an empty title")
+	}
+	if !i.started {
+		return fmt.Errorf("cannot deep-rename an instance that has not been started")
+	}
+
+	oldTitle := i.Title
+
+	// 1. Rename the tmux session first: atomic and exactly reversible by name.
+	if err := i.tmuxSession.Rename(newTitle); err != nil {
+		return fmt.Errorf("failed to rename tmux session: %w", err)
+	}
+
+	// 2. Rename the git branch + move the worktree. On failure (incl. its own internal
+	// rollback of a half-done branch rename), roll the tmux session back to its old name.
+	if err := i.gitWorktree.Rename(newTitle); err != nil {
+		if rbErr := i.tmuxSession.Rename(oldTitle); rbErr != nil {
+			log.ErrorLog.Printf("failed to roll back tmux rename %q->%q: %v", newTitle, oldTitle, rbErr)
+		}
+		return fmt.Errorf("failed to rename git worktree: %w", err)
+	}
+
+	// 3. Adopt the corrected identity.
+	i.Title = newTitle
+	i.Branch = i.gitWorktree.GetBranchName()
 	return nil
 }
 
@@ -590,7 +639,7 @@ func (i *Instance) pause(copyBranchToClipboard bool) error {
 		log.ErrorLog.Print(err)
 	} else if dirty {
 		// Commit changes locally (without pushing to GitHub)
-		commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s (paused)", i.Title, time.Now().Format(time.RFC822))
+		commitMsg := fmt.Sprintf("[atrium] update from '%s' on %s (paused)", i.Title, time.Now().Format(time.RFC822))
 		if err := i.gitWorktree.CommitChanges(commitMsg); err != nil {
 			errs = append(errs, fmt.Errorf("failed to commit changes: %w", err))
 			log.ErrorLog.Print(err)
@@ -673,19 +722,20 @@ func (i *Instance) Resume() error {
 				log.ErrorLog.Print(err)
 				// Cleanup git worktree if tmux session creation fails
 				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+					err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 					log.ErrorLog.Print(err)
 				}
 				return fmt.Errorf("failed to start new session: %w", err)
 			}
 		}
 	} else {
-		// Create new tmux session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+		// The tmux session is gone, so the agent process died with it: resume its prior
+		// conversation rather than starting blank (no-op for non-claude agents).
+		if err := i.tmuxSession.StartContinue(i.gitWorktree.GetWorktreePath()); err != nil {
 			log.ErrorLog.Print(err)
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 				log.ErrorLog.Print(err)
 			}
 			return fmt.Errorf("failed to start new session: %w", err)

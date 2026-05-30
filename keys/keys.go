@@ -18,6 +18,7 @@ const (
 	KeySubmit
 
 	KeyTab        // Tab is a special keybinding for switching between panes.
+	KeyShiftTab   // ShiftTab cycles between panes in reverse order.
 	KeySubmitName // SubmitName is a special keybinding for submitting the name of a new instance.
 
 	KeyCheckout
@@ -44,6 +45,8 @@ const (
 	KeyRename // Rename the selected session's display label
 
 	KeyQuickSend // Open a compose box to send a message to the selected session without attaching
+
+	KeyAutoName // Auto-generate a display name for the selected session via claude
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -66,9 +69,11 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"n":          KeyNew,
 	"D":          KeyKill,
 	"R":          KeyRename,
+	"A":          KeyAutoName,
 	"right":      KeyQuickSend,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
+	"shift+tab":  KeyShiftTab,
 	"c":          KeyCheckout,
 	"r":          KeyResume,
 	"p":          KeySubmit,
@@ -109,6 +114,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithKeys("R"),
 		key.WithHelp("R", "rename"),
 	),
+	KeyAutoName: key.NewBinding(
+		key.WithKeys("A"),
+		key.WithHelp("A", "auto-name"),
+	),
 	KeyQuickSend: key.NewBinding(
 		key.WithKeys("right"),
 		key.WithHelp("→", "send"),
@@ -136,6 +145,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyTab: key.NewBinding(
 		key.WithKeys("tab"),
 		key.WithHelp("tab", "switch tab"),
+	),
+	KeyShiftTab: key.NewBinding(
+		key.WithKeys("shift+tab"),
+		key.WithHelp("shift+tab", "prev tab"),
 	),
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
