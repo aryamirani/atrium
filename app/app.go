@@ -24,14 +24,25 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
 const GlobalInstanceLimit = 10
 
+// doubleClickWindow is the maximum delay between two left-clicks on the same
+// session row for the second to count as a double-click (attach). Bubble Tea has
+// no native double-click event, so it is detected by timing here.
+const doubleClickWindow = 400 * time.Millisecond
+
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
+	// Initialize the global bubblezone manager before the first render. The list
+	// and tab views Mark() rows/tabs via the package-level manager, which panics
+	// ("manager not initialized") until NewGlobal() is called. Idempotent, so it
+	// coexists with the test init()s that also call it.
+	zone.NewGlobal()
 	p := tea.NewProgram(
 		newHome(ctx, program, autoYes),
 		tea.WithAltScreen(),
@@ -90,6 +101,11 @@ type home struct {
 
 	// state is the current discrete state of the application
 	state state
+	// lastClickTitle / lastClickAt track the previous left-click on a session row
+	// so a second click on the same row within doubleClickWindow is treated as a
+	// double-click (attach). Bubble Tea has no native double-click event.
+	lastClickTitle string
+	lastClickAt    time.Time
 	// newInstanceFinalizer is called when the state is stateNew and then you press enter.
 	// It registers the new instance in the list after the instance has been started.
 	newInstanceFinalizer func()
@@ -361,20 +377,54 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance()))
 		return m, tea.Batch(cmds...)
 	case tea.MouseMsg:
-		// Handle mouse wheel events for scrolling the diff/preview pane
-		if msg.Action == tea.MouseActionPress {
-			if msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelUp {
-				selected := m.list.GetSelectedInstance()
-				if selected == nil || selected.Paused() {
-					return m, nil
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		// Mouse wheel scrolls the diff/preview pane.
+		if msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelUp {
+			selected := m.list.GetSelectedInstance()
+			if selected == nil || selected.Paused() {
+				return m, nil
+			}
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.tabbedWindow.ScrollUp()
+			case tea.MouseButtonWheelDown:
+				m.tabbedWindow.ScrollDown()
+			}
+			return m, nil
+		}
+		// Left-click selects a session row, switches the active tab, or (on a quick
+		// second click of the same row) attaches. Only in the default state — when
+		// an overlay is up the rows behind it still have recorded bounds, so a click
+		// there must be ignored. Click regions are resolved against the frame
+		// scanned in View().
+		if msg.Button == tea.MouseButtonLeft && m.state == stateDefault {
+			if inst := m.list.InstanceAtZone(msg); inst != nil {
+				m.list.SelectInstance(inst)
+				// A second click on the same row within doubleClickWindow attaches,
+				// mirroring Enter, via the tea.Exec attach path (attachExec). The first
+				// click already selected the row, so it is the current selection.
+				now := time.Now()
+				if m.lastClickTitle == inst.Title && now.Sub(m.lastClickAt) <= doubleClickWindow {
+					m.lastClickTitle = ""
+					if inst.Paused() || inst.GetStatus() == session.Loading || !inst.TmuxAlive() {
+						return m, m.instanceChanged()
+					}
+					if m.tabbedWindow.IsInTerminalTab() {
+						return m, m.attachExec(m.tabbedWindow.AttachTerminal, nil)
+					}
+					// inst is the current selection, so list.Attach targets it;
+					// killTarget carries it for the ctrl-x in-session kill flow.
+					return m, m.attachExec(m.list.Attach, inst)
 				}
-
-				switch msg.Button {
-				case tea.MouseButtonWheelUp:
-					m.tabbedWindow.ScrollUp()
-				case tea.MouseButtonWheelDown:
-					m.tabbedWindow.ScrollDown()
-				}
+				m.lastClickTitle = inst.Title
+				m.lastClickAt = now
+				return m, m.instanceChanged()
+			}
+			if idx, ok := m.tabbedWindow.TabAtZone(msg); ok {
+				m.tabbedWindow.SetActiveTab(idx)
+				return m, m.instanceChanged()
 			}
 		}
 		return m, nil
@@ -1750,6 +1800,12 @@ func (m *home) View() string {
 		parts = append(parts, m.errBox.String())
 	}
 	mainView := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	// Scan the frame here, before any overlay composites on top. zone.Scan strips
+	// the (zero-width) Mark escapes and records each zone's bounds. Doing it now
+	// keeps marker sequences out of overlay.PlaceOverlay, whose column-by-column
+	// line splicing could otherwise cut a row's start/end marker pair; bounds stay
+	// correct because overlays render at origin and don't shift the content below.
+	mainView = zone.Scan(mainView)
 
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {

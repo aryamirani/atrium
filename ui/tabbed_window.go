@@ -1,12 +1,18 @@
 package ui
 
 import (
+	"fmt"
+
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 )
+
+func tabZoneID(i int) string { return fmt.Sprintf("tab-%d", i) }
 
 func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
 	border := lipgloss.RoundedBorder()
@@ -112,6 +118,27 @@ func (w *TabbedWindow) GetPreviewSize() (width, height int) {
 
 func (w *TabbedWindow) Toggle() {
 	w.activeTab = (w.activeTab + 1) % len(w.tabs)
+}
+
+// SetActiveTab switches directly to tab i (e.g. from a mouse click). Like Toggle
+// it only moves the index; the caller refreshes the active pane via
+// instanceChanged(). Out-of-range indices are ignored.
+func (w *TabbedWindow) SetActiveTab(i int) {
+	if i < 0 || i >= len(w.tabs) {
+		return
+	}
+	w.activeTab = i
+}
+
+// TabAtZone returns the index of the tab containing the given mouse event, and
+// whether any tab was hit.
+func (w *TabbedWindow) TabAtZone(msg tea.MouseMsg) (int, bool) {
+	for i := range w.tabs {
+		if zone.Get(tabZoneID(i)).InBounds(msg) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // ToggleReverse cycles to the previous tab, wrapping from the first tab to the
@@ -269,7 +296,7 @@ func (w *TabbedWindow) String() string {
 		}
 		style = style.Border(border)
 		style = style.Width(width - style.GetHorizontalFrameSize())
-		renderedTabs = append(renderedTabs, style.Render(t))
+		renderedTabs = append(renderedTabs, zone.Mark(tabZoneID(i), style.Render(t)))
 	}
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, renderedTabs...)
