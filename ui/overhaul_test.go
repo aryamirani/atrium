@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +89,10 @@ func TestListGolden(t *testing.T) {
 	mk("markers", "pane-markers", session.Paused, nil)
 	l.SetSize(40, 14)
 
-	got := l.String()
+	// Rows carry bubblezone click-region markers; Scan strips them just as
+	// home.View() does before the frame is shown, so the golden stays the visible
+	// output rather than the marked intermediate.
+	got := zone.Scan(l.String())
 	golden := filepath.Join("testdata", "list_golden.txt")
 	if os.Getenv("CS_UPDATE_GOLDEN") != "" {
 		require.NoError(t, os.MkdirAll("testdata", 0o755))

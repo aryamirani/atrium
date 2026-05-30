@@ -11,9 +11,16 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 	"github.com/mattn/go-runewidth"
 )
+
+// listRowZoneID is the bubblezone marker id for a session row. It is keyed by the
+// instance's immutable Title so stale zones from removed sessions are never
+// queried (InstanceAtZone only checks rows currently in the list).
+func listRowZoneID(title string) string { return "list-row-" + title }
 
 // Row/header/selection styles read the active theme at render time.
 func repoHeaderStyle() lipgloss.Style { return theme.Current().DimStyle().Bold(true).Padding(0, 1) }
@@ -445,7 +452,7 @@ func (l *List) String() string {
 				if l.isHidden(j) {
 					continue
 				}
-				at := appendBlock(l.renderer.Render(l.items[j], j+1, j == l.selectedIdx))
+				at := appendBlock(zone.Mark(listRowZoneID(l.items[j].Title), l.renderer.Render(l.items[j], j+1, j == l.selectedIdx)))
 				if j == l.selectedIdx {
 					selStart, selH = at, len(lines)-at
 				}
@@ -513,6 +520,18 @@ func (l *List) windowLines(lines []string, selStart, selH, avail int) []string {
 		window[avail-1] = faint.Render(fmt.Sprintf("  ↓ %d more", below))
 	}
 	return window
+}
+
+// InstanceAtZone returns the instance whose rendered row contains the given mouse
+// event, or nil if the click did not land on a session row. Only rows currently
+// in the list are considered, so stale zones from removed sessions are ignored.
+func (l *List) InstanceAtZone(msg tea.MouseMsg) *session.Instance {
+	for _, it := range l.items {
+		if zone.Get(listRowZoneID(it.Title)).InBounds(msg) {
+			return it
+		}
+	}
+	return nil
 }
 
 // Down selects the next visible item in the list, wrapping at the end and skipping the hidden
