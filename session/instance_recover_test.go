@@ -82,7 +82,7 @@ func TestRecoverInPlace_OrphanedWorktreeDegradesToPaused(t *testing.T) {
 		"sess", "session/sess", "", "main", false)
 	pty := &recordingPtyFactory{}
 	ts := tmux.NewTmuxSessionWithDeps("sess", "claude", pty, deadExec())
-	inst := &Instance{Title: "sess", Status: Running, gitWorktree: wt, tmuxSession: ts}
+	inst := &Instance{Title: "sess", status: Running, gitWorktree: wt, tmuxSession: ts}
 
 	inst.recoverInPlace()
 
@@ -111,12 +111,12 @@ func TestRecoverInPlace_ResumesConversationWhenWorktreeValid(t *testing.T) {
 		OutputFunc: func(*exec.Cmd) ([]byte, error) { return nil, nil },
 	}
 	ts := tmux.NewTmuxSessionWithDeps("sess", "claude", pty, liveExec)
-	inst := &Instance{Title: "sess", Status: Running, gitWorktree: wt, tmuxSession: ts}
+	inst := &Instance{Title: "sess", status: Running, gitWorktree: wt, tmuxSession: ts}
 
 	inst.recoverInPlace()
 
 	require.True(t, inst.started)
-	require.Equal(t, Running, inst.Status, "a valid worktree must recover to Running")
+	require.Equal(t, Running, inst.GetStatus(), "a valid worktree must recover to Running")
 	require.NotEmpty(t, pty.cmds, "the session must be (re)launched")
 	require.Contains(t, pty.commands()[0], "--continue",
 		"recovery must resume the prior conversation, not start blank")
@@ -130,7 +130,7 @@ func TestRecoverInPlace_FailedRestartDegradesToPaused(t *testing.T) {
 	wt := newTestWorktree(t)
 	pty := &recordingPtyFactory{startErr: fmt.Errorf("pty boom")}
 	ts := tmux.NewTmuxSessionWithDeps("sess", "claude", pty, deadExec())
-	inst := &Instance{Title: "sess", Status: Running, gitWorktree: wt, tmuxSession: ts}
+	inst := &Instance{Title: "sess", status: Running, gitWorktree: wt, tmuxSession: ts}
 
 	inst.recoverInPlace()
 

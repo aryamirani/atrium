@@ -87,8 +87,8 @@ func TestList_NoDuplicateHeaderForInterleavedRepo(t *testing.T) {
 func TestList_CollapsedHeaderBadgesNeedsInputCount(t *testing.T) {
 	t.Cleanup(theme.Set("unicode"))
 	l := newGroupList(t, "/tmp/repoA", "/tmp/repoA", "/tmp/repoB")
-	l.items[0].Status = session.NeedsInput
-	l.items[1].Status = session.NeedsInput
+	l.items[0].SetStatus(session.NeedsInput)
+	l.items[1].SetStatus(session.NeedsInput)
 	l.SetCollapsedRepos([]string{"repoA"})
 
 	badge := theme.Current().Glyphs.Waiting + "2"
@@ -112,7 +112,7 @@ func TestList_CollapsedHeaderNoBadgeWhenNoNeedsInput(t *testing.T) {
 func TestList_ExpandedHeaderHasNoNeedsInputBadge(t *testing.T) {
 	t.Cleanup(theme.Set("unicode"))
 	l := newGroupList(t, "/tmp/repoA", "/tmp/repoA", "/tmp/repoB")
-	l.items[0].Status = session.NeedsInput
+	l.items[0].SetStatus(session.NeedsInput)
 	l.SetCollapsedRepos([]string{"repoB"})
 
 	out := l.String()

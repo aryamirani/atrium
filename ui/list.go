@@ -117,7 +117,7 @@ func (l *List) visibleCount(start, end int) int {
 func (l *List) groupNeedsInputCount(start, end int) int {
 	n := 0
 	for _, item := range l.items[start:end] {
-		if item.Status == session.NeedsInput {
+		if item.GetStatus() == session.NeedsInput {
 			n++
 		}
 	}
@@ -238,7 +238,7 @@ func (r *InstanceRenderer) setWidth(width int) {
 // stateParts returns the glyph, word, and color describing an instance's status.
 // Running/Loading use the animated spinner frame; the others use theme glyphs.
 func (r *InstanceRenderer) stateParts(i *session.Instance, th *theme.Theme) (glyph, word string, color lipgloss.Color) {
-	switch i.Status {
+	switch i.GetStatus() {
 	case session.Running:
 		return r.spinner.View(), "working", th.Palette.Working
 	case session.Loading:
@@ -293,14 +293,14 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 	rightStyled := seg(stateColor).Render(glyph) + pad(1) + seg(stateColor).Render(word)
 
 	// Per-session AUTO badge (not while paused) so "yolo" state is unmistakable.
-	if i.AutoYes && i.Status != session.Paused {
+	if i.AutoYes && !i.Paused() {
 		badge := " " + g.AutoBadge + "AUTO "
 		rightPlain = badge + " " + rightPlain
 		rightStyled = th.BadgeStyle().Render(badge) + pad(1) + rightStyled
 	}
 
 	nameColor := th.Palette.Fg
-	if i.Status == session.NeedsInput {
+	if i.GetStatus() == session.NeedsInput {
 		nameColor = th.Palette.Attention // the one state that wants attention
 	}
 	nameStyle := seg(nameColor)
