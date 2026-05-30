@@ -13,6 +13,7 @@ import (
 	"github.com/ZviBaratz/atrium/ui"
 	"github.com/ZviBaratz/atrium/ui/overlay"
 	"github.com/ZviBaratz/atrium/ui/theme"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"golang.org/x/term"
 )
 
 const GlobalInstanceLimit = 10
@@ -117,6 +119,10 @@ type home struct {
 	// clears and the panes must give up or reclaim the error box's row.
 	windowWidth, windowHeight int
 
+	// listRatio is the live fraction of width given to the session list (the rest
+	// goes to the preview pane). Adjusted with < / > and persisted via appState.
+	listRatio float64
+
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -184,6 +190,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		listRatio:    appState.GetListRatio(),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -212,8 +219,15 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	// List takes 30% of width, preview takes 70%
-	listWidth := int(float32(msg.Width) * 0.3)
+	// The session list takes listRatio of the width (default 30%); the preview pane
+	// takes the rest. listRatio is user-adjustable with < / > (clamped in appState).
+	// A zero value means the home was built without seeding the ratio (e.g. a struct
+	// literal in tests); fall back to the persisted/default value so the list never
+	// collapses to nothing.
+	if m.listRatio <= 0 {
+		m.listRatio = m.appState.GetListRatio()
+	}
+	listWidth := int(float32(msg.Width) * float32(m.listRatio))
 	tabsWidth := msg.Width - listWidth
 
 	m.windowWidth, m.windowHeight = msg.Width, msg.Height
@@ -259,6 +273,21 @@ func (m *home) recomputeLayout() {
 		return
 	}
 	m.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: m.windowWidth, Height: m.windowHeight})
+}
+
+// listRatioStep is how much each < / > press shifts the list/preview split.
+const listRatioStep = 0.05
+
+// adjustListRatio nudges the list/preview split by delta, persists the clamped
+// value, re-pushes sizes to every pane, and refreshes the preview at its new width.
+// appState owns the clamp, so the stored and live values stay in lockstep.
+func (m *home) adjustListRatio(delta float64) tea.Cmd {
+	if err := m.appState.SetListRatio(m.listRatio + delta); err != nil {
+		return m.handleError(err)
+	}
+	m.listRatio = m.appState.GetListRatio()
+	m.recomputeLayout()
+	return m.instanceChanged()
 }
 
 func (m *home) Init() tea.Cmd {
@@ -376,6 +405,22 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case instanceChangedMsg:
 		// Handle instance changed after confirmation action
 		return m, m.instanceChanged()
+	case attachFinishedMsg:
+		// A tea.Exec terminal attach returned (the user detached, or it failed to
+		// start). tea.Exec's RestoreTerminal has already repainted the frame; refine
+		// the layout and selection-derived panes from here.
+		m.state = stateDefault
+		if msg.err != nil {
+			return m, m.handleError(msg.err)
+		}
+		// Honor an in-session kill (Ctrl+X) requested before detach. killTarget is the
+		// attached instance (nil for the terminal tab, which has no kill key); keep
+		// tea.WindowSize() so the confirmation overlay redraws at the correct
+		// dimensions after the full-screen attach (confirmKill only mutates state).
+		if msg.killTarget != nil && msg.killTarget.AttachKillRequested() {
+			return m, tea.Batch(tea.WindowSize(), m.confirmKill(msg.killTarget))
+		}
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case infoMsg:
 		// An action requested a dismissible info modal (e.g. an actionable resume
 		// error). Unlike handleError's transient box, this persists until dismissed.
@@ -416,23 +461,11 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Drop straight into the new session, mirroring the KeyEnter attach path.
 			// Attach msg.instance directly rather than via m.list.Attach(): a background
 			// instanceStartedMsg from another freshly-created session could have moved
-			// the list selection by now. Attaching blocks until the user detaches
-			// (ctrl-q); the hint bar carries the detach reminder, so no teaching modal.
-			ch, err := msg.instance.Attach()
-			if err != nil {
-				return m, m.handleError(err)
-			}
-			<-ch
-			m.state = stateDefault
-			// Honor an in-session kill (Ctrl+X) requested from the freshly-opened
-			// session; key on msg.instance since the selection may have drifted.
-			// Keep tea.WindowSize() so the confirmation overlay redraws at the
-			// correct dimensions after the full-screen attach (confirmKill only
-			// mutates state and returns nil).
-			if msg.instance.AttachKillRequested() {
-				return m, tea.Batch(tea.WindowSize(), m.confirmKill(msg.instance))
-			}
-			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+			// the list selection by now. The attach runs through tea.Exec, which hands
+			// the terminal to tmux and repaints on detach; post-detach handling — an
+			// in-session Ctrl+X kill request, keyed on msg.instance since the selection
+			// may have drifted — lands in the attachFinishedMsg handler.
+			return m, m.attachExec(msg.instance.Attach, msg.instance)
 		}
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
@@ -871,6 +904,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyShiftDown:
 		m.tabbedWindow.ScrollDown()
 		return m, m.instanceChanged()
+	case keys.KeyShrinkList:
+		return m, m.adjustListRatio(-listRatioStep)
+	case keys.KeyGrowList:
+		return m, m.adjustListRatio(+listRatioStep)
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
@@ -1005,29 +1042,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Paused() || selected.GetStatus() == session.Loading || !selected.TmuxAlive() {
 			return m, nil
 		}
-		// Terminal tab: attach to terminal session. Attaching blocks until the
-		// user detaches (ctrl-q); the hint bar carries the detach reminder.
+		// Attach to the session (or its terminal tab) via tea.Exec, which hands the
+		// terminal to tmux and repaints on detach; the hint bar carries the ctrl-q
+		// detach reminder. Post-detach handling lands in the attachFinishedMsg handler.
 		if m.tabbedWindow.IsInTerminalTab() {
-			ch, err := m.tabbedWindow.AttachTerminal()
-			if err != nil {
-				return m, m.handleError(err)
-			}
-			<-ch
-			m.state = stateDefault
-			return m, nil
+			// The terminal tab has no in-session kill key, so no kill target.
+			return m, m.attachExec(m.tabbedWindow.AttachTerminal, nil)
 		}
-		ch, err := m.list.Attach()
-		if err != nil {
-			return m, m.handleError(err)
-		}
-		<-ch
-		m.state = stateDefault
-		// If the user pressed the in-session kill key (Ctrl+X) before detaching,
-		// run the normal kill-confirmation flow on the session they just left.
-		if selected.AttachKillRequested() {
-			return m, m.confirmKill(selected)
-		}
-		return m, m.instanceChanged()
+		return m, m.attachExec(m.list.Attach, selected)
 	default:
 		return m, nil
 	}
@@ -1054,6 +1076,53 @@ func (m *home) deepRename(selected *session.Instance, value string) error {
 	}
 	selected.SetDisplayName("")
 	return m.storage.SaveInstances(m.list.GetInstances())
+}
+
+// attachCommand adapts a blocking tmux attach into a tea.ExecCommand so Bubble
+// Tea releases the terminal before the attach and restores+repaints it after —
+// on the event loop, via execMsg, which is the framework's supported path for a
+// blocking terminal takeover. (Calling ReleaseTerminal/RestoreTerminal directly
+// from inside Update blocks the event loop for the whole attach and leaves the
+// renderer/input reader wedged.) Run also puts stdin in raw mode for the
+// duration: ReleaseTerminal restores cooked mode, where Ctrl+Q (ASCII 17 = XON)
+// is swallowed by IXON flow control and never reaches the detach reader. The
+// Set* methods are no-ops because the attach copies os.Stdin/os.Stdout directly
+// rather than through the streams Bubble Tea would inject.
+type attachCommand struct {
+	attach func() (chan struct{}, error)
+}
+
+func (a attachCommand) Run() error {
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		if oldState, err := term.MakeRaw(fd); err == nil {
+			defer func() { _ = term.Restore(fd, oldState) }()
+		} else {
+			// Stay in cooked mode where IXON swallows Ctrl+Q, so detach won't work and
+			// the attach looks like a hang. Log a breadcrumb (to the file, not the
+			// tmux-owned terminal) instead of failing silently.
+			log.WarningLog.Printf("failed to set raw mode for attach; Ctrl+Q detach may not work: %v", err)
+		}
+	}
+	ch, err := a.attach()
+	if err != nil {
+		return err
+	}
+	<-ch
+	return nil
+}
+
+func (a attachCommand) SetStdin(io.Reader)  {}
+func (a attachCommand) SetStdout(io.Writer) {}
+func (a attachCommand) SetStderr(io.Writer) {}
+
+// attachExec hands the terminal to a tmux attach via tea.Exec and reports the
+// outcome as an attachFinishedMsg once the user detaches. killTarget is the
+// attached instance whose in-session Ctrl+X kill request the handler should honor
+// on detach, or nil when the attach has no kill key (the terminal tab).
+func (m *home) attachExec(attach func() (chan struct{}, error), killTarget *session.Instance) tea.Cmd {
+	return tea.Exec(attachCommand{attach: attach}, func(err error) tea.Msg {
+		return attachFinishedMsg{err: err, killTarget: killTarget}
+	})
 }
 
 func (m *home) instanceChanged() tea.Cmd {
@@ -1097,6 +1166,16 @@ type hideErrMsg struct{}
 type previewTickMsg struct{}
 
 type instanceChangedMsg struct{}
+
+// attachFinishedMsg is delivered after a tea.Exec terminal attach returns (the
+// user detached or the attach errored). It carries the attach error, if any, and
+// the attached instance so the post-detach handler can surface an error and honor
+// an in-session Ctrl+X kill request. killTarget is nil for the terminal tab, which
+// has no kill key.
+type attachFinishedMsg struct {
+	err        error
+	killTarget *session.Instance
+}
 
 // infoMsg requests a dismissible information modal carrying actionable text.
 // Confirmation-action callbacks return it to surface a message that must persist
