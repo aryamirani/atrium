@@ -5,20 +5,13 @@ name: govulncheck
 # low-noise. The scheduled run matters — new advisories land in the Go vuln DB
 # after code is written and merged.
 on:
+  # No paths filter on purpose: govulncheck is required by branch protection, so
+  # it must report on every PR. A path-filtered required check never reports on a
+  # docs/web-only PR and blocks the merge (see build.yml).
   pull_request:
     branches: [ main ]
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/govulncheck.yml'
   push:
     branches: [ main ]
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/govulncheck.yml'
   schedule:
     - cron: '17 5 * * 1'  # Mondays 05:17 UTC
   workflow_dispatch:
