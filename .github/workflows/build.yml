@@ -1,20 +1,15 @@
 name: Build
 
 on:
+  # No paths filter on purpose: these jobs are required by branch protection, so
+  # they must report on every PR. A path-filtered required check never reports
+  # on a docs/web-only PR, which leaves the check "pending" forever and blocks
+  # the merge (forcing an admin bypass). Running the Go suite on non-Go PRs is
+  # cheap and cached; it is the price of not having to override protection.
   push:
     branches: [ main ]
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/build.yml'
   pull_request:
     branches: [ main ]
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/build.yml'
 
 # Least privilege: this workflow only reads the repo. Widen per-job if needed.
 permissions:
