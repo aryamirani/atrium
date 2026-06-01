@@ -1,9 +1,12 @@
 package tmux
 
 import (
+	"bytes"
 	_ "embed"
+	"fmt"
 	"os"
 	"path/filepath"
+	"text/template"
 
 	"github.com/ZviBaratz/atrium/config"
 )
@@ -24,19 +27,34 @@ func managedConfigFileName() string {
 	return config.RuntimeName() + ".conf"
 }
 
-//go:embed atrium.conf
-var embeddedTmuxConfig []byte
+//go:embed atrium.conf.tmpl
+var embeddedTmuxConfigTemplate string
 
 // configOverridePath, when non-empty and pointing at an existing file, is used as
 // the tmux config instead of the managed one. Set via Init from config.json.
 var configOverridePath string
 
+// renderManagedConfig renders the embedded template. The only knob is whether the
+// in-session context status bar is enabled; everything else is static.
+func renderManagedConfig(contextBar bool) ([]byte, error) {
+	tmpl, err := template.New("atrium.conf").Parse(embeddedTmuxConfigTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse managed tmux config template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, struct{ ContextBar bool }{ContextBar: contextBar}); err != nil {
+		return nil, fmt.Errorf("failed to render managed tmux config: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
 // Init records an optional user-supplied tmux config override and, when none is
-// set, materializes the bundled config into the config dir. The managed file is
+// set, materializes the bundled config into the config dir. contextBar toggles the
+// in-session status line (config session_context_bar). The managed file is
 // overwritten on every launch so it stays in sync with the binary. Call once at
 // startup; it is idempotent and safe to call from both the TUI and daemon
 // processes.
-func Init(overridePath string) error {
+func Init(overridePath string, contextBar bool) error {
 	configOverridePath = overridePath
 	if overridePath != "" {
 		return nil
@@ -48,7 +66,11 @@ func Init(overridePath string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, managedConfigFileName()), embeddedTmuxConfig, 0o644)
+	rendered, err := renderManagedConfig(contextBar)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, managedConfigFileName()), rendered, 0o644)
 }
 
 // tmuxConfigPath returns the path to pass via tmux -f: the override when it is set
