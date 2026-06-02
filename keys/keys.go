@@ -44,7 +44,8 @@ const (
 
 	KeyRename // Rename the selected session's display label
 
-	KeyQuickSend // Open a compose box to send a message to the selected session without attaching
+	KeyQuickSend  // Open a compose box to send a message to the selected session without attaching
+	KeyBroadcast  // Open a compose box to send the same message to ALL NeedsInput sessions at once
 
 	KeyAutoName // Auto-generate a display name for the selected session via claude
 
@@ -84,6 +85,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"R":          KeyRename,
 	"A":          KeyAutoName,
 	"right":      KeyQuickSend,
+	"B":          KeyBroadcast,
 	"y":          KeyCopyBranch,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
@@ -138,6 +140,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyQuickSend: key.NewBinding(
 		key.WithKeys("right"),
 		key.WithHelp("→", "send"),
+	),
+	KeyBroadcast: key.NewBinding(
+		key.WithKeys("B"),
+		key.WithHelp("B", "broadcast to all waiting"),
 	),
 	KeyHelp: key.NewBinding(
 		key.WithKeys("?"),

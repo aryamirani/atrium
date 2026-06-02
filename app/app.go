@@ -170,6 +170,11 @@ type home struct {
 	// generatingName guards against launching a second auto-name request while one
 	// is already in flight, and drives the "Generating name…" hint-bar state.
 	generatingName bool
+
+	// broadcastSend is true while the user is composing a message that will be
+	// sent to ALL NeedsInput sessions simultaneously (as opposed to the selected
+	// one). The statePrompt submit path checks this flag to fan out the send.
+	broadcastSend bool
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -730,6 +735,26 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.createSessionFromForm(prompt)
 			}
 
+			// Broadcast mode: send the message to every NeedsInput session at once.
+			if m.broadcastSend {
+				m.broadcastSend = false
+				var sendErr error
+				for _, inst := range m.list.GetInstances() {
+					if inst.GetStatus() == session.NeedsInput {
+						if err := inst.SendPrompt(prompt); err != nil {
+							sendErr = err
+						}
+					}
+				}
+				m.textInputOverlay = nil
+				m.state = stateDefault
+				m.menu.SetState(ui.StateDefault)
+				if sendErr != nil {
+					return m, m.handleError(sendErr)
+				}
+				return m, tea.Sequence(tea.WindowSize(), m.instanceChanged())
+			}
+
 			// Quick-send overlay: fire the message at the selected running session and drop
 			// straight back to the list (no new-session help — the session is already up).
 			selected := m.list.GetSelectedInstance()
@@ -973,6 +998,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.state = statePrompt
 		m.menu.SetState(ui.StatePrompt)
 		m.textInputOverlay = overlay.NewQuickSendOverlay("Send to " + selected.DisplayName())
+		return m, tea.WindowSize()
+	case keys.KeyBroadcast:
+		// Open a compose box that, on submit, sends the same message to every session
+		// currently blocked on user input (NeedsInput). A no-op when there are none.
+		n := m.list.NumNeedsInput()
+		if n == 0 {
+			return m, nil
+		}
+		m.broadcastSend = true
+		m.state = statePrompt
+		m.menu.SetState(ui.StatePrompt)
+		m.textInputOverlay = overlay.NewQuickSendOverlay(fmt.Sprintf("Broadcast to %d waiting session(s)", n))
 		return m, tea.WindowSize()
 	case keys.KeyCopyBranch:
 		// Yank the selected session's branch name to the system clipboard for handoff
@@ -1746,6 +1783,7 @@ func (m *home) recordRecentPath(path string) {
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up the unstarted instance.
 func (m *home) cancelPromptOverlay() tea.Cmd {
+	m.broadcastSend = false
 	m.killNewInstance()
 	m.textInputOverlay = nil
 	m.state = stateDefault

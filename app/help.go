@@ -73,6 +73,7 @@ func (h helpTypeGeneral) toContent() string {
 		helpRow("ctrl-q", "toggle attach/detach (detach when in, attach from the list)"),
 		helpRow("ctrl-x", "kill the selected/attached session (twice to confirm)"),
 		helpRow("→", "send a message (without attaching)"),
+		helpRow("B", "broadcast to all waiting sessions"),
 		helpRow("c", "checkout: commit changes + pause"),
 		helpRow("p", "commit & push branch"),
 		helpRow("r", "resume a paused session"),

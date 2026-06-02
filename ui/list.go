@@ -229,6 +229,17 @@ func (l *List) NumInstances() int {
 	return len(l.items)
 }
 
+// NumNeedsInput returns the number of instances currently blocked on user input.
+func (l *List) NumNeedsInput() int {
+	n := 0
+	for _, inst := range l.items {
+		if inst.GetStatus() == session.NeedsInput {
+			n++
+		}
+	}
+	return n
+}
+
 // InstanceRenderer handles rendering of session.Instance objects
 type InstanceRenderer struct {
 	spinner *spinner.Model
@@ -506,7 +517,11 @@ func (l *List) String() string {
 
 	// The list is the primary navigation surface, so its panel is always drawn
 	// active (accent border). A dynamic focus model can flip this later.
-	return theme.Current().Panel("Sessions", content, l.width, l.height, true)
+	title := "Sessions"
+	if n := l.NumNeedsInput(); n > 0 {
+		title = fmt.Sprintf("Sessions %s%d", theme.Current().Glyphs.Waiting, n)
+	}
+	return theme.Current().Panel(title, content, l.width, l.height, true)
 }
 
 // windowLines clips lines to the list height, scrolling so the selected block
