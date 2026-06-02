@@ -26,17 +26,17 @@ func TestSetContext_CachesUnchanged(t *testing.T) {
 	}
 	sess := NewTmuxSessionWithDeps("alpha", "claude", NewMockPtyFactory(t), cmdExec)
 
-	require.NoError(t, sess.SetContext("alpha", "left", "right"))
+	require.NoError(t, sess.SetContext("alpha", "left"))
 	require.Len(t, ran, 1, "first push should issue one batched command")
 
-	// The batched command carries all three options and a status refresh.
-	for _, sub := range []string{"@atrium_name", "@atrium_left", "@atrium_right", "refresh-client"} {
+	// The batched command carries both options and a status refresh.
+	for _, sub := range []string{"@atrium_name", "@atrium_left", "refresh-client"} {
 		require.True(t, strings.Contains(ran[0], sub), "batched command missing %q: %s", sub, ran[0])
 	}
 
-	require.NoError(t, sess.SetContext("alpha", "left", "right"))
+	require.NoError(t, sess.SetContext("alpha", "left"))
 	require.Len(t, ran, 1, "identical push should be a no-op")
 
-	require.NoError(t, sess.SetContext("alpha", "left", "right-CHANGED"))
+	require.NoError(t, sess.SetContext("alpha", "left-CHANGED"))
 	require.Len(t, ran, 2, "changed push should issue a new command")
 }

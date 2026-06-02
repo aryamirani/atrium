@@ -58,17 +58,24 @@ func TestSiblingInGroup_RingWalk(t *testing.T) {
 
 func TestComposeSessionContext(t *testing.T) {
 	a := mkInst(t, "alpha", "/tmp/repoA")
-	b := mkInst(t, "beta", "/tmp/repoA")
 
-	name, left, right := ComposeSessionContext(a, "repoA", []*session.Instance{a, b})
+	name, left := ComposeSessionContext(a, "repoA")
 
 	require.Equal(t, "alpha", name, "name drives the terminal title")
+	// The header reads "<glyph> <repo> · <name>".
 	require.Contains(t, left, "alpha")
 	require.Contains(t, left, "repoA")
-	// Every group member appears as a chip; the current one is bracketed.
-	require.Contains(t, right, "alpha")
-	require.Contains(t, right, "beta")
-	require.Contains(t, right, "[", "current session chip is bracketed")
+}
+
+// With no repo (direct-mode sessions), the header collapses to "<glyph> <name>" with
+// no repo field or separator.
+func TestComposeSessionContext_NoRepo(t *testing.T) {
+	a := mkInst(t, "alpha", "/tmp/repoA")
+
+	_, left := ComposeSessionContext(a, "")
+
+	require.Contains(t, left, "alpha")
+	require.NotContains(t, left, "·", "no separator without a repo")
 }
 
 // '#' in dynamic text must be escaped so tmux doesn't read it as a format directive.

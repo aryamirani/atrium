@@ -6,7 +6,6 @@ import (
 
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui/theme"
-	"github.com/mattn/go-runewidth"
 )
 
 // contextbar.go composes the strings Atrium pushes into each session's tmux user
@@ -24,74 +23,54 @@ func RepoKey(i *session.Instance) string { return repoKey(i) }
 // format directive (#[...] / #{...}).
 func tmuxEsc(s string) string { return strings.ReplaceAll(s, "#", "##") }
 
-// barState returns a session's chip glyph, status word, and tmux color. Unlike the
-// list — which animates a spinner for Running/Loading — the pushed status line is
-// static, so working states get a steady filled marker.
-func barState(s session.Status, th *theme.Theme) (glyph, word, color string) {
+// barState returns a session's status glyph and tmux color. Unlike the list — which
+// animates a spinner for Running/Loading — the pushed header is static, so working
+// states get a steady filled marker. The glyph's color is the only state signal in
+// the header, so no status word is needed.
+func barState(s session.Status, th *theme.Theme) (glyph, color string) {
 	switch s {
 	case session.Running:
-		return "●", "working", string(th.Palette.Working)
+		return "●", string(th.Palette.Working)
 	case session.Loading:
-		return "●", "starting", string(th.Palette.Working)
+		return "●", string(th.Palette.Working)
 	case session.Ready:
-		return th.Glyphs.Ready, "ready", string(th.Palette.Success)
+		return th.Glyphs.Ready, string(th.Palette.Success)
 	case session.NeedsInput:
-		return th.Glyphs.Waiting, "waiting", string(th.Palette.Attention)
+		return th.Glyphs.Waiting, string(th.Palette.Attention)
 	case session.Paused:
-		return th.Glyphs.Paused, "paused", string(th.Palette.FgDim)
+		return th.Glyphs.Paused, string(th.Palette.FgDim)
 	default:
-		return " ", "", string(th.Palette.FgDim)
+		return " ", string(th.Palette.FgDim)
 	}
 }
 
-// ComposeSessionContext renders the three strings pushed to a session's tmux user
+// ComposeSessionContext renders the two strings pushed to a session's tmux user
 // options for the context bar:
-//   - name:  the plain display name (drives the terminal title via set-titles-string)
-//   - left:  styled identity — state glyph + name, repo, branch, state word
-//   - right: styled chips for every session in the repo group, the current one accented
+//   - name: the plain display name (drives the terminal title via set-titles-string)
+//   - left: the styled header — "<glyph> <repo> · <name>"
 //
-// group is the repo group's sessions in list order (including paused ones, shown
-// dimmed); current is the session the bar belongs to.
-func ComposeSessionContext(current *session.Instance, repo string, group []*session.Instance) (name, left, right string) {
+// The header rides a slate background band (status-style, set in the managed config),
+// where dim greys wash out — so hierarchy comes from weight, not color: the glyph
+// carries the state color (the only state signal), the repo + separator ride the
+// bar's default foreground, and the name is bold so the eye lands on it. Branch and
+// status word are intentionally omitted: the branch duplicates the name in practice,
+// and the glyph color already conveys state. repo is empty for direct-mode (non-git)
+// sessions, which collapse to "<glyph> <name>".
+func ComposeSessionContext(current *session.Instance, repo string) (name, left string) {
 	th := theme.Current()
 	name = current.DisplayName()
 
-	glyph, word, color := barState(current.GetStatus(), th)
-	dim := string(th.Palette.FgDim)
+	glyph, color := barState(current.GetStatus(), th)
 
-	branch := current.Branch
-	if runewidth.StringWidth(branch) > 40 {
-		branch = runewidth.Truncate(branch, 40, "…")
-	}
-
+	// #[default] after the glyph resets fg AND attributes back to the bar's
+	// status-style, so repo/separator render in the bar's bright default foreground.
 	var b strings.Builder
-	fmt.Fprintf(&b, "#[fg=%s]%s %s#[default]", color, glyph, tmuxEsc(name))
+	fmt.Fprintf(&b, "#[fg=%s]%s#[default]", color, glyph)
 	if repo != "" {
-		fmt.Fprintf(&b, "  #[fg=%s]%s#[default]", dim, tmuxEsc(repo))
+		fmt.Fprintf(&b, " %s ·", tmuxEsc(repo))
 	}
-	if branch != "" {
-		fmt.Fprintf(&b, "  #[fg=%s]%s %s#[default]", dim, th.Glyphs.Branch, tmuxEsc(branch))
-	}
-	fmt.Fprintf(&b, "  #[fg=%s]%s#[default]", color, word)
+	fmt.Fprintf(&b, " #[bold]%s#[default]", tmuxEsc(name))
 	left = b.String()
 
-	right = composeChips(current, group, th)
-	return name, left, right
-}
-
-// composeChips renders the sibling strip: one chip per session in the repo group,
-// each "<glyph> <name>" tinted by status, with the current session bracketed and
-// accented so it stands out.
-func composeChips(current *session.Instance, group []*session.Instance, th *theme.Theme) string {
-	chips := make([]string, 0, len(group))
-	for _, s := range group {
-		glyph, _, color := barState(s.GetStatus(), th)
-		label := tmuxEsc(runewidth.Truncate(s.DisplayName(), 16, "…"))
-		if s == current {
-			chips = append(chips, fmt.Sprintf("#[fg=%s,bold][%s %s]#[default]", string(th.Palette.Accent), glyph, label))
-			continue
-		}
-		chips = append(chips, fmt.Sprintf("#[fg=%s]%s %s#[default]", color, glyph, label))
-	}
-	return strings.Join(chips, "  ")
+	return name, left
 }

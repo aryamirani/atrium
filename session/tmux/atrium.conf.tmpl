@@ -25,27 +25,38 @@ set-option -g  history-limit      10000
 set-option -g  mouse              on
 
 {{if .ContextBar -}}
-# Thin in-session context line. Atrium owns all formatting/coloring: it pushes
-# fully-rendered strings into @atrium_left (identity: name · repo · branch · status)
-# and @atrium_right (sibling chips) via set-option on each metadata tick, then
-# refresh-client -S repaints. status-interval 0 means tmux never refreshes on its
-# own — Atrium drives every update. The window list is blanked because each Atrium
-# session is a single window and the agent owns the pane.
-set-option -g  status             on
-set-option -g  status-position    bottom
-set-option -g  status-interval    0
-set-option -g  status-justify     left
-set-option -g  status-style       "bg=default,fg=default"
-set-option -g  status-left-length 400
-set-option -g  status-right-length 400
+# In-session context as a single, minimal top header carrying session identity
+# (<glyph> <repo> · <name>), drawn at the very top so it stays clear of the agent's
+# own bottom footer. There is deliberately no bottom strip: the agent owns the pane
+# and draws directly under its own footer.
+#
+# Atrium owns all formatting/coloring: it pushes a fully-rendered string into
+# @atrium_left via set-option on each metadata tick, then refresh-client -S repaints.
+# status-interval 0 means tmux never refreshes on its own — Atrium drives every
+# update. The window list is blanked because each Atrium session is a single window,
+# and status-right is emptied so tmux's default clock never appears.
+#
+# status-style fills the whole row with the theme's elevated-surface color so the
+# header reads as a distinct band, not text floating over the agent's pane. The
+# @atrium_left markup only sets foregrounds, so #[default] resets back to this band
+# background, keeping the fill unbroken across every field.
+set-option -g  status              on
+set-option -g  status-position     top
+set-option -g  status-interval     0
+set-option -g  status-justify      left
+set-option -g  status-style        "bg={{.BarBg}},fg={{.BarFg}}"
+set-option -g  status-left-length  400
+set-option -g  status-right-length 0
 set-window-option -g window-status-format        ""
 set-window-option -g window-status-current-format ""
-set-option -g  status-left        " #{@atrium_left} "
-set-option -g  status-right       "#{@atrium_right} "
+set-option -g  status-left         " #{@atrium_left} "
+set-option -g  status-right        ""
+set-option -g  pane-border-status  off
 {{- else -}}
 # No status bar — each session is a single fullscreen pane and the agent draws its
 # own UI, so tmux chrome is pure noise (session_context_bar = false).
 set-option -g  status             off
+set-option -g  pane-border-status off
 {{- end}}
 
 # Color fidelity: cs captures pane content with -e (ANSI preserved) and re-renders

@@ -502,7 +502,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.killTarget != nil {
 			if next := m.cycleTarget(msg.killTarget); next != nil {
 				m.list.SelectInstance(next)
-				m.pushOneContext(next, m.buildRepoGroups())
+				m.pushOneContext(next)
 				return m, m.attachExec(next.Attach, next)
 			}
 		}
@@ -1202,18 +1202,6 @@ func (m *home) cycleTarget(attached *session.Instance) *session.Instance {
 	return nil
 }
 
-// buildRepoGroups groups the current sessions by repo key, preserving list order, so
-// each session's context bar can show the right sibling strip. It mirrors the
-// list's own grouping (ui.RepoKey).
-func (m *home) buildRepoGroups() map[string][]*session.Instance {
-	groups := map[string][]*session.Instance{}
-	for _, inst := range m.list.GetInstances() {
-		k := ui.RepoKey(inst)
-		groups[k] = append(groups[k], inst)
-	}
-	return groups
-}
-
 // pushSessionContexts refreshes the in-session context bar for every live session.
 // SetContext caches per session, so an unchanged tick costs only string comparisons
 // rather than tmux subprocesses. No-op when the feature is disabled.
@@ -1221,21 +1209,19 @@ func (m *home) pushSessionContexts() {
 	if !m.appConfig.GetSessionContextBar() {
 		return
 	}
-	groups := m.buildRepoGroups()
 	for _, inst := range m.list.GetInstances() {
-		m.pushOneContext(inst, groups)
+		m.pushOneContext(inst)
 	}
 }
 
 // pushOneContext composes and pushes the context bar for a single session, skipping
 // sessions that have no live tmux pane to render it in (unstarted, paused, dead).
-func (m *home) pushOneContext(inst *session.Instance, groups map[string][]*session.Instance) {
+func (m *home) pushOneContext(inst *session.Instance) {
 	if !m.appConfig.GetSessionContextBar() || !inst.Started() || inst.Paused() || !inst.TmuxAlive() {
 		return
 	}
-	key := ui.RepoKey(inst)
-	name, left, right := ui.ComposeSessionContext(inst, key, groups[key])
-	if err := inst.SetContext(name, left, right); err != nil {
+	name, left := ui.ComposeSessionContext(inst, ui.RepoKey(inst))
+	if err := inst.SetContext(name, left); err != nil {
 		log.WarningLog.Printf("failed to push session context for %q: %v", inst.Title, err)
 	}
 }

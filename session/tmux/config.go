@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/ui/theme"
 )
 
 // socketName is the dedicated tmux socket Atrium runs all of its sessions on.
@@ -34,15 +35,26 @@ var embeddedTmuxConfigTemplate string
 // the tmux config instead of the managed one. Set via Init from config.json.
 var configOverridePath string
 
-// renderManagedConfig renders the embedded template. The only knob is whether the
-// in-session context status bar is enabled; everything else is static.
+// renderManagedConfig renders the embedded template. ContextBar toggles the header
+// strip; BarBg/BarFg fill that strip's full-width background from the active theme's
+// dedicated header-bar token (a slate a clear step above BgElevated) so the header
+// reads as a distinct band over the agent's near-black pane.
 func renderManagedConfig(contextBar bool) ([]byte, error) {
 	tmpl, err := template.New("atrium.conf").Parse(embeddedTmuxConfigTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse managed tmux config template: %w", err)
 	}
+	th := theme.Current()
+	data := struct {
+		ContextBar   bool
+		BarBg, BarFg string
+	}{
+		ContextBar: contextBar,
+		BarBg:      string(th.Palette.BarBg),
+		BarFg:      string(th.Palette.Fg),
+	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, struct{ ContextBar bool }{ContextBar: contextBar}); err != nil {
+	if err := tmpl.Execute(&buf, data); err != nil {
 		return nil, fmt.Errorf("failed to render managed tmux config: %w", err)
 	}
 	return buf.Bytes(), nil

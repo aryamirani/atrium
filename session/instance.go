@@ -647,12 +647,12 @@ func (i *Instance) AttachExitReason() tmux.DetachReason {
 // SetContext pushes the in-session context-bar strings to the instance's tmux
 // session (see tmux.SetContext). It is a no-op for an instance with no live tmux
 // session, since there is nothing to render a bar in.
-func (i *Instance) SetContext(name, left, right string) error {
+func (i *Instance) SetContext(name, left string) error {
 	ts := i.tmux()
 	if ts == nil {
 		return nil
 	}
-	return ts.SetContext(name, left, right)
+	return ts.SetContext(name, left)
 }
 
 func (i *Instance) SetPreviewSize(width, height int) error {

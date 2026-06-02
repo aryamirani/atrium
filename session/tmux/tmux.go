@@ -178,12 +178,12 @@ type TmuxSession struct {
 	// before Detach, read via AttachExitReason once attachCh has closed.
 	detachReason DetachReason
 
-	// ctx{Name,Left,Right} cache the last context-bar payload pushed via SetContext
-	// so an unchanged metadata tick skips the tmux subprocess. ctxSet guards the
-	// first push (when all three are still the empty string). Accessed only from the
-	// main update loop, like the other Set* paths.
-	ctxName, ctxLeft, ctxRight string
-	ctxSet                     bool
+	// ctx{Name,Left} cache the last context-bar payload pushed via SetContext so an
+	// unchanged metadata tick skips the tmux subprocess. ctxSet guards the first push
+	// (when both are still the empty string). Accessed only from the main update
+	// loop, like the other Set* paths.
+	ctxName, ctxLeft string
+	ctxSet           bool
 	// While attached, we use some goroutines to manage the window size and stdin/stdout. This stuff
 	// is used to terminate them on Detach. We don't want them to outlive the attached window.
 	ctx    context.Context

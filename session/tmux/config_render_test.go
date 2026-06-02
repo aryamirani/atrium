@@ -22,13 +22,28 @@ func TestRenderManagedConfig(t *testing.T) {
 		t.Fatalf("renderManagedConfig(true) error: %v", err)
 	}
 	onStr := collapseWS(string(on))
-	for _, want := range []string{"status on", "@atrium_left", "@atrium_right", "set-titles on"} {
+	// Identity rides a single top status line (@atrium_left); there is no bottom strip
+	// (pane-border-status off). Assert the header-only layout is locked.
+	for _, want := range []string{
+		"status on",
+		"status-position top",
+		"@atrium_left",
+		"pane-border-status off",
+		"set-titles on",
+	} {
 		if !strings.Contains(onStr, want) {
 			t.Errorf("context-bar config missing %q\n---\n%s", want, onStr)
 		}
 	}
-	if strings.Contains(onStr, "status off") {
-		t.Errorf("context-bar config should not disable the status line\n---\n%s", onStr)
+	// The chip footer is gone, so its option must not be referenced.
+	if strings.Contains(onStr, "@atrium_right") {
+		t.Errorf("context-bar config should not reference the dropped chip option\n---\n%s", onStr)
+	}
+	// The header must carry a real background fill (the theme's elevated surface) so it
+	// reads as a band, not text floating over the pane. A truecolor "bg=#…" proves the
+	// theme color substituted; "bg=default" would be the regression that blends in.
+	if !strings.Contains(onStr, `status-style "bg=#`) {
+		t.Errorf("header status-style should fill with a theme color, not bg=default\n---\n%s", onStr)
 	}
 
 	off, err := renderManagedConfig(false)
