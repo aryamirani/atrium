@@ -78,6 +78,10 @@ func continueProgram(program string) string {
 // narrow pane width is still recognized. The selection footer requires its co-occurring tokens
 // ("Esc to cancel" + navigate/select) within a tight footer window, so prose merely mentioning
 // "Esc to cancel" higher in the chrome cannot trip it.
+//
+// region is already the promptChromeLines window (see Poll); the inner flattenChrome calls
+// re-window it, which stays correct only while footerChromeLines <= promptChromeLines so the
+// footer tokens remain reachable within region.
 func detectPrompt(program, region string) bool {
 	switch {
 	case strings.HasSuffix(program, ProgramClaude):

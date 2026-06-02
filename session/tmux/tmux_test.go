@@ -294,6 +294,15 @@ func TestPollClaudePromptWrapTolerant(t *testing.T) {
 	c = wrappedDialog
 	s = pollSession(t, "claude", &c, nil)
 	require.Equal(t, PanePrompt, s.Poll(), "a wrapped permission dialog is still a prompt")
+
+	// Footer wrapped across three physical lines, with a filler line between the nav/select
+	// token and "Esc to cancel". This pins footerChromeLines at its current width: any window
+	// narrower than 3 would drop the nav/select token and silently misclassify the prompt.
+	threeLineFooter := "Server restart?\n❯ 2. Restart now\n" +
+		"Enter to select · ↑/↓ to navigate\n· n to add notes\n· Esc to cancel"
+	c = threeLineFooter
+	s = pollSession(t, "claude", &c, nil)
+	require.Equal(t, PanePrompt, s.Poll(), "a footer wrapped across the full footer window is still a prompt")
 }
 
 // Regression: capture-pane includes the scrolled-back transcript, so the marker strings
