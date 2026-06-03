@@ -397,6 +397,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.instance.SetDiffStats(r.diffStats)
 			}
 		}
+		m.pushSessionContexts()
 		cmds := deliverReadyPrompts(msg.results)
 		cmds = append(cmds, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance()))
 		return m, tea.Batch(cmds...)
@@ -494,6 +495,17 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.killTarget != nil && msg.killTarget.AttachKillRequested() {
 			return m, tea.Batch(tea.WindowSize(), m.confirmKill(msg.killTarget))
 		}
+		// A sibling-cycle key (Ctrl+PgUp/PgDn) detaches with a direction; re-attach the
+		// neighbouring session in the repo group, keeping cycling inside Atrium's model.
+		// killTarget is the session just detached (nil for the terminal tab, which has
+		// no cycle keys).
+		if msg.killTarget != nil {
+			if next := m.cycleTarget(msg.killTarget); next != nil {
+				m.list.SelectInstance(next)
+				m.pushOneContext(next)
+				return m, m.attachExec(next.Attach, next)
+			}
+		}
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case infoMsg:
 		// An action requested a dismissible info modal (e.g. an actionable resume
@@ -547,7 +559,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the list selection by now. The attach runs through tea.Exec, which hands
 			// the terminal to tmux and repaints on detach; post-detach handling — an
 			// in-session Ctrl+X kill request, keyed on msg.instance since the selection
-			// may have drifted — lands in the attachFinishedMsg handler.
+			// may have drifted, or a sibling-cycle request — lands in the
+			// attachFinishedMsg handler.
 			return m, m.attachExec(msg.instance.Attach, msg.instance)
 		}
 
@@ -1169,6 +1182,47 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.attachExec(m.list.Attach, selected)
 	default:
 		return m, nil
+	}
+}
+
+// cycleTarget returns the sibling to re-attach when an in-session cycle key
+// (Ctrl+PgUp/PgDn) ended the attach, or nil for a normal detach. Cycling stays
+// inside Atrium's model — each hop is a real detach+attach, correctly sized via the
+// existing attach path. (A tmux switch-client would avoid the repaint but mis-sizes
+// panes here, since every session permanently holds its own pty client.)
+// SiblingInGroup returns attached itself when there is no other attachable sibling,
+// making a stray cycle key a harmless re-attach.
+func (m *home) cycleTarget(attached *session.Instance) *session.Instance {
+	switch attached.AttachExitReason() {
+	case tmux.DetachNext:
+		return m.list.SiblingInGroup(attached, +1)
+	case tmux.DetachPrev:
+		return m.list.SiblingInGroup(attached, -1)
+	}
+	return nil
+}
+
+// pushSessionContexts refreshes the in-session context bar for every live session.
+// SetContext caches per session, so an unchanged tick costs only string comparisons
+// rather than tmux subprocesses. No-op when the feature is disabled.
+func (m *home) pushSessionContexts() {
+	if !m.appConfig.GetSessionContextBar() {
+		return
+	}
+	for _, inst := range m.list.GetInstances() {
+		m.pushOneContext(inst)
+	}
+}
+
+// pushOneContext composes and pushes the context bar for a single session, skipping
+// sessions that have no live tmux pane to render it in (unstarted, paused, dead).
+func (m *home) pushOneContext(inst *session.Instance) {
+	if !m.appConfig.GetSessionContextBar() || !inst.Started() || inst.Paused() || !inst.TmuxAlive() {
+		return
+	}
+	name, left := ui.ComposeSessionContext(inst, ui.RepoKey(inst))
+	if err := inst.SetContext(name, left); err != nil {
+		log.WarningLog.Printf("failed to push session context for %q: %v", inst.Title, err)
 	}
 }
 

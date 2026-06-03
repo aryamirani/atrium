@@ -632,6 +632,29 @@ func (i *Instance) AttachKillRequested() bool {
 	return ts != nil && ts.KillRequested()
 }
 
+// AttachExitReason reports why the most recent Attach ended (a normal detach vs a
+// request to cycle to the next/previous sibling session). Meaningful only after the
+// channel returned by Attach has closed. A not-yet-started instance never attaches,
+// so it reports the default DetachQuit.
+func (i *Instance) AttachExitReason() tmux.DetachReason {
+	ts := i.tmux()
+	if ts == nil {
+		return tmux.DetachQuit
+	}
+	return ts.AttachExitReason()
+}
+
+// SetContext pushes the in-session context-bar strings to the instance's tmux
+// session (see tmux.SetContext). It is a no-op for an instance with no live tmux
+// session, since there is nothing to render a bar in.
+func (i *Instance) SetContext(name, left string) error {
+	ts := i.tmux()
+	if ts == nil {
+		return nil
+	}
+	return ts.SetContext(name, left)
+}
+
 func (i *Instance) SetPreviewSize(width, height int) error {
 	if !i.isStarted() || i.Paused() {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
