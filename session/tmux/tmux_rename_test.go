@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	cmd2 "github.com/ZviBaratz/atrium/cmd"
 	"os/exec"
@@ -42,7 +43,7 @@ func TestRename_LiveSessionRenamesSessionAndWindow(t *testing.T) {
 		},
 		OutputFunc: func(c *exec.Cmd) ([]byte, error) { return nil, nil },
 	}
-	sess := NewSessionWithDeps("formalize-packaing", "claude", NewMockPtyFactory(t), cmdExec)
+	sess := NewSessionWithDeps(context.Background(), "formalize-packaing", "claude", NewMockPtyFactory(t), cmdExec)
 	oldSanitized := sess.sanitizedName
 
 	if err := sess.Rename("formalize-packaging"); err != nil {
@@ -72,7 +73,7 @@ func TestRename_NotLiveUpdatesFieldsOnly(t *testing.T) {
 		},
 		OutputFunc: func(c *exec.Cmd) ([]byte, error) { return nil, nil },
 	}
-	sess := NewSessionWithDeps("alpha", "claude", NewMockPtyFactory(t), cmdExec)
+	sess := NewSessionWithDeps(context.Background(), "alpha", "claude", NewMockPtyFactory(t), cmdExec)
 
 	if err := sess.Rename("alpha-fixed"); err != nil {
 		t.Fatalf("Rename() error = %v", err)

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/ZviBaratz/atrium/config"
@@ -82,8 +83,9 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 	return s.state.SaveInstances(jsonData)
 }
 
-// LoadInstances loads the list of instances from disk
-func (s *Storage) LoadInstances() ([]*Instance, error) {
+// LoadInstances loads the list of instances from disk. ctx is the lifecycle
+// context reconstructed instances derive their subprocess contexts from.
+func (s *Storage) LoadInstances(ctx context.Context) ([]*Instance, error) {
 	instancesData, err := s.loadInstanceData()
 	if err != nil {
 		return nil, err
@@ -93,7 +95,7 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 	cfg := config.LoadConfig()
 	instances := make([]*Instance, len(instancesData))
 	for i, data := range instancesData {
-		instance, err := FromInstanceData(data, cfg.BranchPrefix)
+		instance, err := FromInstanceData(ctx, data, cfg.BranchPrefix)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create instance %s: %w", data.Title, err)
 		}

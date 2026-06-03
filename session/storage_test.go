@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -149,7 +150,7 @@ func TestStorageRoundTrip(t *testing.T) {
 	b := newPausedInstance(t, "beta")
 	require.NoError(t, store.SaveInstances([]*Instance{a, b}))
 
-	got, err := store.LoadInstances()
+	got, err := store.LoadInstances(context.Background())
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "alpha", got[0].Title)
@@ -168,7 +169,7 @@ func TestUpdateInstance_UpdatesField(t *testing.T) {
 	a.SetDisplayName("Alpha New Label")
 	require.NoError(t, store.UpdateInstance(a))
 
-	got, err := store.LoadInstances()
+	got, err := store.LoadInstances(context.Background())
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -204,7 +205,7 @@ func TestDeleteAllInstances_ClearsEverything(t *testing.T) {
 
 	require.NoError(t, store.DeleteAllInstances())
 
-	got, err := store.LoadInstances()
+	got, err := store.LoadInstances(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }

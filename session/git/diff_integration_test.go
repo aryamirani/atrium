@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ func TestDiff_RepoStats(t *testing.T) {
 	repoPath := newTestRepo(t)
 	baseBranch := strings.TrimSpace(mustRunGit(t, repoPath, "rev-parse", "--abbrev-ref", "HEAD"))
 
-	wt, _, err := NewWorktreeFromBase(repoPath, "sess", baseBranch)
+	wt, _, err := NewWorktreeFromBase(context.Background(), repoPath, "sess", baseBranch)
 	if err != nil {
 		t.Fatalf("NewWorktreeFromBase: %v", err)
 	}

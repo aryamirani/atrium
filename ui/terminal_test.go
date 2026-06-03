@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"github.com/ZviBaratz/atrium/cmd/cmd_test"
 	"github.com/ZviBaratz/atrium/log"
@@ -22,7 +23,7 @@ func newMockTmuxSession(t *testing.T, name string, cmdExec cmd_test.MockCmdExec)
 		t:       t,
 		cmdExec: cmdExec,
 	}
-	return tmux.NewSessionWithDeps(name, "bash", ptyFactory, cmdExec)
+	return tmux.NewSessionWithDeps(context.Background(), name, "bash", ptyFactory, cmdExec)
 }
 
 // mockCmdExec returns a MockCmdExec that simulates a working tmux session.
@@ -96,7 +97,7 @@ func makeStartedInstance(t *testing.T, title string) *session.Instance {
 		t:       t,
 		cmdExec: cmdExec,
 	}
-	tmuxSession := tmux.NewSessionWithDeps(sessionName, "bash", ptyFactory, cmdExec)
+	tmuxSession := tmux.NewSessionWithDeps(context.Background(), sessionName, "bash", ptyFactory, cmdExec)
 	instance.SetTmuxSession(tmuxSession)
 
 	err = instance.Start(true)
@@ -127,7 +128,7 @@ func TestTerminalUpdateContent(t *testing.T) {
 	instance := makeStartedInstance(t, "update-content")
 	defer func() { _ = instance.Kill() }()
 
-	tp := NewTerminalPane()
+	tp := NewTerminalPane(context.Background())
 	tp.SetSize(80, 30)
 
 	// Inject a mock session that returns expectedContent on capture-pane
@@ -153,7 +154,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 	log.Initialize(false)
 	defer log.Close()
 
-	tp := NewTerminalPane()
+	tp := NewTerminalPane(context.Background())
 	tp.SetSize(80, 30)
 
 	t.Run("nil instance", func(t *testing.T) {
@@ -210,7 +211,7 @@ func TestTerminalSessionCaching(t *testing.T) {
 	log.Initialize(false)
 	defer log.Close()
 
-	tp := NewTerminalPane()
+	tp := NewTerminalPane(context.Background())
 	tp.SetSize(80, 30)
 
 	content1 := "session-1-content"
@@ -288,7 +289,7 @@ func TestTerminalScrolling(t *testing.T) {
 	instance := makeStartedInstance(t, "scroll")
 	defer func() { _ = instance.Kill() }()
 
-	tp := NewTerminalPane()
+	tp := NewTerminalPane(context.Background())
 	tp.SetSize(80, 30)
 
 	ts := newMockTmuxSession(t, "scroll-test", cmdExec)
@@ -325,7 +326,7 @@ func TestTerminalCloseForInstance(t *testing.T) {
 	log.Initialize(false)
 	defer log.Close()
 
-	tp := NewTerminalPane()
+	tp := NewTerminalPane(context.Background())
 	tp.SetSize(80, 30)
 
 	content := "some content"

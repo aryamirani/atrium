@@ -10,6 +10,7 @@ import (
 	"github.com/ZviBaratz/atrium/session/tmux"
 	"path/filepath"
 
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -92,6 +93,13 @@ type Instance struct {
 	// and never changes afterwards, so it is read without the lock.
 	direct bool
 
+	// baseCtx is the lifecycle context the instance's tmux/git subprocesses derive
+	// from; cancelling it (app/daemon shutdown) kills in-flight subprocesses. Set via
+	// SetBaseContext (or FromInstanceData) before Start, i.e. before any background
+	// goroutine reaches the instance, so it is read without the lock. nil means
+	// Background.
+	baseCtx context.Context
+
 	// mu guards the live-state fields below (status, started, tmuxSession, gitWorktree),
 	// which the background Start() goroutine writes while the metadata-poll goroutines and
 	// the UI thread read them. Always access these through the locked accessors
@@ -157,9 +165,13 @@ func (i *Instance) ToInstanceData() InstanceData {
 
 // FromInstanceData creates a new Instance from serialized data. branchPrefix is the
 // configured session-branch prefix, supplied by the caller so bulk restores (see
-// Storage.LoadInstances) load config once instead of once per instance.
-func FromInstanceData(data InstanceData, branchPrefix string) (*Instance, error) {
+// Storage.LoadInstances) load config once instead of once per instance. ctx is the
+// lifecycle context the instance's tmux/git subprocesses derive from; it is threaded
+// in here (rather than set afterwards) because reconstruction itself spawns
+// subprocesses (session reattach, recovery).
+func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix string) (*Instance, error) {
 	instance := &Instance{
+		baseCtx:     ctx,
 		Title:       data.Title,
 		displayName: data.DisplayName,
 		Path:        data.Path,
@@ -178,6 +190,7 @@ func FromInstanceData(data InstanceData, branchPrefix string) (*Instance, error)
 	// recoverInPlace) sees the nil worktree and stays on the direct branch.
 	if !data.Direct {
 		instance.gitWorktree = git.NewWorktreeFromStorage(
+			ctx,
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
 			data.Worktree.SessionName,
@@ -200,9 +213,9 @@ func FromInstanceData(data InstanceData, branchPrefix string) (*Instance, error)
 
 	if instance.Paused() {
 		instance.started = true
-		instance.tmuxSession = tmux.NewSession(instance.Title, instance.Program)
+		instance.tmuxSession = tmux.NewSession(ctx, instance.Title, instance.Program)
 	} else {
-		sess := tmux.NewSession(instance.Title, instance.Program)
+		sess := tmux.NewSession(ctx, instance.Title, instance.Program)
 		instance.tmuxSession = sess
 		switch {
 		case sess.DoesSessionExist():
@@ -428,6 +441,22 @@ func (i *Instance) SetBaseBranch(branch string) {
 	i.baseBranch = branch
 }
 
+// SetBaseContext sets the lifecycle context the instance's tmux/git subprocesses
+// derive from (cancelled on app/daemon shutdown). It must be called before Start,
+// which constructs the tmux session and git worktree under it.
+func (i *Instance) SetBaseContext(ctx context.Context) {
+	i.baseCtx = ctx
+}
+
+// baseContext returns the lifecycle context subprocesses derive from, defaulting
+// to Background for instances constructed without one.
+func (i *Instance) baseContext() context.Context {
+	if i.baseCtx != nil {
+		return i.baseCtx
+	}
+	return context.Background()
+}
+
 // Start brings the instance to life: it creates (or reuses) the tmux session
 // and, for non-direct sessions, the git worktree and branch. firstTimeSetup is
 // true if this is a new instance; otherwise, it's one loaded from storage.
@@ -442,7 +471,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	tmuxSession := existing
 	if tmuxSession == nil {
 		// Create new tmux session
-		tmuxSession = tmux.NewSession(i.Title, i.Program)
+		tmuxSession = tmux.NewSession(i.baseContext(), i.Title, i.Program)
 	}
 	i.mu.Lock()
 	i.tmuxSession = tmuxSession
@@ -455,9 +484,9 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		var branchName string
 		var err error
 		if i.baseBranch != "" {
-			gitWorktree, branchName, err = git.NewWorktreeFromBase(i.Path, i.Title, i.baseBranch)
+			gitWorktree, branchName, err = git.NewWorktreeFromBase(i.baseContext(), i.Path, i.Title, i.baseBranch)
 		} else {
-			gitWorktree, branchName, err = git.NewWorktree(i.Path, i.Title)
+			gitWorktree, branchName, err = git.NewWorktree(i.baseContext(), i.Path, i.Title)
 		}
 		if err != nil {
 			return fmt.Errorf("failed to create git worktree: %w", err)
