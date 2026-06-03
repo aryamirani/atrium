@@ -1,3 +1,6 @@
+// Package git manages each session's isolated git worktree and branch: setup,
+// cleanup, commit, push (via gh), and diff-against-base computation. "Pause"
+// removes the worktree but keeps the branch; "resume" recreates it.
 package git
 
 import (
@@ -47,9 +50,11 @@ type GitWorktree struct {
 	isExistingBranch bool
 }
 
-// NewGitWorktreeFromStorage rehydrates a GitWorktree from persisted instance data.
-// branchPrefix comes from the caller (loaded once per storage read, see
-// Storage.LoadInstances) so deserializing N instances does not re-read config N times.
+// NewGitWorktreeFromStorage rehydrates a GitWorktree from its persisted fields
+// exactly as stored, without re-deriving paths — state.json records absolute
+// paths and moving them would orphan the live worktree. branchPrefix comes from
+// the caller (loaded once per storage read, see Storage.LoadInstances) so
+// deserializing N instances does not re-read config N times.
 func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string, baseRef string, isExistingBranch bool, branchPrefix string) *GitWorktree {
 	return &GitWorktree{
 		repoPath:         repoPath,

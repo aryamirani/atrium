@@ -1,3 +1,7 @@
+// Package session defines Instance, Atrium's core domain object: one agent =
+// one Instance, which lazily composes a tmux session and a git worktree on
+// Start. An Instance's Status drives list rendering and daemon behavior, and
+// instances are persisted across runs via Storage.
 package session
 
 import (
@@ -21,6 +25,9 @@ import (
 // of dereferencing a nil worktree.
 var ErrNoWorktree = errors.New("not available for a direct (non-git) session")
 
+// Status is an instance's lifecycle/activity state. It is persisted in
+// state.json, so the variants' numeric values must stay stable (new ones are
+// appended).
 type Status int
 
 const (
@@ -291,7 +298,7 @@ func (i *Instance) recreateSession() error {
 	return nil
 }
 
-// Options for creating a new instance
+// InstanceOptions are the options for creating a new instance.
 type InstanceOptions struct {
 	// Title is the title of the instance.
 	Title string
@@ -299,8 +306,6 @@ type InstanceOptions struct {
 	Path string
 	// Program is the program to run in the instance (e.g. "claude", "aider --model ollama_chat/gemma3:1b")
 	Program string
-	// If AutoYes is true, then
-	AutoYes bool
 	// Branch is an existing branch name to start the session on (empty = new branch from HEAD)
 	Branch string
 	// Direct creates a direct (non-git) session: the agent runs in Path with no worktree,
@@ -308,6 +313,8 @@ type InstanceOptions struct {
 	Direct bool
 }
 
+// NewInstance creates a not-yet-started Instance from opts. The tmux session
+// and git worktree are only created later, by Start.
 func NewInstance(opts InstanceOptions) (*Instance, error) {
 	t := time.Now()
 
@@ -326,12 +333,14 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:      0,
 		CreatedAt:  t,
 		UpdatedAt:  t,
-		AutoYes:    false,
 		baseBranch: opts.Branch,
 		direct:     opts.Direct,
 	}, nil
 }
 
+// RepoName returns the name the instance is grouped under in the list: the git
+// repo name for worktree sessions, or the directory base name for direct
+// (non-git) sessions.
 func (i *Instance) RepoName() (string, error) {
 	if !i.isStarted() {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
@@ -419,7 +428,9 @@ func (i *Instance) SetBaseBranch(branch string) {
 	i.baseBranch = branch
 }
 
-// firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
+// Start brings the instance to life: it creates (or reuses) the tmux session
+// and, for non-direct sessions, the git worktree and branch. firstTimeSetup is
+// true if this is a new instance; otherwise, it's one loaded from storage.
 func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
 		return fmt.Errorf("instance title cannot be empty")
@@ -552,6 +563,10 @@ func (i *Instance) combineErrors(errs []error) error {
 	return fmt.Errorf("%s", errMsg)
 }
 
+// Preview captures the instance's current tmux pane content for the preview
+// tab. It returns empty content (not an error) for paused instances and for
+// sessions whose tmux pane is missing, so a dead pane degrades gracefully
+// instead of escalating to the error box on every refresh.
 func (i *Instance) Preview() (string, error) {
 	if i.Paused() {
 		return "", nil
@@ -572,6 +587,9 @@ func (i *Instance) Preview() (string, error) {
 	return ts.CapturePaneContent()
 }
 
+// HasUpdated reports whether the pane content changed since the last check and
+// whether the pane is currently showing a y/n prompt (see tmux.HasUpdated).
+// The daemon uses the prompt signal to decide when to tap Enter.
 func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	ts := i.tmux()
 	if !i.isStarted() || ts == nil {
@@ -636,6 +654,9 @@ func (i *Instance) TapEnter() {
 	}
 }
 
+// Attach attaches the user's terminal to the instance's tmux session. The
+// returned channel closes when the user detaches; consult AttachExitReason and
+// AttachKillRequested afterwards for why.
 func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.isStarted() {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
@@ -674,6 +695,9 @@ func (i *Instance) SetContext(name, left string) error {
 	return ts.SetContext(name, left)
 }
 
+// SetPreviewSize resizes the detached tmux session to match the preview pane,
+// so captured content wraps the way it will be displayed. Fails for an
+// unstarted or paused instance.
 func (i *Instance) SetPreviewSize(width, height int) error {
 	if !i.isStarted() || i.Paused() {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
@@ -714,6 +738,8 @@ func (i *Instance) GetRepoPath() string {
 	return wt.GetRepoPath()
 }
 
+// Started reports whether Start has run (the instance has a tmux session and,
+// unless direct, a worktree).
 func (i *Instance) Started() bool {
 	return i.isStarted()
 }
@@ -789,6 +815,8 @@ func (i *Instance) SetDisplayName(name string) {
 	i.displayName = strings.TrimSpace(name)
 }
 
+// Paused reports whether the instance is paused (worktree removed, branch
+// preserved).
 func (i *Instance) Paused() bool {
 	return i.GetStatus() == Paused
 }
