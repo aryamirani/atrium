@@ -579,7 +579,7 @@ func TestStartSession(t *testing.T) {
 func TestStartQuotesHookSettingsPath(t *testing.T) {
 	forceSettingsFlag(t, true)
 	ptyFactory := NewMockPtyFactory(t)
-	session := newTmuxSession("Surya's comment", "claude", ptyFactory, startMockExec())
+	session := newSession(context.Background(), "Surya's comment", "claude", ptyFactory, startMockExec())
 
 	require.NoError(t, session.Start(t.TempDir()))
 
@@ -588,7 +588,7 @@ func TestStartQuotesHookSettingsPath(t *testing.T) {
 	launchArgs := ptyFactory.cmds[0].Args
 	program := launchArgs[len(launchArgs)-1]
 	require.Contains(t, program, "--settings")
-	parseOnly := exec.Command("sh", "-n", "-c", program)
+	parseOnly := exec.CommandContext(context.Background(), "sh", "-n", "-c", program)
 	require.NoError(t, parseOnly.Run(), "launch command must be valid shell syntax: %q", program)
 
 	// The settings path (which embeds the apostrophe-bearing session name) is quoted.
@@ -609,7 +609,7 @@ func TestStartTimeoutErrorOmitsNilWrap(t *testing.T) {
 		RunFunc:    func(cmd *exec.Cmd) error { return fmt.Errorf("no such session") },
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("output"), nil },
 	}
-	session := newTmuxSession("timeout-test", "prog", ptyFactory, cmdExec)
+	session := newSession(context.Background(), "timeout-test", "prog", ptyFactory, cmdExec)
 
 	err := session.Start(t.TempDir())
 	require.Error(t, err)
