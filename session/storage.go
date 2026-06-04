@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/ZviBaratz/atrium/config"
@@ -29,7 +30,7 @@ type InstanceData struct {
 	DiffStats DiffStatsData   `json:"diff_stats"`
 }
 
-// GitWorktreeData represents the serializable data of a GitWorktree
+// GitWorktreeData represents the serializable data of a Worktree
 type GitWorktreeData struct {
 	RepoPath         string `json:"repo_path"`
 	WorktreePath     string `json:"worktree_path"`
@@ -82,16 +83,19 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 	return s.state.SaveInstances(jsonData)
 }
 
-// LoadInstances loads the list of instances from disk
-func (s *Storage) LoadInstances() ([]*Instance, error) {
+// LoadInstances loads the list of instances from disk. ctx is the lifecycle
+// context reconstructed instances derive their subprocess contexts from.
+func (s *Storage) LoadInstances(ctx context.Context) ([]*Instance, error) {
 	instancesData, err := s.loadInstanceData()
 	if err != nil {
 		return nil, err
 	}
 
+	// Load config once for the whole batch; FromInstanceData only needs BranchPrefix.
+	cfg := config.LoadConfig()
 	instances := make([]*Instance, len(instancesData))
 	for i, data := range instancesData {
-		instance, err := FromInstanceData(data)
+		instance, err := FromInstanceData(ctx, data, cfg.BranchPrefix)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create instance %s: %w", data.Title, err)
 		}

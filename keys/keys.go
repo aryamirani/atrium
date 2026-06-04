@@ -1,11 +1,19 @@
+// Package keys defines the logical key actions of the TUI and the global maps
+// that translate terminal key strings into those actions and into displayable
+// help bindings.
 package keys
 
 import (
 	"github.com/charmbracelet/bubbles/key"
 )
 
+// KeyName identifies a logical key action in the TUI. The home model switches
+// on KeyName rather than raw key strings, so a rebind only touches the maps in
+// this package.
 type KeyName int
 
+// The logical key actions. Their bindings live in GlobalKeyStringsMap (string
+// → action) and GlobalkeyBindings (action → help entry).
 const (
 	KeyUp KeyName = iota
 	KeyDown
@@ -26,20 +34,22 @@ const (
 	KeyPrompt // New key for entering a prompt
 	KeyHelp   // Key for showing help screen
 
-	// Diff keybindings
+	// KeyShiftUp and KeyShiftDown scroll the diff/preview pane.
 	KeyShiftUp
 	KeyShiftDown
 
-	// Reorder keybindings
+	// KeyMoveUp and KeyMoveDown reorder the selected session within its group.
 	KeyMoveUp
 	KeyMoveDown
 
-	// Whole-group reorder keybindings
+	// KeyMoveGroupUp and KeyMoveGroupDown reorder a whole repo group.
 	KeyMoveGroupUp
 	KeyMoveGroupDown
 
-	// Group collapse keybindings
-	KeyCollapseToggle
+	// KeyCollapse and KeyExpand fold/unfold the selected repo group (tree-view
+	// style); KeyCollapseAll folds/unfolds every group at once.
+	KeyCollapse
+	KeyExpand
 	KeyCollapseAll
 
 	KeyRename // Rename the selected session's display label
@@ -52,7 +62,8 @@ const (
 
 	KeyCopyBranch // Copy the selected session's branch name to the clipboard
 
-	// Pane resize keybindings: grow/shrink the session list relative to the preview.
+	// KeyShrinkList and KeyGrowList resize the session list relative to the
+	// preview pane.
 	KeyShrinkList
 	KeyGrowList
 )
@@ -74,7 +85,8 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"K":          KeyMoveUp,
 	"{":          KeyMoveGroupUp,
 	"}":          KeyMoveGroupDown,
-	" ":          KeyCollapseToggle,
+	"left":       KeyCollapse,
+	"right":      KeyExpand,
 	"Z":          KeyCollapseAll,
 	"N":          KeyPrompt,
 	"enter":      KeyEnter,
@@ -83,7 +95,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	KillKey:      KeyKill,
 	"R":          KeyRename,
 	"A":          KeyAutoName,
-	"right":      KeyQuickSend,
+	"s":          KeyQuickSend,
 	"y":          KeyCopyBranch,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
@@ -97,7 +109,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	">":          KeyGrowList,
 }
 
-// GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
+// GlobalkeyBindings is a global, immutable map of KeyName to keybinding.
 var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyUp: key.NewBinding(
 		key.WithKeys("up", "k"),
@@ -136,8 +148,8 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithHelp("A", "auto-name"),
 	),
 	KeyQuickSend: key.NewBinding(
-		key.WithKeys("right"),
-		key.WithHelp("→", "send"),
+		key.WithKeys("s"),
+		key.WithHelp("s", "send"),
 	),
 	KeyHelp: key.NewBinding(
 		key.WithKeys("?"),
@@ -189,9 +201,13 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithKeys("}"),
 		key.WithHelp("}", "move group down"),
 	),
-	KeyCollapseToggle: key.NewBinding(
-		key.WithKeys(" "),
-		key.WithHelp("space", "collapse/expand group"),
+	KeyCollapse: key.NewBinding(
+		key.WithKeys("left"),
+		key.WithHelp("←", "collapse group"),
+	),
+	KeyExpand: key.NewBinding(
+		key.WithKeys("right"),
+		key.WithHelp("→", "expand group"),
 	),
 	KeyCollapseAll: key.NewBinding(
 		key.WithKeys("Z"),

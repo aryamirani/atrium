@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func waitZone(t *testing.T, render func() string, id string) *zone.ZoneInfo {
 // test does not hard-code the panel layout.
 func TestListInstanceAtZone(t *testing.T) {
 	s := spinner.New()
-	l := NewList(&s, false)
+	l := NewList(&s)
 	a := instWithStatus(t, "alpha", session.Ready)
 	b := instWithStatus(t, "bravo", session.Ready)
 	l.AddInstance(a)()
@@ -57,7 +58,7 @@ func TestListInstanceAtZone(t *testing.T) {
 
 // TestTabAtZone verifies tab click regions resolve to the right tab index.
 func TestTabAtZone(t *testing.T) {
-	w := NewTabbedWindow(NewPreviewPane(), NewDiffPane(), NewTerminalPane())
+	w := NewTabbedWindow(NewPreviewPane(), NewDiffPane(), NewTerminalPane(context.Background()))
 	w.SetSize(60, 20)
 
 	for i := range []int{PreviewTab, DiffTab, TerminalTab} {

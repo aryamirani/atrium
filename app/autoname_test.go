@@ -21,7 +21,7 @@ import (
 func newAutoNameHome(t *testing.T, titles ...string) *home {
 	t.Helper()
 	s := spinner.New()
-	l := ui.NewList(&s, false)
+	l := ui.NewList(&s)
 	for _, title := range titles {
 		inst, err := session.NewInstance(session.InstanceOptions{Title: title, Path: t.TempDir(), Program: "echo"})
 		require.NoError(t, err)
@@ -34,7 +34,7 @@ func newAutoNameHome(t *testing.T, titles ...string) *home {
 		state:        stateDefault,
 		list:         l,
 		menu:         ui.NewMenu(),
-		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane(context.Background())),
 		errBox:       ui.NewErrBox(),
 		appConfig:    config.DefaultConfig(),
 		appState:     config.DefaultState(),

@@ -1,3 +1,7 @@
+// Package tmux wraps a real tmux server on Atrium's dedicated socket. Each
+// session runs its agent program in a pty; Poll captures pane content and
+// classifies it into a PaneState (unknown, working, prompt, idle). All tmux
+// subprocesses go through cmd.Executor so tests can fake them.
 package tmux
 
 import (
@@ -21,10 +25,13 @@ import (
 	"github.com/creack/pty"
 )
 
-const ProgramClaude = "claude"
-
-const ProgramAider = "aider"
-const ProgramGemini = "gemini"
+// Names of known agent programs, used to select program-specific behavior
+// (busy markers, prompt detection, trust-prompt handling).
+const (
+	ProgramClaude = "claude"
+	ProgramAider  = "aider"
+	ProgramGemini = "gemini"
+)
 
 // PaneState is the classification of a tmux pane derived from its content. Unlike a
 // raw "did the content change" signal, these are *level* signals: each is decided by
@@ -60,7 +67,7 @@ func busyMarkers(program string) []string {
 // of content. The match is confined to the footer (see footerRegion) rather than the whole
 // pane, which would also match the scrolled-back transcript. Returns false for programs
 // without a known marker.
-func (t *TmuxSession) markerWorking(content string) bool {
+func (t *Session) markerWorking(content string) bool {
 	region := footerRegion(content)
 	for _, m := range busyMarkers(t.program) {
 		if strings.Contains(region, m) {
@@ -194,14 +201,21 @@ func navReason(b []byte) (DetachReason, bool) {
 	return DetachQuit, false
 }
 
-// TmuxSession represents a managed tmux session
-type TmuxSession struct {
+// Session represents a managed tmux session
+type Session struct {
+	// baseCtx is the lifecycle context every tmux subprocess derives from: short
+	// operations cap it with tmuxOpTimeout (opContext), long-lived pty clients
+	// (new-session, attach-session) use it bare so app shutdown — not a timeout —
+	// tears them down. Set once at construction, before any background goroutine
+	// can reach this session; nil means Background. Distinct from ctx below,
+	// which is attach-scoped and nil'd on detach.
+	baseCtx context.Context
 	// mu guards sanitizedName/windowName against a deep Rename, which mutates them while
 	// the metadata poll loop reads sanitizedName from a background goroutine. Rename holds
 	// the write lock across its rename-session subprocess and the field swap, so a reader
 	// never observes the brief window where the old session name no longer exists.
 	mu sync.RWMutex
-	// Initialized by NewTmuxSession
+	// Initialized by NewSession
 	//
 	// The name of the tmux session and the sanitized name used for tmux commands.
 	sanitizedName string
@@ -260,10 +274,10 @@ type TmuxSession struct {
 	killRequested bool
 }
 
-// TmuxPrefix is the prefix applied to every Atrium-managed tmux session name. It
+// Prefix is the prefix applied to every Atrium-managed tmux session name. It
 // derives from config.RuntimeName so legacy installs keep the "claudesquad_"
 // prefix and can still find and clean up their pre-rebrand sessions.
-func TmuxPrefix() string {
+func Prefix() string {
 	return config.RuntimeName() + "_"
 }
 
@@ -329,25 +343,31 @@ const (
 	footerChromeLines = 3
 )
 
-func toClaudeSquadTmuxName(str string) string {
+// toSanitizedName converts an instance title into the managed tmux session name:
+// whitespace stripped, dots replaced (tmux would do it anyway), and the active
+// brand prefix (see Prefix) applied. It produces the value held in Session.sanitizedName.
+func toSanitizedName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
-	return fmt.Sprintf("%s%s", TmuxPrefix(), str)
+	return fmt.Sprintf("%s%s", Prefix(), str)
 }
 
-// NewTmuxSession creates a new TmuxSession with the given name and program.
-func NewTmuxSession(name string, program string) *TmuxSession {
-	return newTmuxSession(name, program, MakePtyFactory(), cmd.MakeExecutor())
+// NewSession creates a new Session with the given name and program.
+// ctx is the lifecycle context tmux subprocesses derive from; cancelling it
+// (app/daemon shutdown) kills in-flight subprocesses.
+func NewSession(ctx context.Context, name string, program string) *Session {
+	return newSession(ctx, name, program, MakePtyFactory(), cmd.MakeExecutor())
 }
 
-// NewTmuxSessionWithDeps creates a new TmuxSession with provided dependencies for testing.
-func NewTmuxSessionWithDeps(name string, program string, ptyFactory PtyFactory, cmdExec cmd.Executor) *TmuxSession {
-	return newTmuxSession(name, program, ptyFactory, cmdExec)
+// NewSessionWithDeps creates a new Session with provided dependencies for testing.
+func NewSessionWithDeps(ctx context.Context, name string, program string, ptyFactory PtyFactory, cmdExec cmd.Executor) *Session {
+	return newSession(ctx, name, program, ptyFactory, cmdExec)
 }
 
-func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec cmd.Executor) *TmuxSession {
-	return &TmuxSession{
-		sanitizedName: toClaudeSquadTmuxName(name),
+func newSession(ctx context.Context, name string, program string, ptyFactory PtyFactory, cmdExec cmd.Executor) *Session {
+	return &Session{
+		baseCtx:       ctx,
+		sanitizedName: toSanitizedName(name),
 		windowName:    name,
 		program:       program,
 		ptyFactory:    ptyFactory,
@@ -357,9 +377,25 @@ func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec 
 	}
 }
 
+// baseContext returns the lifecycle context subprocesses derive from,
+// defaulting to Background for sessions constructed without one.
+func (t *Session) baseContext() context.Context {
+	if t.baseCtx != nil {
+		return t.baseCtx
+	}
+	return context.Background()
+}
+
+// opContext returns a tmuxOpTimeout-capped context for a short tmux operation
+// (capture-pane, send-keys, kill-session, has-session). Callers must invoke the
+// returned cancel once the subprocess has finished.
+func (t *Session) opContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(t.baseContext(), tmuxOpTimeout)
+}
+
 // Start creates and starts a new tmux session, then attaches to it. Program is the command to run in
 // the session (ex. claude). workdir is the git worktree directory.
-func (t *TmuxSession) Start(workDir string) error {
+func (t *Session) Start(workDir string) error {
 	return t.start(workDir, t.program)
 }
 
@@ -368,12 +404,12 @@ func (t *TmuxSession) Start(workDir string) error {
 // died and we are relaunching it — never on PTY reattach (Restore), where the process is
 // still alive. The continue command is computed transiently; t.program, the value
 // persisted via Instance, is never mutated.
-func (t *TmuxSession) StartContinue(workDir string) error {
+func (t *Session) StartContinue(workDir string) error {
 	return t.start(workDir, continueProgram(t.program))
 }
 
 // start creates a new detached tmux session running program in workDir, then attaches.
-func (t *TmuxSession) start(workDir string, program string) error {
+func (t *Session) start(workDir string, program string) error {
 	// Check if the session already exists
 	if t.DoesSessionExist() {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
@@ -394,13 +430,17 @@ func (t *TmuxSession) start(workDir string, program string) error {
 
 	// Create a new detached tmux session and start claude in it. -n gives the
 	// window the human-readable title (the conf disables auto-rename).
-	cmd := tmuxCommand("new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName, program)
+	// The pty client outlives this call, so it runs under the bare base context
+	// (killed on app shutdown), never a per-op timeout.
+	cmd := tmuxCommand(t.baseContext(), "new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName, program)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
 		// Cleanup any partially created session if any exists.
 		if t.DoesSessionExist() {
-			cleanupCmd := tmuxCommand("kill-session", "-t", t.sanitizedName)
+			cleanupCtx, cancel := t.opContext()
+			defer cancel()
+			cleanupCmd := tmuxCommand(cleanupCtx, "kill-session", "-t", t.sanitizedName)
 			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
 				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 			}
@@ -459,7 +499,7 @@ func containsStartupGate(program, content string) bool {
 
 // CheckAndHandleTrustPrompt checks the pane content once for a trust prompt and dismisses it if found.
 // Returns true if the prompt was found and handled.
-func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
+func (t *Session) CheckAndHandleTrustPrompt() bool {
 	content, err := t.CapturePaneContent()
 	if err != nil {
 		return false
@@ -484,7 +524,7 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 // IsReadyForPrompt reports whether the agent has rendered and is past any startup
 // gate, so a queued first message can be submitted into its input box. It is a
 // read-only check: it captures the pane once and never sends keystrokes.
-func (t *TmuxSession) IsReadyForPrompt() bool {
+func (t *Session) IsReadyForPrompt() bool {
 	if !t.DoesSessionExist() {
 		return false
 	}
@@ -496,8 +536,10 @@ func (t *TmuxSession) IsReadyForPrompt() bool {
 }
 
 // Restore attaches to an existing session and restores the window size
-func (t *TmuxSession) Restore() error {
-	ptmx, err := t.ptyFactory.Start(tmuxCommand("attach-session", "-t", t.sanitizedName))
+func (t *Session) Restore() error {
+	// The attach client lives until detach/close, so it runs under the bare base
+	// context (killed on app shutdown), never a per-op timeout.
+	ptmx, err := t.ptyFactory.Start(tmuxCommand(t.baseContext(), "attach-session", "-t", t.sanitizedName))
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
 	}
@@ -575,7 +617,7 @@ func (m *statusMonitor) hash(s string) []byte {
 }
 
 // TapEnter sends an enter keystroke to the tmux pane.
-func (t *TmuxSession) TapEnter() error {
+func (t *Session) TapEnter() error {
 	_, err := t.ptmx.Write([]byte{0x0D})
 	if err != nil {
 		return fmt.Errorf("error sending enter keystroke to PTY: %w", err)
@@ -584,7 +626,7 @@ func (t *TmuxSession) TapEnter() error {
 }
 
 // TapDAndEnter sends 'D' followed by an enter keystroke to the tmux pane.
-func (t *TmuxSession) TapDAndEnter() error {
+func (t *Session) TapDAndEnter() error {
 	_, err := t.ptmx.Write([]byte{0x44, 0x0D})
 	if err != nil {
 		return fmt.Errorf("error sending enter keystroke to PTY: %w", err)
@@ -592,7 +634,8 @@ func (t *TmuxSession) TapDAndEnter() error {
 	return nil
 }
 
-func (t *TmuxSession) SendKeys(keys string) error {
+// SendKeys writes raw bytes to the session's pty, as if the user typed them.
+func (t *Session) SendKeys(keys string) error {
 	_, err := t.ptmx.Write([]byte(keys))
 	return err
 }
@@ -600,7 +643,7 @@ func (t *TmuxSession) SendKeys(keys string) error {
 // Poll classifies the current pane into a PaneState. It reads level signals (a prompt
 // on screen, a busy marker, otherwise content stability) rather than treating any byte
 // change as "working", which is what makes the result stable while the agent is idle.
-func (t *TmuxSession) Poll() PaneState {
+func (t *Session) Poll() PaneState {
 	// Serialize against a concurrent off-cadence poll from the UI (switch/detach) so the
 	// two callers don't race on the monitor's hash/streak fields. The capture subprocess
 	// runs under the lock, but it is brief and the lock is per-session.
@@ -720,7 +763,7 @@ func (t *TmuxSession) Poll() PaneState {
 // Programs without a level marker (aider/gemini) can't be classified from one snapshot
 // (their "working" signal is content change across ticks), so PollNow returns PaneUnknown
 // for them — leaving the status untouched for the tick loop to resolve.
-func (t *TmuxSession) PollNow() PaneState {
+func (t *Session) PollNow() PaneState {
 	t.monitorMu.Lock()
 	defer t.monitorMu.Unlock()
 	if !t.DoesSessionExist() {
@@ -779,7 +822,7 @@ func (t *TmuxSession) PollNow() PaneState {
 // HasUpdated reports whether the agent is working and whether a prompt awaits an answer.
 // It is a thin shim over Poll, kept for the daemon (which only consults hasPrompt) and
 // for back-compat with existing callers.
-func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
+func (t *Session) HasUpdated() (updated bool, hasPrompt bool) {
 	s := t.Poll()
 	return s == PaneWorking, s == PanePrompt
 }
@@ -835,7 +878,7 @@ func classifyAttachInput(in []byte, allowKill bool) attachInputAction {
 // channel) until the user detaches. When allowKill is true, the in-session kill
 // key (Ctrl+X) detaches and sets KillRequested so the caller can tear the session
 // down; the Terminal-tab shell passes false so Ctrl+X stays a normal shell key.
-func (t *TmuxSession) Attach(allowKill bool) (chan struct{}, error) {
+func (t *Session) Attach(allowKill bool) (chan struct{}, error) {
 	t.attachCh = make(chan struct{})
 	t.killRequested = false
 	t.detachReason = DetachQuit
@@ -939,18 +982,18 @@ func (t *TmuxSession) Attach(allowKill bool) (chan struct{}, error) {
 
 // KillRequested reports whether the most recent attach ended with the user
 // pressing the in-session kill key (Ctrl+X). It is reset at the start of Attach.
-func (t *TmuxSession) KillRequested() bool {
+func (t *Session) KillRequested() bool {
 	return t.killRequested
 }
 
 // AttachExitReason reports why the most recent attach ended. It is meaningful only
 // after the attach channel returned by Attach has closed.
-func (t *TmuxSession) AttachExitReason() DetachReason {
+func (t *Session) AttachExitReason() DetachReason {
 	return t.detachReason
 }
 
 // DetachSafely disconnects from the current tmux session without panicking
-func (t *TmuxSession) DetachSafely() error {
+func (t *Session) DetachSafely() error {
 	// Only detach if we're actually attached
 	if t.attachCh == nil {
 		return nil // Already detached
@@ -992,7 +1035,7 @@ func (t *TmuxSession) DetachSafely() error {
 
 // Detach disconnects from the current tmux session. It panics if detaching fails. At the moment, there's no
 // way to recover from a failed detach.
-func (t *TmuxSession) Detach() {
+func (t *Session) Detach() {
 	// TODO: control flow is a bit messy here. If there's an error,
 	// I'm not sure if we get into a bad state. Needs testing.
 	defer func() {
@@ -1015,7 +1058,7 @@ func (t *TmuxSession) Detach() {
 	// Attach goroutines should die on EOF due to the ptmx closing. Call
 	// t.Restore to set a new t.ptmx.
 	if err = t.Restore(); err != nil {
-		// This is a fatal error. Our invariant that a started TmuxSession always has a valid ptmx is violated.
+		// This is a fatal error. Our invariant that a started Session always has a valid ptmx is violated.
 		msg := fmt.Sprintf("error closing attach pty session: %v", err)
 		log.ErrorLog.Println(msg)
 		panic(msg)
@@ -1027,7 +1070,7 @@ func (t *TmuxSession) Detach() {
 }
 
 // Close terminates the tmux session and cleans up resources
-func (t *TmuxSession) Close() error {
+func (t *Session) Close() error {
 	// Remove the per-session status-hook artifacts; harmless if the session never had any.
 	cleanupHookSession(t.snapshotName())
 
@@ -1040,7 +1083,9 @@ func (t *TmuxSession) Close() error {
 		t.ptmx = nil
 	}
 
-	cmd := tmuxCommand("kill-session", "-t", t.sanitizedName)
+	ctx, cancel := t.opContext()
+	defer cancel()
+	cmd := tmuxCommand(ctx, "kill-session", "-t", t.sanitizedName)
 	if err := t.cmdExec.Run(cmd); err != nil {
 		errs = append(errs, fmt.Errorf("error killing tmux session: %w", err))
 	}
@@ -1061,7 +1106,7 @@ func (t *TmuxSession) Close() error {
 
 // SetDetachedSize set the width and height of the session while detached. This makes the
 // tmux output conform to the specified shape.
-func (t *TmuxSession) SetDetachedSize(width, height int) error {
+func (t *Session) SetDetachedSize(width, height int) error {
 	return t.updateWindowSize(width, height)
 }
 
@@ -1079,7 +1124,7 @@ func clampUint16(n int) uint16 {
 }
 
 // updateWindowSize updates the window size of the PTY.
-func (t *TmuxSession) updateWindowSize(cols, rows int) error {
+func (t *Session) updateWindowSize(cols, rows int) error {
 	return pty.Setsize(t.ptmx, &pty.Winsize{
 		Rows: clampUint16(rows),
 		Cols: clampUint16(cols),
@@ -1088,24 +1133,30 @@ func (t *TmuxSession) updateWindowSize(cols, rows int) error {
 	})
 }
 
-func (t *TmuxSession) DoesSessionExist() bool {
+// DoesSessionExist asks the tmux server whether this session is currently
+// alive (exact-name match).
+func (t *Session) DoesSessionExist() bool {
+	ctx, cancel := t.opContext()
+	defer cancel()
 	// Using "-t name" does a prefix match, which is wrong. `-t=` does an exact match.
-	existsCmd := tmuxCommand("has-session", fmt.Sprintf("-t=%s", t.snapshotName()))
+	existsCmd := tmuxCommand(ctx, "has-session", fmt.Sprintf("-t=%s", t.snapshotName()))
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
 // snapshotName reads sanitizedName under the read lock so background polling can't race
 // the in-place field swap a deep Rename performs.
-func (t *TmuxSession) snapshotName() string {
+func (t *Session) snapshotName() string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.sanitizedName
 }
 
 // CapturePaneContent captures the content of the tmux pane
-func (t *TmuxSession) CapturePaneContent() (string, error) {
+func (t *Session) CapturePaneContent() (string, error) {
+	ctx, cancel := t.opContext()
+	defer cancel()
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.snapshotName())
+	cmd := tmuxCommand(ctx, "capture-pane", "-p", "-e", "-J", "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %w", err)
@@ -1115,9 +1166,11 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 
 // CapturePaneContentWithOptions captures the pane content with additional options
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
-func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
+func (t *Session) CapturePaneContentWithOptions(start, end string) (string, error) {
+	ctx, cancel := t.opContext()
+	defer cancel()
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := tmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.snapshotName())
+	cmd := tmuxCommand(ctx, "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.snapshotName())
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %w", err)
@@ -1126,12 +1179,14 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"
-func CleanupSessions(cmdExec cmd.Executor) error {
+func CleanupSessions(ctx context.Context, cmdExec cmd.Executor) error {
 	// This is the `reset` path: wipe the entire status-hooks tree alongside the sessions.
 	cleanupAllHookSessions()
 
 	// First try to list sessions
-	cmd := tmuxCommand("ls")
+	listCtx, cancel := context.WithTimeout(ctx, tmuxOpTimeout)
+	defer cancel()
+	cmd := tmuxCommand(listCtx, "ls")
 	output, err := cmdExec.Output(cmd)
 
 	// If there's an error and it's because no server is running, that's fine
@@ -1144,7 +1199,7 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 		return fmt.Errorf("failed to list tmux sessions: %w", err)
 	}
 
-	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix()))
+	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, Prefix()))
 	matches := re.FindAllString(string(output), -1)
 	for i, match := range matches {
 		matches[i] = match[:strings.Index(match, ":")]
@@ -1152,7 +1207,10 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 
 	for _, match := range matches {
 		log.InfoLog.Printf("cleaning up session: %s", match)
-		if err := cmdExec.Run(tmuxCommand("kill-session", "-t", match)); err != nil {
+		killCtx, killCancel := context.WithTimeout(ctx, tmuxOpTimeout)
+		err := cmdExec.Run(tmuxCommand(killCtx, "kill-session", "-t", match))
+		killCancel()
+		if err != nil {
 			return fmt.Errorf("failed to kill tmux session %s: %w", match, err)
 		}
 	}

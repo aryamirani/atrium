@@ -19,7 +19,7 @@ import (
 func newTestHomeWithInstances(t *testing.T, paths ...string) *home {
 	t.Helper()
 	s := spinner.New()
-	l := ui.NewList(&s, false)
+	l := ui.NewList(&s)
 	for i, p := range paths {
 		inst, err := session.NewInstance(session.InstanceOptions{
 			Title:   string(rune('a' + i)),
@@ -39,9 +39,9 @@ func newCreateFormHome(t *testing.T) *home {
 	return &home{
 		ctx:          context.Background(),
 		state:        stateDefault,
-		list:         ui.NewList(&s, false),
+		list:         ui.NewList(&s),
 		menu:         ui.NewMenu(),
-		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane(context.Background())),
 		errBox:       ui.NewErrBox(),
 		appConfig:    config.DefaultConfig(),
 		appState:     config.DefaultState(),
@@ -71,7 +71,7 @@ func TestKeyPrompt_OpensCreateFormWithoutAddingRow(t *testing.T) {
 func TestCreateSessionFromForm_CreatesOneAndClearsOverlay(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
-	require.True(t, git.IsGitRepo(cwd), "test must run inside a git repository")
+	require.True(t, git.IsGitRepo(context.Background(), cwd), "test must run inside a git repository")
 
 	h := newCreateFormHome(t)
 	h.newSessionPath = cwd

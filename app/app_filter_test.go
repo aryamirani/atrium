@@ -17,14 +17,14 @@ import (
 // does not depend on a selected instance.
 func newFilterHome() *home {
 	sp := spinner.New()
-	l := ui.NewList(&sp, false)
+	l := ui.NewList(&sp)
 	return &home{
 		ctx:          context.Background(),
 		state:        stateDefault,
 		appConfig:    config.DefaultConfig(),
 		list:         l,
 		menu:         ui.NewMenu(),
-		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane(context.Background())),
 	}
 }
 

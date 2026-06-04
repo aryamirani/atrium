@@ -1,3 +1,7 @@
+// Package session defines Instance, Atrium's core domain object: one agent =
+// one Instance, which lazily composes a tmux session and a git worktree on
+// Start. An Instance's Status drives list rendering and daemon behavior, and
+// instances are persisted across runs via Storage.
 package session
 
 import (
@@ -6,6 +10,7 @@ import (
 	"github.com/ZviBaratz/atrium/session/tmux"
 	"path/filepath"
 
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -21,6 +26,9 @@ import (
 // of dereferencing a nil worktree.
 var ErrNoWorktree = errors.New("not available for a direct (non-git) session")
 
+// Status is an instance's lifecycle/activity state. It is persisted in
+// state.json, so the variants' numeric values must stay stable (new ones are
+// appended).
 type Status int
 
 const (
@@ -85,6 +93,13 @@ type Instance struct {
 	// and never changes afterwards, so it is read without the lock.
 	direct bool
 
+	// baseCtx is the lifecycle context the instance's tmux/git subprocesses derive
+	// from; cancelling it (app/daemon shutdown) kills in-flight subprocesses. Set via
+	// SetBaseContext (or FromInstanceData) before Start, i.e. before any background
+	// goroutine reaches the instance, so it is read without the lock. nil means
+	// Background.
+	baseCtx context.Context
+
 	// mu guards the live-state fields below (status, started, tmuxSession, gitWorktree),
 	// which the background Start() goroutine writes while the metadata-poll goroutines and
 	// the UI thread read them. Always access these through the locked accessors
@@ -97,9 +112,9 @@ type Instance struct {
 
 	started bool
 	// tmuxSession is the tmux session for the instance.
-	tmuxSession *tmux.TmuxSession
+	tmuxSession *tmux.Session
 	// gitWorktree is the git worktree for the instance.
-	gitWorktree *git.GitWorktree
+	gitWorktree *git.Worktree
 }
 
 // ToInstanceData converts an Instance to its serializable form
@@ -148,9 +163,15 @@ func (i *Instance) ToInstanceData() InstanceData {
 	return data
 }
 
-// FromInstanceData creates a new Instance from serialized data
-func FromInstanceData(data InstanceData) (*Instance, error) {
+// FromInstanceData creates a new Instance from serialized data. branchPrefix is the
+// configured session-branch prefix, supplied by the caller so bulk restores (see
+// Storage.LoadInstances) load config once instead of once per instance. ctx is the
+// lifecycle context the instance's tmux/git subprocesses derive from; it is threaded
+// in here (rather than set afterwards) because reconstruction itself spawns
+// subprocesses (session reattach, recovery).
+func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix string) (*Instance, error) {
 	instance := &Instance{
+		baseCtx:     ctx,
 		Title:       data.Title,
 		displayName: data.DisplayName,
 		Path:        data.Path,
@@ -168,7 +189,8 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	// storage. Restore direct first so every downstream path (Start(false),
 	// recoverInPlace) sees the nil worktree and stays on the direct branch.
 	if !data.Direct {
-		instance.gitWorktree = git.NewGitWorktreeFromStorage(
+		instance.gitWorktree = git.NewWorktreeFromStorage(
+			ctx,
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
 			data.Worktree.SessionName,
@@ -176,6 +198,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			data.Worktree.BaseCommitSHA,
 			data.Worktree.BaseRef,
 			data.Worktree.IsExistingBranch,
+			branchPrefix,
 		)
 		instance.diffStats = &git.DiffStats{
 			Added:        data.DiffStats.Added,
@@ -190,9 +213,9 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 
 	if instance.Paused() {
 		instance.started = true
-		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
+		instance.tmuxSession = tmux.NewSession(ctx, instance.Title, instance.Program)
 	} else {
-		sess := tmux.NewTmuxSession(instance.Title, instance.Program)
+		sess := tmux.NewSession(ctx, instance.Title, instance.Program)
 		instance.tmuxSession = sess
 		switch {
 		case sess.DoesSessionExist():
@@ -288,7 +311,7 @@ func (i *Instance) recreateSession() error {
 	return nil
 }
 
-// Options for creating a new instance
+// InstanceOptions are the options for creating a new instance.
 type InstanceOptions struct {
 	// Title is the title of the instance.
 	Title string
@@ -296,8 +319,6 @@ type InstanceOptions struct {
 	Path string
 	// Program is the program to run in the instance (e.g. "claude", "aider --model ollama_chat/gemma3:1b")
 	Program string
-	// If AutoYes is true, then
-	AutoYes bool
 	// Branch is an existing branch name to start the session on (empty = new branch from HEAD)
 	Branch string
 	// Direct creates a direct (non-git) session: the agent runs in Path with no worktree,
@@ -305,6 +326,8 @@ type InstanceOptions struct {
 	Direct bool
 }
 
+// NewInstance creates a not-yet-started Instance from opts. The tmux session
+// and git worktree are only created later, by Start.
 func NewInstance(opts InstanceOptions) (*Instance, error) {
 	t := time.Now()
 
@@ -323,12 +346,14 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:      0,
 		CreatedAt:  t,
 		UpdatedAt:  t,
-		AutoYes:    false,
 		baseBranch: opts.Branch,
 		direct:     opts.Direct,
 	}, nil
 }
 
+// RepoName returns the name the instance is grouped under in the list: the git
+// repo name for worktree sessions, or the directory base name for direct
+// (non-git) sessions.
 func (i *Instance) RepoName() (string, error) {
 	if !i.isStarted() {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
@@ -378,9 +403,9 @@ func (i *Instance) isStarted() bool {
 }
 
 // tmux returns the tmux session pointer under the read lock. Callers invoke methods
-// on the returned session outside the lock (TmuxSession guards its own fields), so
+// on the returned session outside the lock (Session guards its own fields), so
 // mu is never held across tmux I/O.
-func (i *Instance) tmux() *tmux.TmuxSession {
+func (i *Instance) tmux() *tmux.Session {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.tmuxSession
@@ -388,7 +413,7 @@ func (i *Instance) tmux() *tmux.TmuxSession {
 
 // worktree returns the git worktree pointer under the read lock. As with tmux(),
 // callers run git I/O on the returned worktree outside the lock.
-func (i *Instance) worktree() *git.GitWorktree {
+func (i *Instance) worktree() *git.Worktree {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.gitWorktree
@@ -416,7 +441,25 @@ func (i *Instance) SetBaseBranch(branch string) {
 	i.baseBranch = branch
 }
 
-// firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
+// SetBaseContext sets the lifecycle context the instance's tmux/git subprocesses
+// derive from (cancelled on app/daemon shutdown). It must be called before Start,
+// which constructs the tmux session and git worktree under it.
+func (i *Instance) SetBaseContext(ctx context.Context) {
+	i.baseCtx = ctx
+}
+
+// baseContext returns the lifecycle context subprocesses derive from, defaulting
+// to Background for instances constructed without one.
+func (i *Instance) baseContext() context.Context {
+	if i.baseCtx != nil {
+		return i.baseCtx
+	}
+	return context.Background()
+}
+
+// Start brings the instance to life: it creates (or reuses) the tmux session
+// and, for non-direct sessions, the git worktree and branch. firstTimeSetup is
+// true if this is a new instance; otherwise, it's one loaded from storage.
 func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
 		return fmt.Errorf("instance title cannot be empty")
@@ -428,7 +471,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	tmuxSession := existing
 	if tmuxSession == nil {
 		// Create new tmux session
-		tmuxSession = tmux.NewTmuxSession(i.Title, i.Program)
+		tmuxSession = tmux.NewSession(i.baseContext(), i.Title, i.Program)
 	}
 	i.mu.Lock()
 	i.tmuxSession = tmuxSession
@@ -437,13 +480,13 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	if firstTimeSetup && !i.direct {
 		// The session always gets its own branch. baseBranch (if set) only chooses the start
 		// point it branches off, so i.Branch is the session branch in both cases.
-		var gitWorktree *git.GitWorktree
+		var gitWorktree *git.Worktree
 		var branchName string
 		var err error
 		if i.baseBranch != "" {
-			gitWorktree, branchName, err = git.NewGitWorktreeFromBase(i.Path, i.Title, i.baseBranch)
+			gitWorktree, branchName, err = git.NewWorktreeFromBase(i.baseContext(), i.Path, i.Title, i.baseBranch)
 		} else {
-			gitWorktree, branchName, err = git.NewGitWorktree(i.Path, i.Title)
+			gitWorktree, branchName, err = git.NewWorktree(i.baseContext(), i.Path, i.Title)
 		}
 		if err != nil {
 			return fmt.Errorf("failed to create git worktree: %w", err)
@@ -549,6 +592,10 @@ func (i *Instance) combineErrors(errs []error) error {
 	return fmt.Errorf("%s", errMsg)
 }
 
+// Preview captures the instance's current tmux pane content for the preview
+// tab. It returns empty content (not an error) for paused instances and for
+// sessions whose tmux pane is missing, so a dead pane degrades gracefully
+// instead of escalating to the error box on every refresh.
 func (i *Instance) Preview() (string, error) {
 	if i.Paused() {
 		return "", nil
@@ -569,6 +616,9 @@ func (i *Instance) Preview() (string, error) {
 	return ts.CapturePaneContent()
 }
 
+// HasUpdated reports whether the pane content changed since the last check and
+// whether the pane is currently showing a y/n prompt (see tmux.HasUpdated).
+// The daemon uses the prompt signal to decide when to tap Enter.
 func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	ts := i.tmux()
 	if !i.isStarted() || ts == nil {
@@ -589,7 +639,7 @@ func (i *Instance) Poll() tmux.PaneState {
 
 // PollNow classifies the agent's current pane state at face value, skipping the working→idle
 // hysteresis, for a one-shot refresh after the poll stream was interrupted (a detach). See
-// tmux.TmuxSession.PollNow.
+// tmux.Session.PollNow.
 func (i *Instance) PollNow() tmux.PaneState {
 	ts := i.tmux()
 	if !i.isStarted() || ts == nil {
@@ -633,6 +683,9 @@ func (i *Instance) TapEnter() {
 	}
 }
 
+// Attach attaches the user's terminal to the instance's tmux session. The
+// returned channel closes when the user detaches; consult AttachExitReason and
+// AttachKillRequested afterwards for why.
 func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.isStarted() {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
@@ -671,6 +724,9 @@ func (i *Instance) SetContext(name, left string) error {
 	return ts.SetContext(name, left)
 }
 
+// SetPreviewSize resizes the detached tmux session to match the preview pane,
+// so captured content wraps the way it will be displayed. Fails for an
+// unstarted or paused instance.
 func (i *Instance) SetPreviewSize(width, height int) error {
 	if !i.isStarted() || i.Paused() {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
@@ -680,7 +736,7 @@ func (i *Instance) SetPreviewSize(width, height int) error {
 }
 
 // GetGitWorktree returns the git worktree for the instance
-func (i *Instance) GetGitWorktree() (*git.GitWorktree, error) {
+func (i *Instance) GetGitWorktree() (*git.Worktree, error) {
 	if !i.isStarted() {
 		return nil, fmt.Errorf("cannot get git worktree for instance that has not been started")
 	}
@@ -711,6 +767,8 @@ func (i *Instance) GetRepoPath() string {
 	return wt.GetRepoPath()
 }
 
+// Started reports whether Start has run (the instance has a tmux session and,
+// unless direct, a worktree).
 func (i *Instance) Started() bool {
 	return i.isStarted()
 }
@@ -786,6 +844,8 @@ func (i *Instance) SetDisplayName(name string) {
 	i.displayName = strings.TrimSpace(name)
 }
 
+// Paused reports whether the instance is paused (worktree removed, branch
+// preserved).
 func (i *Instance) Paused() bool {
 	return i.GetStatus() == Paused
 }
@@ -1098,7 +1158,7 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 }
 
 // SetTmuxSession sets the tmux session for testing purposes
-func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
+func (i *Instance) SetTmuxSession(session *tmux.Session) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.tmuxSession = session

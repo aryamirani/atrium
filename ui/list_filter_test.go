@@ -15,7 +15,7 @@ import (
 func newFilterList(t *testing.T, titles ...string) (*List, []*session.Instance) {
 	t.Helper()
 	s := spinner.New()
-	l := NewList(&s, false)
+	l := NewList(&s)
 	insts := make([]*session.Instance, 0, len(titles))
 	for _, title := range titles {
 		inst, err := session.NewInstance(session.InstanceOptions{Title: title, Path: "/tmp/repoA", Program: "echo"})
@@ -109,7 +109,7 @@ func TestFilter_NavigationSkipsNonMatching(t *testing.T) {
 func newMultiRepoList(t *testing.T) *List {
 	t.Helper()
 	s := spinner.New()
-	l := NewList(&s, false)
+	l := NewList(&s)
 	for _, spec := range []struct{ title, path string }{
 		{"alpha", "/tmp/repoA"},
 		{"apex", "/tmp/repoA"},
@@ -153,7 +153,7 @@ func TestFilter_OverridesCollapse(t *testing.T) {
 	l := newMultiRepoList(t)
 
 	l.SetSelectedInstance(0) // a repoA item
-	require.True(t, l.ToggleCollapse(), "precondition: repoA collapses")
+	require.True(t, l.Collapse(), "precondition: repoA collapses")
 
 	// "pex" is a fragment of "apex" so Contains("apex") can only match the rendered row, not
 	// the query echoed in the filter bar. apex lives inside the collapsed repoA group.

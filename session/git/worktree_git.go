@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"github.com/ZviBaratz/atrium/log"
 	"os"
@@ -13,16 +14,20 @@ import (
 const MaxBranchSearchResults = 50
 
 // FetchBranches fetches and prunes remote-tracking branches (best-effort, won't fail if offline).
-func FetchBranches(repoPath string) {
-	cmd := exec.Command("git", "-C", repoPath, "fetch", "--prune")
+func FetchBranches(ctx context.Context, repoPath string) {
+	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--prune")
 	_ = cmd.Run()
 }
 
 // SearchBranches searches for branches whose name contains filter (case-insensitive),
 // ordered by most recently updated first. Returns at most MaxBranchSearchResults.
 // If filter is empty, returns all branches up to the limit.
-func SearchBranches(repoPath, filter string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "branch", "-a",
+func SearchBranches(ctx context.Context, repoPath, filter string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitLocalTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "branch", "-a",
 		"--sort=-committerdate",
 		"--format=%(refname:short)")
 	output, err := cmd.CombinedOutput()
@@ -54,10 +59,16 @@ func SearchBranches(repoPath, filter string) ([]string, error) {
 	return branches, nil
 }
 
-// runGitCommand executes a git command and returns any error
-func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error) {
+// runGitCommand executes a local git command and returns any error. The command
+// runs under the worktree's base context capped at gitLocalTimeout: every caller
+// is a local operation, so the timeout is derived here rather than at each of the
+// ~30 call sites. Network-bound commands (push, gh) do not go through this funnel —
+// they build their own exec.CommandContext with gitNetworkTimeout.
+func (g *Worktree) runGitCommand(path string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(g.baseContext(), gitLocalTimeout)
+	defer cancel()
 	baseArgs := []string{"-C", path}
-	cmd := exec.Command("git", append(baseArgs, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append(baseArgs, args...)...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -68,8 +79,8 @@ func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error)
 }
 
 // PushChanges commits and pushes changes in the worktree to the remote branch
-func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
-	if err := checkGHCLI(); err != nil {
+func (g *Worktree) PushChanges(commitMessage string, open bool) error {
+	if err := checkGHCLI(g.baseContext()); err != nil {
 		return err
 	}
 
@@ -93,12 +104,19 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 		}
 	}
 
+	// Each network subprocess gets its own gitNetworkTimeout budget derived from
+	// the worktree's base context.
+	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	defer cancel()
+
 	// First push the branch to remote to ensure it exists
-	pushCmd := exec.Command("gh", "repo", "sync", "--source", "-b", g.branchName)
+	pushCmd := exec.CommandContext(ctx, "gh", "repo", "sync", "--source", "-b", g.branchName)
 	pushCmd.Dir = g.worktreePath
 	if err := pushCmd.Run(); err != nil {
 		// If sync fails, try creating the branch on remote first
-		gitPushCmd := exec.Command("git", "push", "-u", "origin", g.branchName)
+		fallbackCtx, fallbackCancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+		defer fallbackCancel()
+		gitPushCmd := exec.CommandContext(fallbackCtx, "git", "push", "-u", "origin", g.branchName)
 		gitPushCmd.Dir = g.worktreePath
 		if pushOutput, pushErr := gitPushCmd.CombinedOutput(); pushErr != nil {
 			log.ErrorLog.Print(pushErr)
@@ -107,7 +125,9 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 	}
 
 	// Now sync with remote
-	syncCmd := exec.Command("gh", "repo", "sync", "-b", g.branchName)
+	syncCtx, syncCancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	defer syncCancel()
+	syncCmd := exec.CommandContext(syncCtx, "gh", "repo", "sync", "-b", g.branchName)
 	syncCmd.Dir = g.worktreePath
 	if output, err := syncCmd.CombinedOutput(); err != nil {
 		log.ErrorLog.Print(err)
@@ -126,7 +146,7 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 }
 
 // CommitChanges commits changes locally without pushing to remote
-func (g *GitWorktree) CommitChanges(commitMessage string) error {
+func (g *Worktree) CommitChanges(commitMessage string) error {
 	// Check if there are any changes to commit
 	isDirty, err := g.IsDirty()
 	if err != nil {
@@ -151,7 +171,7 @@ func (g *GitWorktree) CommitChanges(commitMessage string) error {
 }
 
 // IsDirty checks if the worktree has uncommitted changes
-func (g *GitWorktree) IsDirty() (bool, error) {
+func (g *Worktree) IsDirty() (bool, error) {
 	output, err := g.runGitCommand(g.worktreePath, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("failed to check worktree status: %w", err)
@@ -162,7 +182,7 @@ func (g *GitWorktree) IsDirty() (bool, error) {
 // IsValidWorktree reports whether the worktree path exists and contains a
 // .git entry, i.e. git can still recognize it as a working tree.
 // Returns (false, nil) if the worktree is orphaned (path or .git missing).
-func (g *GitWorktree) IsValidWorktree() (bool, error) {
+func (g *Worktree) IsValidWorktree() (bool, error) {
 	if _, err := os.Stat(g.worktreePath); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -201,7 +221,7 @@ func (e *BranchCheckedOutError) Error() string {
 // free. It parses `git worktree list --porcelain` (via parseWorktreeList) so it
 // sees ALL worktrees, not just the base repo; detached-HEAD and bare records
 // carry no branch line and therefore never match.
-func (g *GitWorktree) BranchCheckoutPath() (string, error) {
+func (g *Worktree) BranchCheckoutPath() (string, error) {
 	output, err := g.runGitCommand(g.repoPath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", fmt.Errorf("failed to list worktrees: %w", err)
@@ -217,7 +237,7 @@ func (g *GitWorktree) BranchCheckoutPath() (string, error) {
 // IsBranchCheckedOut reports whether the instance branch is checked out anywhere
 // (the base repo or a sibling worktree). It is a thin wrapper over
 // BranchCheckoutPath; callers that need the location should use that directly.
-func (g *GitWorktree) IsBranchCheckedOut() (bool, error) {
+func (g *Worktree) IsBranchCheckedOut() (bool, error) {
 	path, err := g.BranchCheckoutPath()
 	if err != nil {
 		return false, err
@@ -229,7 +249,7 @@ func (g *GitWorktree) IsBranchCheckedOut() (bool, error) {
 // repo itself (as opposed to a sibling worktree). This distinguishes the
 // auto-recoverable case (detach the base repo) from a branch held by another
 // live worktree, which must not be touched automatically.
-func (g *GitWorktree) IsBranchHeldByBaseRepo() (bool, error) {
+func (g *Worktree) IsBranchHeldByBaseRepo() (bool, error) {
 	path, err := g.BranchCheckoutPath()
 	if err != nil {
 		return false, err
@@ -248,7 +268,7 @@ func (g *GitWorktree) IsBranchHeldByBaseRepo() (bool, error) {
 // out. It refuses when the base repo has uncommitted changes, to avoid stranding
 // the user's work on a detached HEAD. Callers should confirm the branch is
 // actually held by the base repo (IsBranchHeldByBaseRepo) before calling.
-func (g *GitWorktree) DetachBranchInBaseRepo() error {
+func (g *Worktree) DetachBranchInBaseRepo() error {
 	// Use the base repo's own working tree for the dirty check — IsDirty inspects
 	// the session worktree, which is the wrong target here.
 	status, err := g.runGitCommand(g.repoPath, "status", "--porcelain")
@@ -266,13 +286,15 @@ func (g *GitWorktree) DetachBranchInBaseRepo() error {
 }
 
 // OpenBranchURL opens the branch URL in the default browser
-func (g *GitWorktree) OpenBranchURL() error {
+func (g *Worktree) OpenBranchURL() error {
 	// Check if GitHub CLI is available
-	if err := checkGHCLI(); err != nil {
+	if err := checkGHCLI(g.baseContext()); err != nil {
 		return err
 	}
 
-	cmd := exec.Command("gh", "browse", "--branch", g.branchName)
+	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "browse", "--branch", g.branchName)
 	cmd.Dir = g.worktreePath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to open branch URL: %w", err)

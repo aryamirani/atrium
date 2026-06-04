@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -89,7 +90,11 @@ func claudeSupportsSettingsFlag() bool {
 		return *settingsFlagOverride
 	}
 	settingsFlagOnce.Do(func() {
-		out, err := exec.Command(ProgramClaude, "--help").CombinedOutput()
+		// One-shot, process-cached probe with no ctx-bearing caller; Background
+		// capped at probeTimeout is deliberate.
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, ProgramClaude, "--help").CombinedOutput()
 		if err != nil {
 			log.InfoLog.Printf("status hooks disabled: probing %q --help failed: %v", ProgramClaude, err)
 			return
@@ -192,7 +197,7 @@ func ensureHookSettings(sanitizedName, program string) (string, error) {
 // readHookState returns the latched hook state word and true, or ("", false) when there is
 // no usable signal: a non-claude program, or the file is absent/unreadable (hooks not yet
 // fired, hooks unsupported/disabled). Callers fall back to the scrape classifier on false.
-func (t *TmuxSession) readHookState() (string, bool) {
+func (t *Session) readHookState() (string, bool) {
 	if !isClaude(t.program) {
 		return "", false
 	}

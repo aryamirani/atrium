@@ -13,12 +13,14 @@ import "fmt"
 // It is a no-op when the values are unchanged since the last push, so the
 // per-second metadata tick costs a string comparison rather than a subprocess when
 // nothing moved. name also drives the terminal title via set-titles-string.
-func (t *TmuxSession) SetContext(name, left string) error {
+func (t *Session) SetContext(name, left string) error {
 	if t.ctxSet && t.ctxName == name && t.ctxLeft == left {
 		return nil
 	}
 	target := t.snapshotName()
-	cmd := tmuxCommand(
+	ctx, cancel := t.opContext()
+	defer cancel()
+	cmd := tmuxCommand(ctx,
 		"set-option", "-t", target, "@atrium_name", name, ";",
 		"set-option", "-t", target, "@atrium_left", left, ";",
 		"refresh-client", "-S",
