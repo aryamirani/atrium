@@ -7,8 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// 1/2/3 jump straight to the corresponding tab. Global-map keys take two passes
-// from the default state (highlight pass re-sends the key, second press handles it).
+// 1/2/3 jump straight to the corresponding tab.
 func TestTabJumpKeys(t *testing.T) {
 	h := newFilterHome()
 
@@ -20,8 +19,7 @@ func TestTabJumpKeys(t *testing.T) {
 		{"3", ui.TerminalTab},
 		{"1", ui.PreviewTab},
 	} {
-		press(t, h, runeKey(tc.key)) // highlight pass
-		press(t, h, runeKey(tc.key)) // actual handling
+		press(t, h, runeKey(tc.key))
 		require.Equal(t, tc.want, h.tabbedWindow.GetActiveTab(), "key %q", tc.key)
 	}
 }
