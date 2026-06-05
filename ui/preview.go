@@ -98,10 +98,13 @@ func (p *PreviewPane) setFallbackState(message string) {
 // those went stale the splash could freeze until restart. Capturing first removes that
 // dependency — the moment the pane yields content, the splash is gone on the next tick.
 func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
-	// The scroll snapshot belongs to one instance; rendering any other (or none)
-	// exits scroll mode so the live view resumes immediately. Without this, the
-	// snapshot pinned across selection changes until restart.
-	if p.isScrolling && instance != p.scrollInstance {
+	// The scroll snapshot belongs to one live instance; rendering any other (or
+	// none), or the owner once paused, exits scroll mode so the live view (or the
+	// right fallback) resumes immediately. Without the identity check the snapshot
+	// pinned across selection changes until restart; without the pause check, scroll
+	// mode survived a pause/resume and the early-return below kept the stale
+	// "Session is paused" fallback on screen after resuming.
+	if p.isScrolling && (instance != p.scrollInstance || instance.Paused()) {
 		p.exitScrollMode()
 	}
 	switch {
@@ -343,11 +346,14 @@ func (p *PreviewPane) ResetToNormalMode(instance *session.Instance) error {
 		return nil
 	}
 
-	// Immediately update content instead of waiting for next UpdateContent call
+	// Immediately update content instead of waiting for next UpdateContent call.
+	// Replace the whole state (not just text): a leftover fallback=true would render
+	// the live capture through the centered-fallback layout for a tick. Sanitize for
+	// the same reason UpdateContent does — captured width must match rendered width.
 	content, err := instance.Preview()
 	if err != nil {
 		return err
 	}
-	p.previewState.text = content
+	p.previewState = previewState{fallback: false, text: theme.SanitizeWidth(content)}
 	return nil
 }

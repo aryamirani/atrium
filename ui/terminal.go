@@ -47,6 +47,9 @@ type TerminalPane struct {
 	// not started), so a frozen capture can never pin across selection changes —
 	// the terminal-pane twin of the stuck-preview bug. This matters doubly here
 	// because String() renders the scroll viewport before the fallbacks.
+	// Keyed by title (not pointer, as PreviewPane does) to match the sessions map:
+	// Title is immutable for an instance's lifetime, so the key cannot drift while
+	// the snapshot is up.
 	scrollTitle string
 	viewport    viewport.Model
 }

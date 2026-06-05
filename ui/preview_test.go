@@ -570,6 +570,39 @@ func TestPreviewScrollExitNeverRefuses(t *testing.T) {
 	require.False(t, pane.isScrolling, "exiting scroll mode must work with no selection")
 }
 
+// TestPreviewScrollSnapshotDropsWhenInstancePauses is the preview twin of the terminal
+// pause test, via a different render ranking: String() draws the fallback before the
+// scroll viewport, so the paused message displaces the snapshot — but if scroll mode
+// survives the pause, UpdateContent keeps early-returning after resume and the stale
+// "Session is paused" fallback pins on a running session. Pausing must exit scroll
+// mode so resuming returns to the live view.
+func TestPreviewScrollSnapshotDropsWhenInstancePauses(t *testing.T) {
+	content := "agent scrollback"
+	setup := setupTestEnvironment(t, liveContentCmdExec(&content))
+	defer setup.cleanupFn()
+
+	pane := NewPreviewPane()
+	pane.SetSize(80, 30)
+
+	require.NoError(t, pane.UpdateContent(setup.instance))
+	require.NoError(t, pane.ScrollUp(setup.instance))
+	require.True(t, pane.isScrolling)
+
+	// Pausing the displayed instance must drop the snapshot, not just hide it.
+	setup.instance.SetStatus(session.Paused)
+	require.NoError(t, pane.UpdateContent(setup.instance))
+	require.False(t, pane.isScrolling, "pausing the displayed instance must exit scroll mode")
+	require.Contains(t, pane.String(), "paused", "the paused fallback must be shown")
+
+	// The latch this guards against: after resume, the live view must return —
+	// not the stale paused fallback.
+	setup.instance.SetStatus(session.Running)
+	require.NoError(t, pane.UpdateContent(setup.instance))
+	rendered := pane.String()
+	require.Contains(t, rendered, content, "resuming must restore the live view")
+	require.NotContains(t, rendered, "paused", "the paused fallback must not pin after resume")
+}
+
 // TestPreviewKeepsContentOnTransientCaptureError verifies a capture error never freezes a
 // stale fallback or blanks the pane: the last good content is retained and the error is
 // surfaced (not swallowed).
