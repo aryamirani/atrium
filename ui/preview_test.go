@@ -480,6 +480,96 @@ func TestPreviewSplashClearsOnceContentArrives(t *testing.T) {
 	require.Contains(t, pane.String(), "agent is working")
 }
 
+// liveContentCmdExec returns a MockCmdExec that serves *content for every
+// capture-pane call, with the usual has-session/new-session lifecycle handling.
+// content is a pointer so tests can vary the served content between ticks.
+func liveContentCmdExec(content *string) cmd_test.MockCmdExec {
+	sessionCreated := false
+	return cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			cmdStr := cmd.String()
+			if strings.Contains(cmdStr, "has-session") {
+				if sessionCreated {
+					return nil
+				}
+				return fmt.Errorf("session does not exist")
+			}
+			if strings.Contains(cmdStr, "new-session") {
+				sessionCreated = true
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			if strings.Contains(cmd.String(), "capture-pane") {
+				return []byte(*content), nil
+			}
+			return []byte(""), nil
+		},
+	}
+}
+
+// TestPreviewScrollSnapshotUnpinsOnInstanceSwitch reproduces the stuck-preview bug:
+// entering scroll mode froze an instance-agnostic snapshot, and because nothing exited
+// scroll mode on selection change, every session rendered the same stale capture until
+// the app was restarted. Switching the displayed instance must drop the snapshot and
+// resume the live view.
+func TestPreviewScrollSnapshotUnpinsOnInstanceSwitch(t *testing.T) {
+	contentA := "agent A scrollback"
+	contentB := "agent B live output"
+
+	setupA := setupTestEnvironment(t, liveContentCmdExec(&contentA))
+	defer setupA.cleanupFn()
+	setupB := setupTestEnvironment(t, liveContentCmdExec(&contentB))
+	defer setupB.cleanupFn()
+
+	pane := NewPreviewPane()
+	pane.SetSize(80, 30)
+
+	// Show A live, then enter scroll mode (snapshot of A's full history).
+	require.NoError(t, pane.UpdateContent(setupA.instance))
+	require.NoError(t, pane.ScrollUp(setupA.instance))
+	require.True(t, pane.isScrolling, "ScrollUp must enter scroll mode")
+	require.Contains(t, pane.String(), contentA)
+
+	// Selecting another session must exit the snapshot and show B's live pane —
+	// this is the exact "preview stuck on the same state for all sessions" symptom.
+	require.NoError(t, pane.UpdateContent(setupB.instance))
+	require.False(t, pane.isScrolling, "switching instances must exit scroll mode")
+	rendered := pane.String()
+	require.Contains(t, rendered, contentB, "the newly selected session's live pane must be shown")
+	require.NotContains(t, rendered, contentA, "the old session's snapshot must not pin")
+}
+
+// TestPreviewScrollExitNeverRefuses guards the ESC dead end: ResetToNormalMode used to
+// no-op for a nil or paused instance, leaving isScrolling latched with no exit besides
+// restarting the app. Exiting scroll mode must succeed regardless of instance state;
+// only the immediate live re-capture is conditional on a usable instance.
+func TestPreviewScrollExitNeverRefuses(t *testing.T) {
+	content := "agent output"
+	setup := setupTestEnvironment(t, liveContentCmdExec(&content))
+	defer setup.cleanupFn()
+
+	pane := NewPreviewPane()
+	pane.SetSize(80, 30)
+
+	// Enter scroll mode, then pause the session while the snapshot is up.
+	require.NoError(t, pane.UpdateContent(setup.instance))
+	require.NoError(t, pane.ScrollUp(setup.instance))
+	require.True(t, pane.isScrolling)
+	setup.instance.SetStatus(session.Paused)
+
+	// ESC on a paused selection must still leave scroll mode.
+	require.NoError(t, pane.ResetToNormalMode(setup.instance))
+	require.False(t, pane.isScrolling, "exiting scroll mode must work for a paused instance")
+
+	// Same for a nil selection (e.g. the last session was killed while scrolling).
+	setup.instance.SetStatus(session.Running)
+	require.NoError(t, pane.ScrollUp(setup.instance))
+	require.True(t, pane.isScrolling)
+	require.NoError(t, pane.ResetToNormalMode(nil))
+	require.False(t, pane.isScrolling, "exiting scroll mode must work with no selection")
+}
+
 // TestPreviewKeepsContentOnTransientCaptureError verifies a capture error never freezes a
 // stale fallback or blanks the pane: the last good content is retained and the error is
 // surfaced (not swallowed).
