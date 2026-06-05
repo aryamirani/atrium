@@ -35,11 +35,17 @@ func logPreviewFallback(instance *session.Instance, reason string, err error) {
 // previewPaneStyle reads the active theme at render time.
 func previewPaneStyle() lipgloss.Style { return theme.Current().FgStyle() }
 
-// scrollExitFooter is the dim hint shown at the bottom of the scroll viewport.
-// "snapshot" is the important word: entering scroll mode freezes a capture of
-// the pane, so new agent output is invisible until the user leaves.
-func scrollExitFooter() string {
-	return theme.Current().DimStyle().Render("— snapshot · ESC to resume live view")
+// scrollExitFooter is the dim hint shown at the bottom of the scroll viewport,
+// labeled by where the frozen content came from. "snapshot"/"transcript" is
+// the important word: entering scroll mode freezes the content, so new agent
+// output is invisible until the user leaves — and a transcript is the agent's
+// conversation log, not the pane, so it should say so.
+func scrollExitFooter(source session.ScrollbackSource) string {
+	label := "snapshot"
+	if source == session.ScrollbackTranscript {
+		label = "transcript"
+	}
+	return theme.Current().DimStyle().Render("— " + label + " · ESC to resume live view")
 }
 
 // PreviewPane renders the selected instance's captured tmux pane content, with
@@ -134,13 +140,10 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 	// Scroll mode: capture full scrollback into the viewport once.
 	if p.isScrolling {
 		if p.viewport.Height > 0 && len(p.viewport.View()) == 0 {
-			content, err := instance.PreviewFullHistory()
-			if err != nil {
+			if err := p.fillScrollViewport(instance); err != nil {
 				logPreviewFallback(instance, "scroll capture error", err)
 				return err
 			}
-			content = theme.SanitizeWidth(content)
-			p.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, content, scrollExitFooter()))
 		}
 		return nil
 	}
@@ -260,17 +263,11 @@ func (p *PreviewPane) ScrollUp(instance *session.Instance) error {
 	}
 
 	if !p.isScrolling {
-		// Entering scroll mode - capture entire pane content including scrollback history
-		content, err := instance.PreviewFullHistory()
-		if err != nil {
+		// Entering scroll mode - freeze the best available scrollback (the
+		// agent's transcript when supported, else the full tmux history).
+		if err := p.fillScrollViewport(instance); err != nil {
 			return err
 		}
-
-		// Set content in the viewport
-		footer := scrollExitFooter()
-
-		contentWithFooter := lipgloss.JoinVertical(lipgloss.Left, content, footer)
-		p.viewport.SetContent(contentWithFooter)
 
 		// Position the viewport at the bottom initially
 		p.viewport.GotoBottom()
@@ -301,6 +298,52 @@ func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
 		return p.ResetToNormalMode(instance)
 	}
 	p.viewport.LineDown(1)
+	return nil
+}
+
+// transcriptPaneDivider is the dim rule separating rendered transcript history
+// from the frozen capture of the current screen below it.
+func transcriptPaneDivider(width int) string {
+	const label = "── current screen "
+	rule := label
+	if pad := width - lipgloss.Width(label); pad > 0 {
+		rule += strings.Repeat("─", pad)
+	}
+	return theme.Current().DimStyle().Render(rule)
+}
+
+// fillScrollViewport loads the instance's scrollback into the viewport with
+// the source-labeled exit footer. Both scroll-mode fill paths (ScrollUp entry
+// and UpdateContent's lazy refill) go through here so they can never disagree
+// on source, sanitization, or footer.
+//
+// A transcript snapshot is anchored on a frozen capture of the current screen:
+// the transcript's rendered tail lags the pane (the in-progress turn is not in
+// the JSONL yet, and Lean rendering skips thinking/tool output), so entering
+// at the bare transcript bottom visibly "jumped" to older content. With the
+// screen capture at the bottom, entry is seamless — the snapshot's tail is
+// exactly what the live view showed — and history continues above the divider.
+// The last completed message can appear twice (pane-rendered below the
+// divider, transcript-rendered above); that redundancy is the price of the
+// seamless anchor.
+func (p *PreviewPane) fillScrollViewport(instance *session.Instance) error {
+	content, source, err := instance.ScrollbackContent(p.width)
+	if err != nil {
+		return err
+	}
+	if source == session.ScrollbackTranscript {
+		if pane, perr := instance.Preview(); perr == nil && strings.TrimSpace(pane) != "" {
+			content = lipgloss.JoinVertical(lipgloss.Left,
+				content,
+				transcriptPaneDivider(p.width),
+				strings.TrimRight(pane, "\n"),
+			)
+		}
+	}
+	// Untrusted agent output: decompose font-dependent emoji clusters so the
+	// laid-out width matches what the terminal renders (see theme.SanitizeWidth).
+	content = theme.SanitizeWidth(content)
+	p.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, content, scrollExitFooter(source)))
 	return nil
 }
 
