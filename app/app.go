@@ -179,8 +179,13 @@ type home struct {
 	menu *ui.Menu
 	// tabbedWindow displays the tabbed window with preview and diff panes
 	tabbedWindow *ui.TabbedWindow
-	// errBox displays error messages
+	// errBox displays error messages when the hint bar isn't there to carry them
+	// (hint_bar off, or an overlay state hides the bar).
 	errBox *ui.ErrBox
+	// noticeGen stamps the most recent transient toast (menu notice or error
+	// box); hideErrMsg carries the stamp so a stale timer can't clear a newer
+	// toast early.
+	noticeGen int
 	// global spinner instance. we plumb this down to where it's needed
 	spinner spinner.Model
 	// textInputOverlay handles text input with state
@@ -454,8 +459,13 @@ func (m *home) Init() tea.Cmd {
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case hideErrMsg:
-		m.errBox.Clear()
-		m.recomputeLayout() // reclaim the error row; panes grow back by one
+		if msg.gen == m.noticeGen {
+			if m.menu != nil {
+				m.menu.ClearNotice()
+			}
+			m.errBox.Clear()
+			m.recomputeLayout() // reclaim the error row; panes grow back by one
+		}
 	case previewTickMsg:
 		m.markSeenAfterDwell(time.Now())
 		cmd := m.instanceChanged()
@@ -1023,14 +1033,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	name, ok := keys.GlobalKeyStringsMap[msg.String()]
 	if !ok {
-		if msg.String() != "ctrl+q" {
-			return m, nil
-		}
-		// ctrl+q mirrors the in-session detach key (session/tmux/tmux.go): on the
-		// list it re-attaches the selected session, making ctrl+q a symmetric
-		// attach/detach toggle. This path is reached only in stateDefault (every
-		// other state returns above), so it never confirms a dialog or name field.
-		name = keys.KeyEnter
+		return m, nil
 	}
 
 	switch name {
@@ -1050,28 +1053,37 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.openCreateForm(true)
 	case keys.KeyQuickSend:
 		// Open a compose box to fire an ad-hoc message at the selected running session
-		// without attaching. Only meaningful when the agent is up and accepting input, so
-		// this is a no-op for an empty/loading/paused selection.
+		// without attaching. Only meaningful when the agent is up and accepting input;
+		// other states explain the guard instead of silently swallowing the key.
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || !selected.Started() || selected.Paused() || selected.GetStatus() == session.Loading {
+		if selected == nil {
 			return m, nil
+		}
+		if selected.Paused() {
+			return m, m.handleInfoNotice("session is paused — press r to resume before sending")
+		}
+		if !selected.Started() || selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
 		}
 		m.state = statePrompt
 		m.textInputOverlay = overlay.NewQuickSendOverlay("Send to " + selected.DisplayName())
 		return m, tea.WindowSize()
 	case keys.KeyCopyBranch:
 		// Yank the selected session's branch name to the system clipboard for handoff
-		// to a PR, a teammate, or a git command. No-op when nothing is selected or the
-		// branch is not yet known; a clipboard failure is a host-env issue, so it is
-		// logged rather than surfaced as a TUI error.
+		// to a PR, a teammate, or a git command. Both outcomes are acknowledged on the
+		// hint row: without a toast, success and failure were indistinguishable from
+		// the keyboard.
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Branch == "" {
+		if selected == nil {
 			return m, nil
 		}
-		if err := copyToClipboard(selected.Branch); err != nil {
-			log.ErrorLog.Printf("copy branch: %v", err)
+		if selected.Branch == "" {
+			return m, m.handleInfoNotice("no branch to copy yet")
 		}
-		return m, nil
+		if err := copyToClipboard(selected.Branch); err != nil {
+			return m, m.handleError(fmt.Errorf("copy branch: %w", err))
+		}
+		return m, m.handleInfoNotice(fmt.Sprintf("branch '%s' copied", selected.Branch))
 	case keys.KeyUp:
 		m.list.Up()
 		return m, m.instanceChanged()
@@ -1115,8 +1127,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.instanceChanged()
 	case keys.KeyRename:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.GetStatus() == session.Loading {
+		if selected == nil {
 			return m, nil
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
 		}
 		m.renameTarget = selected
 		m.renameOverlay = overlay.NewRenameOverlay(selected.DisplayName())
@@ -1124,8 +1139,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case keys.KeyAutoName:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.GetStatus() == session.Loading || m.generatingName {
+		if selected == nil {
 			return m, nil
+		}
+		if m.generatingName {
+			return m, m.handleInfoNotice("already generating a name")
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
 		}
 		// The model call (and the full diff it needs) happen in the background Cmd so
 		// the UI stays responsive; only the instance and prompt are captured here.
@@ -1135,8 +1156,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, runAutoNameCmd(m.ctx, selected, selected.Prompt)
 	case keys.KeySubmit:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.GetStatus() == session.Loading {
+		if selected == nil {
 			return m, nil
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
 		}
 		// A direct (non-git) session has nothing to push. Fail fast rather than prompting
 		// for confirmation and only then erroring. (The menu also hides this action.)
@@ -1161,10 +1185,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// Show confirmation modal
 		message := fmt.Sprintf("Push changes from session '%s'?", selected.DisplayName())
 		return m, m.confirmAction(message, pushAction)
-	case keys.KeyCheckout:
+	case keys.KeyPause:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.GetStatus() == session.Loading {
+		if selected == nil {
 			return m, nil
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
 		}
 
 		// A direct (non-git) session has no worktree to free and runs in the user's
@@ -1174,8 +1201,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(fmt.Errorf("pause is not available for a direct (non-git) session; it runs in place with no worktree to free"))
 		}
 
-		// Checkout: commit changes and pause. The branch name is copied to the
-		// clipboard inside Pause(); the always-on hint bar carries the reminder.
+		// Pause: commit changes and free the worktree. The branch name is copied to
+		// the clipboard inside Pause(); the always-on hint bar carries the reminder.
 		if err := selected.Pause(); err != nil {
 			return m, m.handleError(err)
 		}
@@ -1239,17 +1266,36 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case keys.KeyResume:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.GetStatus() == session.Loading {
+		if selected == nil {
 			return m, nil
 		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
+		}
+		if !selected.Paused() {
+			return m, m.handleInfoNotice("session is already running — only paused sessions resume")
+		}
 		return m, m.resumeSelected(selected)
-	case keys.KeyEnter:
+	case keys.KeyEnter, keys.KeyAttachToggle:
+		// KeyAttachToggle (ctrl+q) mirrors the in-session detach key
+		// (session/tmux/tmux.go): on the list it attaches the selected session,
+		// making ctrl+q a symmetric attach/detach toggle. It funnels through the
+		// same guards as enter.
 		if m.list.NumInstances() == 0 {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.GetStatus() == session.Loading || !selected.TmuxAlive() {
+		if selected == nil {
 			return m, nil
+		}
+		if selected.Paused() {
+			return m, m.handleInfoNotice("session is paused — press r to resume")
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
+		}
+		if !selected.TmuxAlive() {
+			return m, m.handleInfoNotice("session has no live terminal — resume it or kill it")
 		}
 		// Attach to the session (or its terminal tab) via tea.Exec, which hands the
 		// terminal to tmux and repaints on detach; the hint bar carries the ctrl-q
@@ -1442,8 +1488,12 @@ func (m *home) markSeenAfterDwell(now time.Time) {
 	sel.MarkSeen()
 }
 
-// hideErrMsg implements tea.Msg and clears the error text from the screen.
-type hideErrMsg struct{}
+// hideErrMsg implements tea.Msg and clears the transient toast (menu notice or
+// error box). gen identifies which toast the timer belongs to: a stale timer's
+// message must not clear a newer toast.
+type hideErrMsg struct {
+	gen int
+}
 
 // previewTickMsg implements tea.Msg and triggers a preview update
 type previewTickMsg struct{}
@@ -1840,11 +1890,13 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 // errToastDuration is how long the transient error box stays before auto-hiding.
 const errToastDuration = 5 * time.Second
 
-// handleError surfaces an error in the UI. Short, single-line errors get the
-// transient bottom toast (auto-hidden after errToastDuration). An error that the
-// toast cannot actually convey — multi-line, or wider than the error box can
-// show (e.g. a failed push's git output) — is routed to the persistent info
-// modal instead, but only from stateDefault: in any overlay state (e.g. a form
+// handleError surfaces an error in the UI. Short, single-line errors get a
+// transient toast (auto-hidden after errToastDuration): when the always-on hint
+// bar is up, the toast rides the bar's reserved row so the layout never shifts;
+// otherwise it falls back to the error box's own row. An error that a one-line
+// toast cannot actually convey — multi-line, or wider than the row can show
+// (e.g. a failed push's git output) — is routed to the persistent info modal
+// instead, but only from stateDefault: in any overlay state (e.g. a form
 // validation error) switching to stateInfo would clobber the open overlay, so
 // those always use the toast.
 func (m *home) handleError(err error) tea.Cmd {
@@ -1852,15 +1904,40 @@ func (m *home) handleError(err error) tea.Cmd {
 		return m.showInfo(err.Error()) // showInfo logs the message itself
 	}
 	log.ErrorLog.Printf("%v", err)
-	m.errBox.SetError(err)
-	m.recomputeLayout() // give the error its row; panes shrink by one
+	if m.menuVisible() && m.menu != nil {
+		m.menu.SetNotice(err.Error(), ui.NoticeError)
+	} else {
+		m.errBox.SetError(err)
+		m.recomputeLayout() // give the error its row; panes shrink by one
+	}
+	return m.scheduleNoticeHide()
+}
+
+// handleInfoNotice flashes a neutral acknowledgment ("branch copied") on the
+// hint bar's reserved row. Unlike errors, info is chrome: when the user runs
+// without the hint bar there is no reserved row to ride, so the notice is
+// dropped rather than claiming one.
+func (m *home) handleInfoNotice(text string) tea.Cmd {
+	if !m.menuVisible() || m.menu == nil {
+		return nil
+	}
+	m.menu.SetNotice(text, ui.NoticeInfo)
+	return m.scheduleNoticeHide()
+}
+
+// scheduleNoticeHide stamps the just-shown toast with a fresh generation and
+// returns the command that clears it after errToastDuration. The generation
+// keeps an older toast's timer from clearing a newer toast early.
+func (m *home) scheduleNoticeHide() tea.Cmd {
+	m.noticeGen++
+	gen := m.noticeGen
 	return func() tea.Msg {
 		select {
 		case <-m.ctx.Done():
 		case <-time.After(errToastDuration):
 		}
 
-		return hideErrMsg{}
+		return hideErrMsg{gen: gen}
 	}
 }
 
