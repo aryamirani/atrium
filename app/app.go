@@ -347,6 +347,11 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		// its rows to fit short terminals.
 		m.settingsOverlay.SetSize(msg.Width, msg.Height)
 	}
+	if m.confirmationOverlay != nil {
+		// The dialog keeps its classic width on normal terminals and shrinks with
+		// narrow ones; it was the one overlay excluded from resize handling.
+		m.confirmationOverlay.SetWidth(confirmWidth(msg.Width))
+	}
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
@@ -2275,6 +2280,18 @@ func (m *home) confirmKill(inst *session.Instance) tea.Cmd {
 	return cmd
 }
 
+// confirmWidth is the confirmation dialog's width for the given terminal
+// width: the classic 50 columns when they fit, shrinking with the terminal
+// (border + a margin) on narrow ones so the box never spills off-screen. A
+// zero terminal width (startup, tests) keeps the default.
+func confirmWidth(termWidth int) int {
+	const preferred = 50
+	if termWidth <= 0 {
+		return preferred
+	}
+	return max(20, min(preferred, termWidth-4))
+}
+
 // confirmAction shows a confirmation modal and stores the action to execute on
 // confirm. The action is run (and its result dispatched) by the stateConfirm key
 // handler, not here, so its returned message — including any error — flows through
@@ -2285,8 +2302,7 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 
 	// Create and show the confirmation overlay using ConfirmationOverlay
 	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
-	// Set a fixed width for consistent appearance
-	m.confirmationOverlay.SetWidth(50)
+	m.confirmationOverlay.SetWidth(confirmWidth(m.windowWidth))
 
 	return nil
 }
@@ -2319,27 +2335,27 @@ func (m *home) View() string {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
 		}
-		return overlay.PlaceOverlay(0, 0, m.textInputOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlay(0, 0, m.textInputOverlay.Render(), mainView, true)
 	} else if m.state == stateHelp || m.state == stateInfo {
 		if m.textOverlay == nil {
 			log.ErrorLog.Printf("text overlay is nil")
 		}
-		return overlay.PlaceOverlay(0, 0, m.textOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlay(0, 0, m.textOverlay.Render(), mainView, true)
 	} else if m.state == stateConfirm {
 		if m.confirmationOverlay == nil {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
-		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true)
 	} else if m.state == stateRename {
 		if m.renameOverlay == nil {
 			log.ErrorLog.Printf("rename overlay is nil")
 		}
-		return overlay.PlaceOverlay(0, 0, m.renameOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlay(0, 0, m.renameOverlay.Render(), mainView, true)
 	} else if m.state == stateSettings {
 		if m.settingsOverlay == nil {
 			log.ErrorLog.Printf("settings overlay is nil")
 		}
-		return overlay.PlaceOverlay(0, 0, m.settingsOverlay.Render(), mainView, true, true)
+		return overlay.PlaceOverlay(0, 0, m.settingsOverlay.Render(), mainView, true)
 	}
 
 	return mainView
