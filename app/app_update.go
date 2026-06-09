@@ -10,12 +10,17 @@ import (
 	"github.com/ZviBaratz/atrium/keys"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/git"
 	"github.com/ZviBaratz/atrium/ui"
 	"github.com/ZviBaratz/atrium/ui/overlay"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// prMergedMsg is returned by a confirmed merge action to report success back
+// through the runtime, carrying the merged PR number for the acknowledgment.
+type prMergedMsg struct{ number int }
 
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -240,6 +245,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case instanceChangedMsg:
 		// Handle instance changed after confirmation action
 		return m, m.instanceChanged()
+	case prMergedMsg:
+		// A confirmed merge succeeded: acknowledge it and refresh so the PR badge
+		// reflects the now-merged state on the next poll.
+		return m, tea.Batch(
+			m.handleInfoNotice(fmt.Sprintf("merged PR #%d", msg.number)),
+			m.instanceChanged(),
+		)
 	case attachFinishedMsg:
 		// A tea.Exec terminal attach returned (the user detached, or it failed to
 		// start). tea.Exec's RestoreTerminal has already repainted the frame; refine
@@ -750,6 +762,47 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// Show confirmation modal
 		message := fmt.Sprintf("Push changes from session '%s'?", selected.DisplayName())
 		return m, m.confirmAction(message, pushAction)
+	case keys.KeyMerge:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
+		}
+		// A direct (non-git) session has no branch and therefore no PR to merge.
+		if selected.IsDirect() {
+			return m, m.handleError(fmt.Errorf("merge is not available for a direct (non-git) session"))
+		}
+		// Decide from the poll-maintained PR snapshot (no I/O) — the same read-model
+		// the list badges use. Never call PRStatus() here: it can block on a network
+		// fetch, and this runs on the UI thread. A nil snapshot (never fetched / no
+		// PR) reads as the zero value, whose MergeBlockedReason is "no open PR".
+		var status git.PRStatus
+		if pr := selected.GetPRStatus(); pr != nil {
+			status = *pr
+		}
+		if reason := status.MergeBlockedReason(); reason != "" {
+			return m, m.handleInfoNotice(reason)
+		}
+		number := status.Number
+		// Defer the worktree lookup and network merge into the confirm action, which
+		// the runtime runs only if the user confirms.
+		mergeAction := func() tea.Msg {
+			worktree, err := selected.GetGitWorktree()
+			if err != nil {
+				return err
+			}
+			if err := worktree.MergePR(); err != nil {
+				return err
+			}
+			return prMergedMsg{number: number}
+		}
+		message := fmt.Sprintf("Merge PR #%d from '%s' (squash)?", number, selected.DisplayName())
+		if status.CI == git.CIPending {
+			message += " CI is still running."
+		}
+		return m, m.confirmAction(message, mergeAction)
 	case keys.KeyPause:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil {

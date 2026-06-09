@@ -170,6 +170,68 @@ func (g *Worktree) invalidatePRCache() {
 	g.prCacheMu.Unlock()
 }
 
+// MergeBlockedReason returns a short human reason the PR cannot be merged, or ""
+// when a merge may be attempted. It blocks only on hard-negative signals; it
+// deliberately does NOT require a review approval (a self-authored PR on a solo
+// repo has Review == ReviewNone and must still be mergeable) and does not block on
+// pending CI or an as-yet-unknown mergeability — gh, honoring branch protection,
+// is the final authority for those and surfaces its own error on a refused merge.
+func (s PRStatus) MergeBlockedReason() string {
+	switch {
+	case !s.HasPR:
+		return "no open PR for this branch — push and open one first"
+	case s.State != "OPEN":
+		return "PR is already " + strings.ToLower(s.State)
+	case s.IsDraft:
+		return "PR is a draft — mark it ready for review first"
+	case s.Mergeable == "CONFLICTING":
+		return "PR has conflicts — resolve them first"
+	case s.Review == ReviewChangesRequested:
+		return "PR has requested changes — address them first"
+	case s.CI == CIFailing:
+		return "CI is failing — fix it before merging"
+	default:
+		return ""
+	}
+}
+
+// mergeArgv builds the `gh pr merge` argument vector for the branch. Squash is the
+// repo convention. Kept pure so the argv is unit-testable without invoking gh.
+func mergeArgv(branch string) []string {
+	return []string{"pr", "merge", branch, "--squash"}
+}
+
+// runGHMerge shells out to `gh pr merge` for the branch. Like runGHPRView it is a
+// package var so tests can swap it out. gh infers owner/repo from the origin
+// remote of dir, so no --repo is needed.
+var runGHMerge = func(ctx context.Context, dir, branch string) error {
+	cmd := exec.CommandContext(ctx, "gh", mergeArgv(branch)...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr merge: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// MergePR squash-merges the session branch's pull request via gh, then invalidates
+// the PR cache so the next poll reflects the MERGED state. It runs gh from the
+// origin repo (always present, even when the session is paused and its worktree
+// removed), which infers the same owner/repo as the worktree would.
+func (g *Worktree) MergePR() error {
+	if err := checkGHCLI(g.baseContext()); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	defer cancel()
+	if err := runGHMerge(ctx, g.repoPath, g.GetBranchName()); err != nil {
+		return err
+	}
+	g.invalidatePRCache()
+	return nil
+}
+
 // runGHPRView shells out to `gh pr view` for the branch and returns its JSON on
 // stdout. It is a package var so tests can swap in canned output without a real
 // gh on PATH. gh infers owner/repo from the worktree's origin remote (like the
