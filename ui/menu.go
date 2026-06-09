@@ -51,9 +51,10 @@ var pausedHintKeys = []keys.KeyName{keys.KeyResume, keys.KeyNew, keys.KeyKill, k
 // its branch — the moment pause/push become the actions that matter.
 var dirtyHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyQuickSend, keys.KeyPause, keys.KeySubmit, keys.KeyKill, keys.KeyHelp}
 
-// mergeableHintKeys surface the merge key for a session whose PR is ready to ship
-// (open, not blocked) — the terminal "this is done" state where merge, not pause/
-// push, is the action that matters.
+// mergeableHintKeys replace the default set for a session whose PR is ready to
+// ship (open, not blocked). Merge is the headline action; push stays for any
+// last-minute fixups before merging, while quick-send and pause drop out — the
+// work is effectively done.
 var mergeableHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyMerge, keys.KeySubmit, keys.KeyKill, keys.KeyHelp}
 
 // emptyHintKeys are the bindings surfaced when no sessions exist yet. The n/N
