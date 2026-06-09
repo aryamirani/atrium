@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
-	"github.com/ZviBaratz/atrium/session/agent"
 	"github.com/ZviBaratz/atrium/ui/theme"
 	"path/filepath"
 	"sort"
@@ -220,6 +219,13 @@ func (l *List) SetShowEmptyHint(show bool) {
 	l.hideEmptyHint = !show
 }
 
+// SetBranchPrefix sets the git-branch prefix stripped from each row's branch
+// label (see InstanceRenderer.branchPrefix). The app passes the configured
+// BranchPrefix so the redundant per-row namespace (e.g. "zvi/") is hidden.
+func (l *List) SetBranchPrefix(prefix string) {
+	l.renderer.branchPrefix = prefix
+}
+
 // SetFilter updates the incremental filter query and clamps the selection to the
 // nearest still-visible item. Pass an empty string to disable filtering.
 func (l *List) SetFilter(query string) {
@@ -286,6 +292,10 @@ func (l *List) NumInstances() int {
 type InstanceRenderer struct {
 	spinner *spinner.Model
 	width   int
+	// branchPrefix is the configured git-branch prefix (e.g. "zvi/"). It is
+	// stripped from each row's branch label — every session shares it, so it is
+	// pure repetition on the version-control line. Empty disables stripping.
+	branchPrefix string
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
@@ -293,6 +303,20 @@ func (r *InstanceRenderer) setWidth(width int) {
 		width = 1
 	}
 	r.width = width
+}
+
+// displayBranch returns the session branch with the configured prefix stripped
+// (see branchPrefix). The prefix is removed only on an exact match, so a branch
+// under a different namespace keeps its meaningful prefix; if stripping would
+// empty the label, the full branch is kept.
+func (r *InstanceRenderer) displayBranch(i *session.Instance) string {
+	branch := i.Branch
+	if r.branchPrefix != "" {
+		if trimmed := strings.TrimPrefix(branch, r.branchPrefix); trimmed != "" {
+			branch = trimmed
+		}
+	}
+	return branch
 }
 
 // fmtAge formats a time.Time as a compact elapsed-time label: "<N>m", "<N>h", or "<N>d".
@@ -314,224 +338,147 @@ func fmtAge(t time.Time) string {
 	}
 }
 
-// stateParts returns the glyph, word, and color describing an instance's status.
-// Running/Loading use the animated spinner frame; the others use theme glyphs.
-func (r *InstanceRenderer) stateParts(i *session.Instance, th *theme.Theme) (glyph, word string, color lipgloss.Color) {
+// stateGlyph returns the glyph and color describing an instance's status, for
+// the leading status gutter. Running/Loading use the animated spinner frame;
+// the others use theme glyphs. The state word is intentionally not returned —
+// the color-coded glyph carries the signal on its own.
+func (r *InstanceRenderer) stateGlyph(i *session.Instance, th *theme.Theme) (glyph string, color lipgloss.Color) {
 	switch i.GetStatus() {
-	case session.Running:
-		return r.spinner.View(), "working", th.Palette.Working
-	case session.Loading:
-		return r.spinner.View(), "starting", th.Palette.Working
+	case session.Running, session.Loading:
+		return r.spinner.View(), th.Palette.Working
 	case session.Ready:
 		// Unread (the agent finished a turn the user hasn't visited) keeps the
 		// bright filled glyph; a seen session dims to the hollow variant. Shape
 		// and color both change so the signal survives colorblindness.
 		if i.Unread() {
-			return th.Glyphs.Ready, "ready", th.Palette.Success
+			return th.Glyphs.Ready, th.Palette.Success
 		}
-		return th.Glyphs.ReadySeen, "ready", th.Palette.SuccessDim
+		return th.Glyphs.ReadySeen, th.Palette.SuccessDim
 	case session.NeedsInput:
-		return th.Glyphs.Waiting, "waiting", th.Palette.Attention
+		return th.Glyphs.Waiting, th.Palette.Attention
 	case session.Paused:
-		return th.Glyphs.Paused, "paused", th.Palette.FgDim
+		return th.Glyphs.Paused, th.Palette.FgDim
 	default:
-		return " ", "", th.Palette.FgDim
+		return " ", th.Palette.FgDim
 	}
 }
 
-// Render draws a session as two lines: an identity/state line (name + a
-// right-aligned state word) and a dim version-control line (branch, ahead/
-// behind/dirty, and a right-aligned diff stat). The selected row carries a left
-// accent bar and a subtle filled background. idx is unused (kept for the List
-// caller's signature).
+// Render draws a session as two lines. Line 1 is identity: a leading status
+// gutter (color-coded glyph — no word) and the name, with the account and AUTO
+// badges and the agent icon right-aligned — the agent icon pinned to the far
+// edge so it forms a fixed column mirroring the status gutter. Line 2 (dim) is
+// version control: behind/ahead/dirty + PR on the left and the diff stat on the
+// right, "·"-separated. The branch leads line 2 only when a label-only rename has
+// decoupled it from the visible name (else it is a slug echo and is dropped); a
+// fresh session with nothing to show falls back to its age. A direct (non-git)
+// session instead shows a dim marker and its age. The selected row carries a left
+// accent bar and a filled background. idx is unused (kept for the caller's signature).
 func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) string {
 	_ = idx
 	th := theme.Current()
 	g := th.Glyphs
-
-	// The selected row carries a subtle filled background. Because an ANSI reset
-	// at the end of any styled segment also clears the background, the row bg must
-	// be baked into every segment (and gap) rather than wrapped around the line —
-	// otherwise the fill drops out after the first reset. seg/pad do that; for an
-	// unselected row bg is NoColor, so they're plain.
-	var bg lipgloss.TerminalColor = lipgloss.NoColor{}
-	if selected {
-		bg = th.Palette.BgElevated
-	}
-	seg := func(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c).Background(bg) }
-	pad := func(n int) string {
-		if n < 0 {
-			n = 0
-		}
-		return lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", n))
-	}
+	p := newRowPaint(th, selected)
 
 	// One column is reserved for the left marker/pad; build content to W.
 	W := r.width - 1
 	if W < 1 {
 		W = 1
 	}
+	space := p.seg(" ", th.Palette.FgDim)
 
-	// --- Line 1: agent icon + name (left) · state word (right) ---
-	// The icon identifies which agent CLI the session runs — the rows are
-	// otherwise indistinguishable in a mixed-agent fleet. One cell + one gap;
-	// the glyphs are width-1 by the theme's agent-glyph invariant.
-	agentIcon, agentColor := th.AgentGlyph(string(agent.Resolve(i.Program).Key))
-	glyph, word, stateColor := r.stateParts(i, th)
-	rightPlain := glyph + " " + word
-	rightStyled := seg(stateColor).Render(glyph) + pad(1) + seg(stateColor).Render(word)
+	// --- Line 1: gutter + name (left) · account + AUTO + agent icon (right) ---
+	left1 := []rowSeg{r.gutterSeg(p, i), space, p.nameSeg(i, selected)}
 
-	// Per-session AUTO badge (not while paused) so "yolo" state is unmistakable.
-	if i.AutoYes && !i.Paused() {
-		badge := " " + g.AutoBadge + "AUTO "
-		rightPlain = badge + " " + rightPlain
-		rightStyled = th.BadgeStyle().Render(badge) + pad(1) + rightStyled
-	}
-
-	// Per-session Claude account badge: which account the session runs under.
-	// Accent for a routed account, dim for the default/fallback. Prepended after
-	// AUTO so it sits leftmost of the right-hand cluster. Shown only when an
-	// account was resolved (empty = feature off / legacy session).
+	var right1 []rowSeg
+	// Per-session Claude account badge: accent for a routed account, dim for the
+	// default/fallback. Shown only when an account was resolved (empty = feature
+	// off / legacy session).
 	if acct := i.ClaudeAccountName(); acct != "" {
-		badge := " " + acct + " "
 		acctColor := th.Palette.Accent
 		if i.ClaudeAccountIsDefault() {
 			acctColor = th.Palette.FgDim
 		}
-		rightPlain = badge + " " + rightPlain
-		rightStyled = seg(acctColor).Render(badge) + pad(1) + rightStyled
+		right1 = append(right1, p.seg(" "+acct+" ", acctColor))
 	}
-
-	nameColor := th.Palette.Fg
-	if i.GetStatus() == session.NeedsInput {
-		nameColor = th.Palette.Attention // the one state that wants attention
-	}
-	nameStyle := seg(nameColor)
-	if selected {
-		nameStyle = nameStyle.Bold(true)
-	}
-	// A user-set display name can contain emoji clusters (e.g. a ZWJ family
-	// sequence) whose measured width is narrower than what a terminal lacking the
-	// combined glyph actually renders. Sanitize the transient render string so the
-	// width measured here (for the budget/truncation below) matches the rendered
-	// width; otherwise the row overflows and wraps, desyncing bubbletea's
-	// incremental renderer — the same defect SanitizeWidth fixes for pane content.
-	// This is display-only and never mutates the stored display name.
-	name := theme.SanitizeWidth(i.DisplayName())
-	rightW := runewidth.StringWidth(rightPlain)
-	const iconW = 2 // agent icon cell + gap
-	nameAvail := W - rightW - 1 - iconW
-	if nameAvail < 1 {
-		nameAvail = 1
-	}
-	if runewidth.StringWidth(name) > nameAvail {
-		name = runewidth.Truncate(name, nameAvail, "…")
-	}
-	gap1 := W - iconW - runewidth.StringWidth(name) - rightW
-	if gap1 < 1 {
-		gap1 = 1
-	}
-	line1 := seg(agentColor).Render(agentIcon) + pad(1) + nameStyle.Render(name) + pad(gap1) + rightStyled
-
-	// --- Line 2: branch + git context (left) · diff stat (right), dim ---
-	stat := i.GetDiffStats()
-
-	var gctxPlain, gctxStyled string
-	var diffPlain, diffStyled string
-	if stat != nil && stat.Error == nil {
-		if stat.Behind > 0 {
-			s := " " + g.Behind + fmt.Sprintf("%d", stat.Behind)
-			gctxPlain += s
-			gctxStyled += seg(th.Palette.Attention).Render(s) // behind implies a rebase: attention
+	// Per-session AUTO badge (not while paused) so "yolo" state is unmistakable.
+	// The badge carries its own background, so wrap it as a pre-rendered chip.
+	if i.AutoYes && !i.Paused() {
+		if len(right1) > 0 {
+			right1 = append(right1, space)
 		}
-		if stat.Commits > 0 {
-			s := " " + g.Ahead + fmt.Sprintf("%d", stat.Commits)
-			gctxPlain += s
-			gctxStyled += seg(th.Palette.FgDim).Render(s)
-		}
-		if stat.Dirty {
-			s := " " + g.Dirty
-			gctxPlain += s
-			gctxStyled += seg(th.Palette.FgDim).Render(s)
-		}
-		if !stat.IsEmpty() {
-			added := fmt.Sprintf("+%d", stat.Added)
-			removed := fmt.Sprintf("-%d", stat.Removed)
-			diffPlain = added + " " + removed
-			diffStyled = seg(th.Palette.Success).Render(added) + pad(1) + seg(th.Palette.Danger).Render(removed)
-		}
+		badge := " " + g.AutoBadge + "AUTO "
+		right1 = append(right1, rawSeg(badge, th.BadgeStyle().Render(badge)))
 	}
+	// Agent-identity icon (which CLI the session runs), pinned to the far right so
+	// it sits in a fixed column — a right-edge counterpart to the left status
+	// gutter — instead of stacking another glyph at the left edge.
+	if len(right1) > 0 {
+		right1 = append(right1, space)
+	}
+	right1 = append(right1, p.agentSeg(i))
 
-	// PR badge: a compact "<glyph>#<number>" colored by the most urgent signal
-	// (failing CI / changes requested = danger, pending = working, approved =
-	// success, merged = purple). Appended to gctxPlain before the width budget
-	// below so its cells are folded into fixedW and branch truncation stays exact
-	// (the dangling-overflow hazard the line-2 comment warns about).
-	if pr := i.GetPRStatus(); pr != nil && pr.HasPR {
-		s := " " + g.PR + fmt.Sprintf("#%d", pr.Number)
-		gctxPlain += s
-		gctxStyled += seg(prBadgeColor(th, pr)).Render(s)
-	}
+	line1 := p.composeLine(W, left1, right1)
 
-	// Faint session-age label (e.g. "2h", "3d"), right-aligned on line 2 in both
-	// git and direct modes. agePlain carries the leading gap (for width
-	// budgeting); ageStyled renders that gap as a bg-aware pad so the
-	// selected-row fill doesn't drop out.
-	var agePlain, ageStyled string
-	if age := fmtAge(i.CreatedAt); age != "" {
-		agePlain = " " + age
-		ageStyled = pad(1) + seg(th.Palette.FgDim).Render(age)
-	}
+	// Indent line 2 so its content aligns under the name: gutter + space (both
+	// width-1 by theme invariant). The agent icon no longer leads line 1, so the
+	// name — and thus this indent — starts two columns in, not four.
+	indentW := left1[0].width() + left1[1].width()
 
 	var line2 string
 	if i.IsDirect() {
-		// Direct (non-git) session: no branch, ahead/behind, or diff. The git line below
-		// would render a dangling branch glyph with no name, so show a concise dim marker
-		// instead — consistent with the diff pane and picker hint. Pad to W so the
-		// selected-row background fills the line. The age steals budget from the
-		// marker (the only other content on the line) so the row still totals
-		// exactly W.
-		label := "direct · no git isolation"
-		labelBudget := W - runewidth.StringWidth(agePlain)
-		if labelBudget < 1 {
-			// Too narrow for both: keep the marker, drop the age.
-			agePlain, ageStyled = "", ""
-			labelBudget = W
+		// Direct (non-git) session: no branch/ahead/behind/diff. Show a dim marker
+		// (consistent with the diff pane and picker hint) as the flex field, with
+		// the age right-aligned.
+		left2 := []rowSeg{p.flexSeg("direct · no git isolation", th.Palette.FgDim, false)}
+		var right2 []rowSeg
+		if age, ok := p.ageSeg(i); ok {
+			right2 = append(right2, age)
 		}
-		if runewidth.StringWidth(label) > labelBudget {
-			label = runewidth.Truncate(label, labelBudget, "…")
-		}
-		line2 = seg(th.Palette.FgDim).Render(label) +
-			pad(W-runewidth.StringWidth(label)-runewidth.StringWidth(agePlain)) + ageStyled
+		line2 = p.composeLine(W, left2, right2)
 	} else {
-		// Budget the branch (the only variable-length part) so the line fits W;
-		// the age label is appended after the diff stat.
-		fixedW := runewidth.StringWidth(g.Branch+" ") + runewidth.StringWidth(gctxPlain) + runewidth.StringWidth(diffPlain) + runewidth.StringWidth(agePlain)
-		branchBudget := W - fixedW - 1 // 1 = min gap before the diff stat
-		branch := i.Branch
-		branchGlyph := g.Branch + " "
-		if branchBudget < 1 {
-			// Too narrow for any of the name: drop the glyph with it — a dangling
-			// branch glyph followed by nothing reads as a rendering bug (mirrors
-			// the direct-session handling above).
-			branch, branchGlyph = "", ""
-		} else if runewidth.StringWidth(branch) > branchBudget {
-			branch = runewidth.Truncate(branch, branchBudget, "…")
+		stat := i.GetDiffStats()
+		left2 := []rowSeg{p.seg(strings.Repeat(" ", indentW), th.Palette.FgDim)}
+
+		// Line-2 left content is a set of separator-joined groups. The branch is
+		// shown only when a label-only rename has decoupled it from the visible
+		// name (DisplayName != Title): otherwise the branch is just
+		// sanitizeBranchName(Title), a slug echo of the name on line 1, so it
+		// carries no information and is dropped to let the git state lead. The full
+		// branch is still reachable in the preview/diff panes.
+		var groups [][]rowSeg
+		if i.DisplayName() != i.Title {
+			groups = append(groups, []rowSeg{p.flexSeg(r.displayBranch(i), th.Palette.FgDim, false)})
 		}
-		leftPlain := branchGlyph + branch + gctxPlain
-		leftStyled := seg(th.Palette.FgDim).Render(branchGlyph+branch) + gctxStyled
-		rightPlain2 := diffPlain + agePlain
-		gap2 := W - runewidth.StringWidth(leftPlain) - runewidth.StringWidth(rightPlain2)
-		if gap2 < 1 {
-			gap2 = 1
+		if chips := gitChips(p, stat); len(chips) > 0 {
+			groups = append(groups, chips)
 		}
-		line2 = leftStyled + pad(gap2) + diffStyled + ageStyled
+		if seg, ok := prSeg(p, i.GetPRStatus()); ok {
+			groups = append(groups, []rowSeg{seg})
+		}
+		for gi, grp := range groups {
+			if gi > 0 {
+				left2 = append(left2, p.sepSeg())
+			}
+			left2 = append(left2, grp...)
+		}
+
+		// Age is omitted from a populated version-control line (the weakest signal
+		// there), but used as a fallback when line 2 would otherwise be empty — a
+		// fresh, unchanged session with no decoupled branch — so every row keeps two
+		// lines and the would-be-blank one still says something useful.
+		right2 := diffSegs(p, stat)
+		if len(groups) == 0 && len(right2) == 0 {
+			if age, ok := p.ageSeg(i); ok {
+				right2 = append(right2, age)
+			}
+		}
+		line2 = p.composeLine(W, left2, right2)
 	}
 
 	// --- Left marker (accent bar when selected) + compose ---
-	marker := pad(1)
+	marker := p.pad(1)
 	if selected {
-		marker = seg(th.Palette.Accent).Render(g.SelectionMark)
+		marker = p.seg(g.SelectionMark, th.Palette.Accent).render()
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, marker+line1, marker+line2)
 }

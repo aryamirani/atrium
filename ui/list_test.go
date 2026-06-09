@@ -44,49 +44,105 @@ func TestRender_GitContextCluster(t *testing.T) {
 	require.Contains(t, out, "⇡2", "commit count should still render")
 }
 
-// A direct (non-git) session has no branch, so rendering the git line would leave a
-// dangling branch glyph with no name. The row must instead show a dim "direct" marker —
-// consistent with the diff pane, menu, and picker hint.
-func TestRender_DirectSessionShowsMarkerNotBranchGlyph(t *testing.T) {
+// A git session shows its branch name on line 2; a direct (non-git) session
+// shows a dim "direct" marker instead. (The branch glyph was removed in the row
+// redesign — indentation + the branch name carry the meaning.)
+func TestRender_DirectSessionShowsMarkerNotBranch(t *testing.T) {
 	t.Cleanup(theme.Set("unicode"))
 	s := spinner.New()
 	r := &InstanceRenderer{spinner: &s}
 	r.setWidth(80)
-	g := theme.Current().Glyphs
 
+	// The branch shows only when a label-only rename has decoupled it from the
+	// visible name; give this session a distinct label so its branch renders.
 	gitInst, err := session.NewInstance(session.InstanceOptions{Title: "g", Path: ".", Program: "echo"})
 	require.NoError(t, err)
-	require.Contains(t, r.Render(gitInst, 1, false), g.Branch,
-		"a git session row carries the branch glyph")
+	gitInst.Branch = "zvi/feature"
+	gitInst.SetDisplayName("Some Label")
+	require.Contains(t, r.Render(gitInst, 1, false), "zvi/feature",
+		"a label-renamed git session row shows its branch name")
 
 	directInst, err := session.NewInstance(session.InstanceOptions{Title: "d", Path: ".", Program: "echo", Direct: true})
 	require.NoError(t, err)
 	row := r.Render(directInst, 1, false)
 	require.Contains(t, row, "direct", "a direct session row shows the direct marker")
-	require.NotContains(t, row, g.Branch, "a direct session row must not render a dangling branch glyph")
 }
 
-// On a panel too narrow for any of the branch name, the glyph drops with it:
-// a dangling branch glyph followed by nothing reads as a rendering bug (the
-// same rule the direct-session row applies).
-func TestRender_NarrowWidthDropsDanglingBranchGlyph(t *testing.T) {
+// The configured branch prefix is stripped from the rendered branch label (it
+// repeats on every row), but only when it matches exactly — a differently
+// namespaced branch keeps its own meaningful prefix.
+func TestRender_StripsConfiguredBranchPrefix(t *testing.T) {
+	t.Cleanup(theme.Set("unicode"))
+	s := spinner.New()
+	r := &InstanceRenderer{spinner: &s, branchPrefix: "zvi/"}
+	r.setWidth(80)
+
+	// The branch only renders for a label-renamed session, so decouple the label
+	// from the title here.
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	inst.Branch = "zvi/session-row-redesign"
+	inst.SetDisplayName("Row redesign")
+	out := r.Render(inst, 1, false)
+	require.Contains(t, out, "session-row-redesign", "the distinguishing branch part still renders")
+	require.NotContains(t, out, "zvi/", "the configured prefix is stripped from the label")
+
+	// A branch under a different namespace keeps its prefix — only the exact
+	// configured "zvi/" is removed, not any first path segment.
+	other, err := session.NewInstance(session.InstanceOptions{Title: "o", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	other.Branch = "feature/login"
+	other.SetDisplayName("Login work")
+	require.Contains(t, r.Render(other, 1, false), "feature/login",
+		"a non-matching namespace is left intact")
+}
+
+// Age is omitted from a git row's dense version-control line but kept on a
+// direct session's otherwise-sparse line 2.
+func TestRender_GitRowOmitsAgeDirectKeepsIt(t *testing.T) {
 	t.Cleanup(theme.Set("unicode"))
 	s := spinner.New()
 	r := &InstanceRenderer{spinner: &s}
-	r.setWidth(14) // enough for line 1, far too narrow for glyph+branch+stats
-	g := theme.Current().Glyphs
+	r.setWidth(80)
+	twoDaysAgo := time.Now().Add(-48 * time.Hour)
+
+	gitInst, err := session.NewInstance(session.InstanceOptions{Title: "g", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	gitInst.Branch = "feat"
+	gitInst.CreatedAt = twoDaysAgo
+	gitInst.SetDiffStats(&git.DiffStats{Added: 5, Removed: 1, Commits: 1})
+	require.NotContains(t, r.Render(gitInst, 1, false), "2d",
+		"a git row no longer carries the age tail")
+
+	directInst, err := session.NewInstance(session.InstanceOptions{Title: "d", Path: ".", Program: "echo", Direct: true})
+	require.NoError(t, err)
+	directInst.CreatedAt = twoDaysAgo
+	require.Contains(t, r.Render(directInst, 1, false), "2d",
+		"a direct row still shows its age")
+}
+
+// On a panel too narrow for the branch name, the branch flex empties and its
+// trailing separator collapses — the PR chip / git cluster must not be preceded
+// by a dangling "·". (Replaces the old dangling-branch-glyph rule; the glyph no
+// longer exists.)
+func TestRender_NarrowWidthCollapsesBranchSeparator(t *testing.T) {
+	t.Cleanup(theme.Set("unicode"))
+	s := spinner.New()
+	r := &InstanceRenderer{spinner: &s}
+	r.setWidth(16) // wide enough for line 1, too narrow for branch + chips
 
 	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
 	require.NoError(t, err)
 	inst.Branch = "zvi/a-rather-long-branch-name"
-	inst.SetDiffStats(&git.DiffStats{Added: 12, Removed: 3, Commits: 2})
+	inst.SetDisplayName("Renamed") // decouple so the branch flex actually renders
+	inst.SetDiffStats(&git.DiffStats{Added: 1, Removed: 1, Commits: 2})
 
 	row := r.Render(inst, 1, false)
-	if strings.Contains(row, g.Branch) {
-		// If the glyph survives, something of the name must follow it.
-		require.Regexp(t, regexp.QuoteMeta(g.Branch)+` *\S`, row,
-			"a branch glyph must never dangle with nothing after it")
-	}
+	// line 2 is the second line; it must not start its content with a stray middot.
+	lines := strings.Split(row, "\n")
+	require.Len(t, lines, 2)
+	require.NotRegexp(t, `^\s*·`, ansi.Strip(lines[1]),
+		"a separator must never lead line 2 after the branch is squeezed out")
 }
 
 func newTestList(titles ...string) *List {
@@ -218,9 +274,10 @@ func TestRender_SessionAge(t *testing.T) {
 	r := &InstanceRenderer{spinner: &s}
 	r.setWidth(80)
 
-	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
+	// Age renders only on direct (non-git) rows now — a git row drops it from the
+	// dense version-control line — so this format ladder uses a direct session.
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo", Direct: true})
 	require.NoError(t, err)
-	inst.Branch = "feat/x"
 
 	// Match an age token (digits followed by m/h/d at a word boundary) so the
 	// assertion targets the label specifically, not any incidental "m"/"h"/"d"
@@ -341,10 +398,6 @@ func TestRender_SessionAgeBudget(t *testing.T) {
 	const width = 28
 	r.setWidth(width)
 
-	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
-	require.NoError(t, err)
-	inst.Branch = "feature/a-very-long-branch-name-that-overflows"
-
 	lineWidth := func(out string) int {
 		// The row is two lines (identity + version-control); measure the wider.
 		// ansi.StringWidth ignores escape sequences, giving true display width.
@@ -357,15 +410,19 @@ func TestRender_SessionAgeBudget(t *testing.T) {
 		return widest
 	}
 
-	withoutAge := r.Render(inst, 0, false)
-	require.LessOrEqual(t, lineWidth(withoutAge), width, "row must fit width with no age label")
+	// A populated git row (it has a diff) never carries an age label — age was
+	// dropped from the dense version-control line — but must still fit its width.
+	gitInst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	gitInst.SetDisplayName("A long enough label to overflow the row")
+	gitInst.Branch = "feature/a-very-long-branch-name-that-overflows"
+	gitInst.CreatedAt = time.Now().Add(-3 * time.Hour)
+	gitInst.SetDiffStats(&git.DiffStats{Added: 5, Removed: 1, Commits: 1})
+	gitRow := r.Render(gitInst, 0, false)
+	require.NotContains(t, gitRow, "3h", "a populated git row carries no age label")
+	require.LessOrEqual(t, lineWidth(gitRow), width, "git row must fit width")
 
-	inst.CreatedAt = time.Now().Add(-3 * time.Hour)
-	withAge := r.Render(inst, 0, false)
-	require.Contains(t, withAge, "3h", "age label should render")
-	require.LessOrEqual(t, lineWidth(withAge), width, "row must still fit width once the age label is added")
-
-	// Direct (non-git) mode: the fixed marker is the only left-hand content, so
+	// Direct (non-git) mode keeps the age: the fixed marker is the only left-hand content, so
 	// the age steals budget from it instead of a branch. The row must still fit
 	// exactly — including at a width narrower than the marker itself.
 	direct, err := session.NewInstance(session.InstanceOptions{Title: "d", Path: ".", Program: "echo", Direct: true})
