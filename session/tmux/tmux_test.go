@@ -938,3 +938,69 @@ func TestStartDoesNotAppendContinue(t *testing.T) {
 	require.NoError(t, session.Start(t.TempDir()))
 	require.NotContains(t, cmd2.ToString(ptyFactory.cmds[0]), "--continue")
 }
+
+func TestStartSessionInjectsClaudeConfigDir(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	created := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("output"), nil },
+	}
+
+	session := newSession(context.Background(), "acct-session", "claude", ptyFactory, cmdExec)
+	session.SetClaudeConfigDir("/home/tester/.claude-quantivly")
+	require.NoError(t, session.Start(t.TempDir()))
+
+	newSessionCmd := cmd2.ToString(ptyFactory.cmds[0])
+	require.Contains(t, newSessionCmd, "-e CLAUDE_CONFIG_DIR=/home/tester/.claude-quantivly")
+	// The -e flag must precede the program word.
+	require.Less(t, strings.Index(newSessionCmd, "CLAUDE_CONFIG_DIR"),
+		strings.LastIndex(newSessionCmd, "claude"))
+}
+
+func TestStartSessionNoConfigDirNoEnvFlag(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	created := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("output"), nil },
+	}
+
+	session := newSession(context.Background(), "plain-session", "claude", ptyFactory, cmdExec)
+	require.NoError(t, session.Start(t.TempDir()))
+
+	require.NotContains(t, cmd2.ToString(ptyFactory.cmds[0]), "CLAUDE_CONFIG_DIR")
+}
+
+// TestStartSessionConfigDirReachesPane drives a real tmux server on Atrium's
+// dedicated socket and asserts the injected CLAUDE_CONFIG_DIR is actually present
+// in the session environment — the end-to-end proxy for the acceptance criterion
+// (`tmux show-environment` shows the var). Self-skips when tmux is unavailable.
+func TestStartSessionConfigDirReachesPane(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+
+	name := fmt.Sprintf("acctenv-%d", rand.Int31())
+	dir := t.TempDir()
+	session := NewSession(context.Background(), name, "sleep 300")
+	session.SetClaudeConfigDir(dir)
+	require.NoError(t, session.Start(t.TempDir()))
+	t.Cleanup(func() { _ = session.Close() })
+
+	out, err := tmuxCommand(context.Background(), "show-environment", "-t", session.sanitizedName).Output()
+	require.NoError(t, err)
+	require.Contains(t, string(out), "CLAUDE_CONFIG_DIR="+dir)
+}

@@ -6,11 +6,60 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZviBaratz/atrium/config"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var twoAccounts = []config.ClaudeAccount{
+	{Name: "personal", ConfigDir: "~/.claude"},
+	{Name: "quantivly", ConfigDir: "~/.claude-quantivly", RemoteMatches: []string{"quantivly/"}},
+}
+
+// The account picker is a true override: until the user drives it, the form reports
+// no selection (ok=false) so the caller keeps the freshly-resolved auto-route. Only a
+// deliberate keypress flips it to an override that wins.
+func TestSessionCreateOverlay_AccountOverrideOnlyWhenTouched(t *testing.T) {
+	o := NewSessionCreateOverlay(nil, twoAccounts, []string{"/repo/a"})
+
+	_, ok := o.GetSelectedAccount()
+	assert.False(t, ok, "an untouched picker must not override auto-routing")
+
+	// Auto-routed preselection is not a user override.
+	o.PreselectAccount("quantivly")
+	_, ok = o.GetSelectedAccount()
+	assert.False(t, ok, "auto preselect alone must not override")
+
+	// The user drives the picker: now it overrides with the chosen account.
+	o.focusStop(stopAccount)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	acct, ok := o.GetSelectedAccount()
+	require.True(t, ok, "a user choice overrides auto-routing")
+	assert.Equal(t, "quantivly", acct.Name)
+}
+
+// A form with no configured accounts never overrides — the feature is dormant.
+func TestSessionCreateOverlay_NoAccountsNeverOverrides(t *testing.T) {
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
+	_, ok := o.GetSelectedAccount()
+	assert.False(t, ok)
+}
+
+// A single configured account renders no Account section (and adds no chrome): with
+// nothing to choose, the picker would be a dead, unfocusable row. The list badge still
+// conveys the account.
+func TestSessionCreateOverlay_SingleAccountHidesSection(t *testing.T) {
+	one := []config.ClaudeAccount{{Name: "solo", ConfigDir: "~/.claude"}}
+	o := NewSessionCreateOverlay(nil, one, []string{"/repo/a"})
+	o.SetSize(80, 40)
+	assert.NotContains(t, o.Render(), "Account", "a lone account must not render the picker section")
+
+	o2 := NewSessionCreateOverlay(nil, twoAccounts, []string{"/repo/a"})
+	o2.SetSize(80, 40)
+	assert.Contains(t, o2.Render(), "Account", "≥2 accounts render the picker section")
+}
 
 func tab(o *TextInputOverlay)      { o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyTab}) }
 func shiftTab(o *TextInputOverlay) { o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyShiftTab}) }
@@ -63,7 +112,7 @@ func TestQuickSendOverlay_EscCancels(t *testing.T) {
 }
 
 func TestTextInputOverlay_InvalidateBumpsVersion(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	before := o.BranchFilterVersion()
 	after := o.InvalidateBranchSearch()
 	assert.Greater(t, after, before)
@@ -73,7 +122,7 @@ func TestSessionCreateOverlay_FocusStartsOnDirectoryAndCycles(t *testing.T) {
 	// No profiles → stops: [directory, branch, title, textarea, enter]; focus starts on
 	// the project picker, and the base branch follows immediately since it is scoped to
 	// the chosen project.
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a", "/repo/b"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a", "/repo/b"})
 	assert.True(t, o.IsCreateForm())
 	assert.True(t, o.isDirectoryPicker(), "focus should start on the project picker")
 
@@ -94,7 +143,7 @@ func TestSessionCreateOverlay_FocusStartsOnDirectoryAndCycles(t *testing.T) {
 
 // The branch section must render between the project and the title, matching the Tab order.
 func TestSessionCreateOverlay_RendersBranchBetweenProjectAndTitle(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.SetSize(80, 40)
 	out := o.Render()
 
@@ -109,7 +158,7 @@ func TestSessionCreateOverlay_RendersBranchBetweenProjectAndTitle(t *testing.T) 
 }
 
 func TestSessionCreateOverlay_RendersProjectAboveTitle(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.SetSize(80, 24)
 	out := o.Render()
 
@@ -124,7 +173,7 @@ func TestSessionCreateOverlay_TabCompletesDirectoryThenAdvances(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "alpha"), 0o755))
 
-	o := NewSessionCreateOverlay(nil, []string{root})
+	o := NewSessionCreateOverlay(nil, nil, []string{root})
 	assert.True(t, o.isDirectoryPicker())
 
 	// Type a unique path prefix, then Tab — completion happens in place, focus stays.
@@ -139,7 +188,7 @@ func TestSessionCreateOverlay_TabCompletesDirectoryThenAdvances(t *testing.T) {
 }
 
 func TestSessionCreateOverlay_CtrlSSubmitsFromAnyField(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	// Focus starts on the project picker, not the submit button.
 	assert.True(t, o.isDirectoryPicker())
 
@@ -150,7 +199,7 @@ func TestSessionCreateOverlay_CtrlSSubmitsFromAnyField(t *testing.T) {
 }
 
 func TestSessionCreateOverlay_GetTitle(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	// Focus starts on the project picker; Tab past the branch picker to the title,
 	// then runes land there.
 	tab(o)
@@ -166,7 +215,7 @@ func TestSessionCreateOverlay_GetTitle(t *testing.T) {
 // Tab directions: forward from the project lands on the title, and Shift+Tab from the
 // title returns to the project.
 func TestSessionCreateOverlay_TabSkipsDisabledBranch(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/not/a/repo"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/not/a/repo"})
 	o.SetTargetValidity(true, true, "") // valid directory, not a git repo → direct session
 	assert.True(t, o.isDirectoryPicker())
 
@@ -179,7 +228,7 @@ func TestSessionCreateOverlay_TabSkipsDisabledBranch(t *testing.T) {
 // Enter advances past a disabled branch stop too — Enter on the project must not land the
 // user on an inert field.
 func TestSessionCreateOverlay_EnterSkipsDisabledBranch(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/not/a/repo"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/not/a/repo"})
 	o.SetTargetValidity(true, true, "")
 	assert.True(t, o.isDirectoryPicker())
 
@@ -190,7 +239,7 @@ func TestSessionCreateOverlay_EnterSkipsDisabledBranch(t *testing.T) {
 // The quick-create contract: n focuses the title, typing a name and pressing
 // Enter creates the session — no two-hand ⌃S chord on the fast path.
 func TestSessionCreateOverlay_EnterOnFilledTitleSubmits(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.FocusTitle()
 	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("my-task")})
 
@@ -204,7 +253,7 @@ func TestSessionCreateOverlay_EnterOnFilledTitleSubmits(t *testing.T) {
 // Enter on an empty title advances instead of submitting: submitting would only
 // bounce off the title-required validation, so the keystroke moves the user on.
 func TestSessionCreateOverlay_EnterOnEmptyTitleAdvances(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.FocusTitle()
 
 	shouldClose, _ := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
@@ -218,7 +267,7 @@ func TestSessionCreateOverlay_EnterOnEmptyTitleAdvances(t *testing.T) {
 // by design, which is exactly why title-enter (not prompt-enter) is the quick
 // submit.
 func TestSessionCreateOverlay_EnterInPromptInsertsNewline(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.FocusTitle()
 	tab(o) // title → prompt
 	require.True(t, o.isTextarea())
@@ -236,7 +285,7 @@ func TestSessionCreateOverlay_EnterInPromptInsertsNewline(t *testing.T) {
 // check resolving after the user tabbed ahead), focus is pushed to the next enabled stop
 // rather than stranding the user on an inert field.
 func TestSessionCreateOverlay_FocusEvictedWhenBranchDisabled(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/not/a/repo"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/not/a/repo"})
 	tab(o)
 	assert.True(t, o.isBranchPicker())
 
@@ -248,7 +297,7 @@ func TestSessionCreateOverlay_FocusEvictedWhenBranchDisabled(t *testing.T) {
 // flicker the branch section: the last known disabled/enabled state holds until the fresh
 // verdict re-sets it.
 func TestSessionCreateOverlay_ClearValidityKeepsBranchDisabledState(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/not/a/repo"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/not/a/repo"})
 	o.SetTargetValidity(true, true, "")
 	o.ClearTargetValidity()
 
@@ -263,7 +312,7 @@ func TestSessionCreateOverlay_ClearValidityKeepsBranchDisabledState(t *testing.T
 // An invalid target (not a directory at all) disables the branch picker just like a
 // non-git one — there is nothing to list branches in.
 func TestSessionCreateOverlay_InvalidTargetDisablesBranch(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/nonexistent"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/nonexistent"})
 	o.SetTargetValidity(false, false, "")
 
 	tab(o)
@@ -275,7 +324,7 @@ func TestSessionCreateOverlay_InvalidTargetDisablesBranch(t *testing.T) {
 // hard-required input — and drops it once a title is typed. Submit-time validation stays
 // as the backstop.
 func TestSessionCreateOverlay_TitleRequiredMarker(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.SetSize(80, 40)
 	assert.Contains(t, o.Render(), "(required)", "empty title must show the marker")
 
@@ -289,7 +338,7 @@ func TestSessionCreateOverlay_TitleRequiredMarker(t *testing.T) {
 // The whole form must render the same number of lines no matter which field holds focus,
 // so the vertically centered overlay does not jump as the user Tabs between fields.
 func TestSessionCreateOverlay_RenderHeightConstantAcrossFocus(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a", "/repo/b"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a", "/repo/b"})
 	o.SetSize(80, 40)
 
 	o.focusStop(stopDirectory)
@@ -313,7 +362,7 @@ func TestSessionCreateOverlay_RenderHeightConstantAcrossFocus(t *testing.T) {
 // The form must shrink to fit short terminals (it has a fixed-height default that overflows
 // otherwise), and must still render at a constant height regardless of which field is focused.
 func TestSessionCreateOverlay_FitsShortTerminal(t *testing.T) {
-	o := NewSessionCreateOverlay(nil, []string{"/repo/a"})
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"})
 	o.SetBranchResults([]string{"main", "develop", "feature/x"}, o.BranchFilterVersion())
 
 	// The form collapses its picker/prompt rows to fit; at a comfortable-but-short 24 rows it

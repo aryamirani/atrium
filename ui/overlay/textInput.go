@@ -56,6 +56,9 @@ const (
 	// field and its divider, each picker's header/blank/divider, the prompt label and its
 	// divider, the help line, and the Create button. Used to size the form to the terminal.
 	formChromeLines = 18
+	// accountSectionLines is the height the account section adds when present, mirroring
+	// profileSectionLines (label + blank + options row + spacing).
+	accountSectionLines = 4
 	// profileSectionLines is the height the profile section adds when present (label + blank
 	// + the names row + a divider).
 	profileSectionLines = 4
@@ -113,6 +116,7 @@ const (
 	stopTitle focusStop = iota
 	stopDirectory
 	stopProfile
+	stopAccount
 	stopTextarea
 	stopBranch
 	stopEnter
@@ -131,6 +135,7 @@ type TextInputOverlay struct {
 	height          int
 	directoryPicker *DirectoryPicker
 	profilePicker   *ProfilePicker
+	accountPicker   *AccountPicker
 	branchPicker    *BranchPicker
 	stops           []focusStop // ordered focusable stops actually present
 	isCreateForm    bool        // true for the new-session form (has a title field)
@@ -165,7 +170,7 @@ func NewQuickSendOverlay(title string) *TextInputOverlay {
 // flow); the quick flow (`n`) moves it to the title via FocusTitle. Every section renders
 // at a constant height so the centered overlay does not jump as focus moves. dirCandidates
 // is the ordered list of candidate repo paths with the default/contextual target first.
-func NewSessionCreateOverlay(profiles []config.Profile, dirCandidates []string) *TextInputOverlay {
+func NewSessionCreateOverlay(profiles []config.Profile, accounts []config.ClaudeAccount, dirCandidates []string) *TextInputOverlay {
 	ti := newTextarea("")
 	// The prompt is optional and auto-sent to the agent once the session boots, so say so.
 	ti.Placeholder = "Optional — sent to the agent once it starts (Tab to skip)"
@@ -177,13 +182,22 @@ func NewSessionCreateOverlay(profiles []config.Profile, dirCandidates []string) 
 		pp = NewProfilePicker(profiles)
 	}
 
+	var ap *AccountPicker
+	if len(accounts) > 0 {
+		ap = NewAccountPicker(accounts)
+	}
+
 	// Project first (where focus starts), immediately followed by the base branch — the two
 	// form one repo-context unit, since branches are scoped to the chosen project. Then the
 	// title and the prompt — the input that distinguishes this flow from the inline `n` flow
-	// (which jumps straight to the title via FocusTitle) — and finally the optional profile.
+	// (which jumps straight to the title via FocusTitle) — then the optional profile, and
+	// finally the optional Claude-account override.
 	stops := []focusStop{stopDirectory, stopBranch, stopTitle, stopTextarea}
 	if pp != nil && pp.HasMultiple() {
 		stops = append(stops, stopProfile)
+	}
+	if ap != nil && ap.HasMultiple() {
+		stops = append(stops, stopAccount)
 	}
 	stops = append(stops, stopEnter)
 
@@ -193,6 +207,7 @@ func NewSessionCreateOverlay(profiles []config.Profile, dirCandidates []string) 
 		Title:           "New session",
 		directoryPicker: dp,
 		profilePicker:   pp,
+		accountPicker:   ap,
 		branchPicker:    bp,
 		stops:           stops,
 		isCreateForm:    true,
@@ -252,6 +267,9 @@ func (t *TextInputOverlay) SetSize(width, height int) {
 	if t.profilePicker != nil {
 		t.profilePicker.SetWidth(width - 6)
 	}
+	if t.accountPicker != nil {
+		t.accountPicker.SetWidth(width - 6)
+	}
 }
 
 // fitRows chooses the picker-row and prompt-row counts that make the create form fit within
@@ -264,6 +282,9 @@ func (t *TextInputOverlay) fitRows(height int) (pickerRows, promptRows int) {
 	chrome := formChromeLines
 	if t.profilePicker != nil {
 		chrome += profileSectionLines
+	}
+	if t.hasAccountSection() {
+		chrome += accountSectionLines
 	}
 	const margin = 2 // keep a row above and below so the overlay isn't flush to the edges
 	total := func() int { return 2*pickerRows + promptRows + chrome }
@@ -309,9 +330,17 @@ func (t *TextInputOverlay) TitleFocused() bool { return t.isTitle() }
 func (t *TextInputOverlay) isTitle() bool           { return t.currentStop() == stopTitle }
 func (t *TextInputOverlay) isDirectoryPicker() bool { return t.currentStop() == stopDirectory }
 func (t *TextInputOverlay) isProfilePicker() bool   { return t.currentStop() == stopProfile }
+func (t *TextInputOverlay) isAccountPicker() bool   { return t.currentStop() == stopAccount }
 func (t *TextInputOverlay) isTextarea() bool        { return t.currentStop() == stopTextarea }
 func (t *TextInputOverlay) isBranchPicker() bool    { return t.currentStop() == stopBranch }
 func (t *TextInputOverlay) isEnterButton() bool     { return t.currentStop() == stopEnter }
+
+// hasAccountSection reports whether the form shows the Account picker. It requires
+// ≥2 accounts: a lone account offers no choice, so rendering it would be a dead,
+// unfocusable row (and stopAccount is likewise only added when HasMultiple).
+func (t *TextInputOverlay) hasAccountSection() bool {
+	return t.accountPicker != nil && t.accountPicker.HasMultiple()
+}
 
 // indexOfStop returns the FocusIndex of a stop kind, or -1 if absent.
 func (t *TextInputOverlay) indexOfStop(kind focusStop) int {
@@ -391,6 +420,13 @@ func (t *TextInputOverlay) updateFocusState() {
 			t.profilePicker.Focus()
 		} else {
 			t.profilePicker.Blur()
+		}
+	}
+	if t.accountPicker != nil {
+		if t.isAccountPicker() {
+			t.accountPicker.Focus()
+		} else {
+			t.accountPicker.Blur()
 		}
 	}
 }
@@ -487,6 +523,13 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			}
 			return false, false
 		}
+		if t.isAccountPicker() {
+			switch msg.Type {
+			case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown:
+				t.accountPicker.HandleKeyPress(msg)
+			}
+			return false, false
+		}
 		if t.isBranchPicker() {
 			_, filterChanged := t.branchPicker.HandleKeyPress(msg)
 			return false, filterChanged
@@ -572,6 +615,27 @@ func (t *TextInputOverlay) GetSelectedProgram() string {
 		return ""
 	}
 	return t.profilePicker.GetSelectedProfile().Program
+}
+
+// GetSelectedAccount returns the chosen account and true only when the user has
+// deliberately driven the picker, i.e. an override. Otherwise it returns
+// (zero, false) so the caller keeps the freshly-resolved auto-route — whether the
+// form has no picker, or has one the user never touched (its selection is just the
+// auto-routed preselection, which the caller already computes itself).
+func (t *TextInputOverlay) GetSelectedAccount() (config.ClaudeAccount, bool) {
+	if t.accountPicker == nil || !t.accountPicker.Touched() {
+		return config.ClaudeAccount{}, false
+	}
+	return t.accountPicker.GetSelectedAccount(), true
+}
+
+// PreselectAccount points the picker at the auto-routed account name. It is a no-op
+// once the user has taken manual control (see AccountPicker.SelectByName), so the
+// form can re-preselect as the target project changes without clobbering a choice.
+func (t *TextInputOverlay) PreselectAccount(name string) {
+	if t.accountPicker != nil {
+		t.accountPicker.SelectByName(name)
+	}
 }
 
 // BranchFilterVersion returns the current filter version from the branch picker.
@@ -749,6 +813,9 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 	section(tiLabelStyle().Render("Prompt") + "\n" + t.textarea.View())
 	if t.profilePicker != nil {
 		section(t.profilePicker.Render())
+	}
+	if t.hasAccountSection() {
+		section(t.accountPicker.Render())
 	}
 
 	b.WriteString(tiHintStyle().Render(createFormHelp) + "\n")
