@@ -407,6 +407,159 @@ func TestMergeArgv(t *testing.T) {
 	}
 }
 
+func TestCreateBlockedReason(t *testing.T) {
+	tests := []struct {
+		name      string
+		pr        PRStatus
+		wantEmpty bool   // true => create allowed
+		wantHas   string // substring the reason must contain (when blocked)
+	}{
+		{
+			// The branch already has a PR — creation would just collide; the user
+			// wants merge (m) from here, not create.
+			name:    "already has pr",
+			pr:      PRStatus{HasPR: true, Pushed: true, State: "OPEN"},
+			wantHas: "already",
+		},
+		{
+			// Unpushed branch: gh pr create would have no remote head. Require P
+			// first rather than auto-pushing.
+			name:    "not pushed",
+			pr:      PRStatus{HasPR: false, Pushed: false},
+			wantHas: "push",
+		},
+		{
+			// The never-fetched zero value reads as not-pushed — the safe default.
+			name:    "zero value reads as not pushed",
+			pr:      PRStatus{},
+			wantHas: "push",
+		},
+		{
+			// Pushed, no PR yet: the one state where create is the right action.
+			name:      "pushed, no pr => allowed",
+			pr:        PRStatus{HasPR: false, Pushed: true},
+			wantEmpty: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.pr.CreateBlockedReason()
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("CreateBlockedReason() = %q, want empty (create allowed)", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("CreateBlockedReason() = empty, want a reason containing %q", tt.wantHas)
+			}
+			if !strings.Contains(got, tt.wantHas) {
+				t.Errorf("CreateBlockedReason() = %q, want it to contain %q", got, tt.wantHas)
+			}
+		})
+	}
+}
+
+func TestCreateArgv(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		draft  bool
+		want   []string
+	}{
+		{
+			name:   "ready for review omits --draft",
+			branch: "feat/foo",
+			draft:  false,
+			want:   []string{"pr", "create", "--fill", "--head", "feat/foo"},
+		},
+		{
+			name:   "draft appends --draft",
+			branch: "feat/foo",
+			draft:  true,
+			want:   []string{"pr", "create", "--fill", "--head", "feat/foo", "--draft"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := createArgv(tt.branch, tt.draft)
+			if len(got) != len(tt.want) {
+				t.Fatalf("createArgv len = %d, want %d (%v)", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("createArgv[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPRNumberFromURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want int
+	}{
+		{name: "trailing number", url: "https://github.com/o/r/pull/42", want: 42},
+		{name: "trailing newline", url: "https://github.com/o/r/pull/7\n", want: 7},
+		{name: "no number", url: "https://github.com/o/r", want: 0},
+		{name: "empty", url: "", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := prNumberFromURL(tt.url); got != tt.want {
+				t.Errorf("prNumberFromURL(%q) = %d, want %d", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPRStatus_PushedTrueOnSuccess verifies the gating field: a pushed branch
+// whose gh fetch succeeds is marked Pushed, distinguishing it from an unpushed
+// branch even when both could read HasPR=false.
+func TestPRStatus_PushedTrueOnSuccess(t *testing.T) {
+	wt := pushedWorktree(t)
+	restore := stubGHPRView(func(context.Context, string, string) ([]byte, error) {
+		return []byte(`{"number":42,"state":"OPEN"}`), nil
+	})
+	defer restore()
+
+	if got := wt.PRStatus(context.Background(), false); !got.Pushed {
+		t.Errorf("Pushed = false, want true for a pushed branch, got %+v", got)
+	}
+}
+
+// TestPRStatus_PushedTrueOnBenignNoPR verifies the key gating case: a pushed
+// branch with no PR yet must report Pushed=true, HasPR=false — the one state
+// where "create PR" is the right action.
+func TestPRStatus_PushedTrueOnBenignNoPR(t *testing.T) {
+	wt := pushedWorktree(t)
+	restore := stubGHPRView(func(context.Context, string, string) ([]byte, error) {
+		return nil, fmt.Errorf(`gh pr view: no pull requests found for branch "feat": exit status 1`)
+	})
+	defer restore()
+
+	got := wt.PRStatus(context.Background(), false)
+	if got.HasPR {
+		t.Errorf("HasPR = true, want false (no PR yet), got %+v", got)
+	}
+	if !got.Pushed {
+		t.Errorf("Pushed = false, want true (branch is pushed), got %+v", got)
+	}
+}
+
+// TestPRStatus_PushedFalseWhenUnpushed verifies the local pre-gate marks an
+// unpushed branch as not pushed, so create gating can require a push first.
+func TestPRStatus_PushedFalseWhenUnpushed(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := &Worktree{worktreePath: repo, branchName: "feat"} // no refs/remotes/origin/feat
+
+	if got := wt.PRStatus(context.Background(), false); got.Pushed {
+		t.Errorf("Pushed = true, want false for an unpushed branch, got %+v", got)
+	}
+}
+
 // TestPRStatus_PollsGitActualBranch verifies the poll resolves the branch from
 // git's checked-out HEAD, not the stored branchName. This is the repurposed-
 // worktree case: a worktree Atrium created for "stored" but later checked out

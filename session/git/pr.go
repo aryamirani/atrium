@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,7 +58,13 @@ const (
 // branch. The zero value (HasPR=false) is the normal "no PR yet" state and
 // renders nothing — the same silent-degradation contract the diff stats use.
 type PRStatus struct {
-	HasPR     bool
+	HasPR bool
+	// Pushed reports whether the branch has a remote-tracking ref (origin/<branch>).
+	// It disambiguates the two ways HasPR can be false: a never-pushed branch
+	// (Pushed=false) versus a pushed branch with no PR yet (Pushed=true) — the one
+	// state where "create PR" is the right action. Set by PRStatus (a ref fact),
+	// never by parsePRStatus (the pure JSON parser).
+	Pushed    bool
 	Number    int
 	URL       string
 	State     string // "OPEN" / "MERGED" / "CLOSED"
@@ -109,12 +116,15 @@ func (g *Worktree) PRStatus(ctx context.Context, selected bool) PRStatus {
 		return g.storePRStatus(PRStatus{})
 	}
 
+	// Gate 2 passed: the branch is pushed. Every store below carries Pushed=true
+	// so create gating can distinguish "pushed, no PR" from "never pushed".
+
 	// Gate 3: the network call.
 	out, err := runGHPRView(ctx, wt, branch)
 	if err != nil {
 		if isBenignGHError(err) {
 			// No PR / no remote / gh missing: a legitimate, cacheable "nothing".
-			return g.storePRStatus(PRStatus{})
+			return g.storePRStatus(PRStatus{Pushed: true})
 		}
 		// A genuine, possibly-transient failure (timeout, API 5xx): do NOT cache,
 		// so the next eligible tick retries. Return the last good value if any.
@@ -131,6 +141,7 @@ func (g *Worktree) PRStatus(ctx context.Context, selected bool) PRStatus {
 		g.prCacheMu.Unlock()
 		return cached
 	}
+	status.Pushed = true
 	return g.storePRStatus(status)
 }
 
@@ -195,10 +206,40 @@ func (s PRStatus) MergeBlockedReason() string {
 	}
 }
 
+// CreateBlockedReason returns a short human reason a PR cannot be created for the
+// branch, or "" when creation may be attempted. It mirrors MergeBlockedReason: a
+// pure, snapshot-only decision the UI thread can make with no I/O. Creation is
+// right in exactly one state — the branch is pushed and has no PR yet. An
+// existing PR hands off to merge (m); an unpushed branch must be pushed (P) first
+// rather than auto-pushed, keeping create a single-responsibility action.
+func (s PRStatus) CreateBlockedReason() string {
+	switch {
+	case s.HasPR:
+		return "this branch already has a PR — merge it with m"
+	case !s.Pushed:
+		return "branch isn't pushed yet — push it with P first"
+	default:
+		return ""
+	}
+}
+
 // mergeArgv builds the `gh pr merge` argument vector for the branch. Squash is the
 // repo convention. Kept pure so the argv is unit-testable without invoking gh.
 func mergeArgv(branch string) []string {
 	return []string{"pr", "merge", branch, "--squash"}
+}
+
+// createArgv builds the `gh pr create` argument vector for the branch. --fill
+// derives the title and body from the branch's commits (no prompt); --head names
+// the branch explicitly so creation is robust regardless of which worktree HEAD
+// is checked out. --draft is appended when the PR should open as a draft. Kept
+// pure so the argv is unit-testable without invoking gh.
+func createArgv(branch string, draft bool) []string {
+	argv := []string{"pr", "create", "--fill", "--head", branch}
+	if draft {
+		argv = append(argv, "--draft")
+	}
+	return argv
 }
 
 // runGHMerge shells out to `gh pr merge` for the branch. Like runGHPRView it is a
@@ -230,6 +271,58 @@ func (g *Worktree) MergePR() error {
 	}
 	g.invalidatePRCache()
 	return nil
+}
+
+// runGHCreate shells out to `gh pr create` for the branch and returns its stdout
+// (the new PR's URL on success). Like runGHMerge it is a package var so tests can
+// swap it out. gh infers owner/repo from the origin remote of dir, so no --repo
+// is needed.
+var runGHCreate = func(ctx context.Context, dir string, argv []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", argv...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.Bytes(), fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return stdout.Bytes(), nil
+}
+
+// CreatePR opens a pull request for the session branch via gh, then invalidates
+// the PR cache so the next poll reflects the new PR (flipping the badge/hint
+// toward merge). draft selects whether the PR opens as a draft. It returns the
+// new PR's number (0 if gh's output had no parseable number). It runs gh from the
+// worktree, where --fill reliably reads the branch's commits; creation requires
+// an active, pushed session, so the worktree is present.
+func (g *Worktree) CreatePR(draft bool) (int, error) {
+	if err := checkGHCLI(g.baseContext()); err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	defer cancel()
+	out, err := runGHCreate(ctx, g.worktreePath, createArgv(g.GetBranchName(), draft))
+	if err != nil {
+		return 0, err
+	}
+	g.invalidatePRCache()
+	return prNumberFromURL(string(out)), nil
+}
+
+// prNumberFromURL extracts the trailing PR number from a gh-created PR URL
+// (e.g. "https://github.com/o/r/pull/42" => 42), returning 0 when the URL has no
+// numeric tail. Pure, so the success-notice parsing is unit-testable.
+func prNumberFromURL(url string) int {
+	trimmed := strings.TrimRight(strings.TrimSpace(url), "/")
+	idx := strings.LastIndex(trimmed, "/")
+	if idx < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(trimmed[idx+1:])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // runGHPRView shells out to `gh pr view` for the branch and returns its JSON on

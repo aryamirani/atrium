@@ -172,6 +172,12 @@ type Config struct {
 	// explicit [] must survive a save/load cycle instead of being dropped and
 	// reverting to the default.
 	CarryFiles []string `json:"carry_files"`
+	// PRCreateDraft selects whether a PR opened with the create key (c) starts as
+	// a draft. nil means use the default (draft), so configs predating this key
+	// open drafts. Note: a draft PR cannot be merged with m until it is marked
+	// ready for review (on GitHub); set this false for the one-key push→PR→merge
+	// loop entirely in-app.
+	PRCreateDraft *bool `json:"pr_create_draft,omitempty"`
 	// ClaudeAccounts routes sessions to a per-session CLAUDE_CONFIG_DIR (which
 	// Claude Code account a session runs under) by matching the worktree's git
 	// origin remote or, for a non-git/direct session with no remote, its
@@ -225,6 +231,13 @@ func (c *Config) GetHintBar() bool {
 // A nil AutoAttach (e.g. an older config file with no such key) defaults to on.
 func (c *Config) GetAutoAttach() bool {
 	return c.AutoAttach == nil || *c.AutoAttach
+}
+
+// GetPRCreateDraft reports whether PRs opened with the create key (c) start as
+// drafts. A nil PRCreateDraft (e.g. an older config file with no such key) — or a
+// nil Config — defaults to draft.
+func (c *Config) GetPRCreateDraft() bool {
+	return c == nil || c.PRCreateDraft == nil || *c.PRCreateDraft
 }
 
 // GetBranchPrefix returns the configured git-branch prefix (e.g. "zvi/"), or ""

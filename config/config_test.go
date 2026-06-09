@@ -453,6 +453,27 @@ func TestGetKillDoubleTapConfirm(t *testing.T) {
 	})
 }
 
+func TestGetPRCreateDraft(t *testing.T) {
+	t.Run("default config opens drafts", func(t *testing.T) {
+		assert.True(t, DefaultConfig().GetPRCreateDraft())
+	})
+	t.Run("nil field (older config) defaults to draft", func(t *testing.T) {
+		assert.True(t, (&Config{}).GetPRCreateDraft())
+	})
+	t.Run("nil receiver defaults to draft", func(t *testing.T) {
+		var c *Config
+		assert.True(t, c.GetPRCreateDraft())
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		v := true
+		assert.True(t, (&Config{PRCreateDraft: &v}).GetPRCreateDraft())
+	})
+	t.Run("explicit false (ready for review)", func(t *testing.T) {
+		v := false
+		assert.False(t, (&Config{PRCreateDraft: &v}).GetPRCreateDraft())
+	})
+}
+
 func TestGetCarryFiles(t *testing.T) {
 	t.Run("default config seeds claude settings.local.json", func(t *testing.T) {
 		assert.Equal(t, []string{".claude/settings.local.json"}, DefaultConfig().GetCarryFiles())
