@@ -57,6 +57,11 @@ var dirtyHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyQuickSend
 // work is effectively done.
 var mergeableHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyMerge, keys.KeySubmit, keys.KeyKill, keys.KeyHelp}
 
+// creatableHintKeys replace the default set for a pushed session with no PR yet —
+// the moment "create PR" is the action that matters. Push stays for last-minute
+// fixups before opening the PR; create is the headline.
+var creatableHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyCreate, keys.KeySubmit, keys.KeyKill, keys.KeyHelp}
+
 // emptyHintKeys are the bindings surfaced when no sessions exist yet. The n/N
 // distinction is noise for a zero-session user, so only n appears.
 var emptyHintKeys = []keys.KeyName{keys.KeyNew, keys.KeyHelp, keys.KeyQuit}
@@ -126,6 +131,12 @@ func hintsFor(instance *session.Instance) []keys.KeyName {
 		// merge ahead of the pause/push pair.
 		if pr := instance.GetPRStatus(); pr != nil && pr.MergeBlockedReason() == "" {
 			return mergeableHintKeys
+		}
+		// A pushed branch with no PR yet is next: surface create. This must come
+		// before the dirty check — a pushed branch is also "ahead" (Commits > 0),
+		// so create must win to advertise c over a bare push/pause pair.
+		if pr := instance.GetPRStatus(); pr != nil && pr.CreateBlockedReason() == "" {
+			return creatableHintKeys
 		}
 		if stats := instance.GetDiffStats(); stats != nil && stats.Error == nil &&
 			(stats.Dirty || stats.Commits > 0 || !stats.IsEmpty()) {

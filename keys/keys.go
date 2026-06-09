@@ -24,7 +24,8 @@ const (
 	KeyReview
 	KeyPush
 	KeySubmit
-	KeyMerge // Squash-merge the selected session's pull request via gh
+	KeyCreate // Open a pull request for the pushed branch via gh
+	KeyMerge  // Squash-merge the selected session's pull request via gh
 
 	KeyTab      // Tab is a special keybinding for switching between panes.
 	KeyShiftTab // ShiftTab cycles between panes in reverse order.
@@ -115,6 +116,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"p":          KeyPause,
 	"r":          KeyResume,
 	"P":          KeySubmit,
+	"c":          KeyCreate,
 	"m":          KeyMerge,
 	"?":          KeyHelp,
 	"/":          KeyFilter,
@@ -180,6 +182,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeySubmit: key.NewBinding(
 		key.WithKeys("P"),
 		key.WithHelp("P", "push branch"),
+	),
+	KeyCreate: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "create PR"),
 	),
 	KeyMerge: key.NewBinding(
 		key.WithKeys("m"),

@@ -22,6 +22,10 @@ import (
 // through the runtime, carrying the merged PR number for the acknowledgment.
 type prMergedMsg struct{ number int }
 
+// prCreatedMsg is returned by a confirmed create action to report success back
+// through the runtime, carrying the new PR number (0 if gh's output had none).
+type prCreatedMsg struct{ number int }
+
 func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case hideErrMsg:
@@ -250,6 +254,17 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reflects the now-merged state on the next poll.
 		return m, tea.Batch(
 			m.handleInfoNotice(fmt.Sprintf("merged PR #%d", msg.number)),
+			m.instanceChanged(),
+		)
+	case prCreatedMsg:
+		// A confirmed create succeeded: acknowledge it and refresh so the PR badge
+		// reflects the new PR on the next poll (flipping the hint toward merge).
+		notice := "created PR"
+		if msg.number > 0 {
+			notice = fmt.Sprintf("created PR #%d", msg.number)
+		}
+		return m, tea.Batch(
+			m.handleInfoNotice(notice),
 			m.instanceChanged(),
 		)
 	case attachFinishedMsg:
@@ -803,6 +818,58 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			message += " CI is still running."
 		}
 		return m, m.confirmAction(message, mergeAction)
+	case keys.KeyCreate:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		if selected.GetStatus() == session.Loading {
+			return m, m.handleInfoNotice("session is still starting — try again in a moment")
+		}
+		// A paused session has had its worktree freed, but CreatePR runs gh from that
+		// worktree path (where --fill reads the branch's commits). Merge can act on a
+		// paused session because it runs gh from the always-present repo root; create
+		// cannot, so block it with a notice rather than letting the deferred action
+		// fail with a raw chdir error. Resume rebuilds the worktree.
+		if selected.Paused() {
+			return m, m.handleInfoNotice("resume the session first — pausing freed its worktree, so there's nothing to create a PR from")
+		}
+		// A direct (non-git) session has no branch and therefore no PR to open.
+		if selected.IsDirect() {
+			return m, m.handleError(fmt.Errorf("create PR is not available for a direct (non-git) session"))
+		}
+		// Decide from the poll-maintained PR snapshot (no I/O) — the same read-model
+		// the list badges and hint bar use. Never call PRStatus() here: it can block
+		// on a network fetch, and this runs on the UI thread. A nil snapshot reads as
+		// the zero value, whose CreateBlockedReason is "not pushed yet".
+		var status git.PRStatus
+		if pr := selected.GetPRStatus(); pr != nil {
+			status = *pr
+		}
+		if reason := status.CreateBlockedReason(); reason != "" {
+			return m, m.handleInfoNotice(reason)
+		}
+		// The draft default is configurable; capture it for the deferred action.
+		draft := m.appConfig.GetPRCreateDraft()
+		// Defer the worktree lookup and network create into the confirm action, which
+		// the runtime runs only if the user confirms.
+		createAction := func() tea.Msg {
+			worktree, err := selected.GetGitWorktree()
+			if err != nil {
+				return err
+			}
+			number, err := worktree.CreatePR(draft)
+			if err != nil {
+				return err
+			}
+			return prCreatedMsg{number: number}
+		}
+		adjective := "ready-for-review"
+		if draft {
+			adjective = "draft"
+		}
+		message := fmt.Sprintf("Create %s PR from '%s'?", adjective, selected.DisplayName())
+		return m, m.confirmAction(message, createAction)
 	case keys.KeyPause:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil {

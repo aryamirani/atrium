@@ -104,6 +104,34 @@ func TestMenu_MergeableHintSurfacesMerge(t *testing.T) {
 	require.NotContains(t, m.String(), "merge", "a blocked PR must not advertise merge")
 }
 
+// A pushed session with no PR yet surfaces the create key; an unpushed session
+// (no remote ref) does not, and a session whose PR already exists shows merge
+// rather than create.
+func TestMenu_CreatableHintSurfacesCreate(t *testing.T) {
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: t.TempDir(), Program: "echo"})
+	require.NoError(t, err)
+	inst.SetStatus(session.Running)
+
+	// Pushed, no PR yet => create is the headline action.
+	inst.SetPRStatus(&git.PRStatus{Pushed: true, HasPR: false})
+	m := NewMenu()
+	m.SetSize(200, 3)
+	m.SetInstance(inst)
+	require.Contains(t, m.String(), "create")
+
+	// Not pushed yet => create must not be advertised (push first).
+	inst.SetPRStatus(&git.PRStatus{Pushed: false, HasPR: false})
+	m.SetInstance(inst)
+	require.NotContains(t, m.String(), "create", "an unpushed branch must not advertise create")
+
+	// An open, mergeable PR already exists => surface merge, not create.
+	inst.SetPRStatus(&git.PRStatus{Pushed: true, HasPR: true, State: "OPEN", CI: git.CIPassing, Mergeable: "MERGEABLE"})
+	m.SetInstance(inst)
+	out := m.String()
+	require.Contains(t, out, "merge")
+	require.NotContains(t, out, "create", "a branch with a PR hands off to merge, not create")
+}
+
 // On a terminal narrower than the hint line, the bar truncates with an
 // ellipsis instead of overflowing and wrapping — wrapping would grow the row
 // and break the one-row layout contract.

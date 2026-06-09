@@ -239,6 +239,10 @@ func newSettingRows(cfg *config.Config) []settingRow {
 			"A second Ctrl+X confirms the kill dialog in one motion.", "",
 			(*config.Config).GetKillDoubleTapConfirm,
 			func(c *config.Config, v bool) { c.KillDoubleTapConfirm = &v }),
+		boolRow("pr_create_draft", "Behavior", "Create PRs as draft",
+			"PRs opened with c start as drafts (turn off to merge them with m in-app).", "",
+			(*config.Config).GetPRCreateDraft,
+			func(c *config.Config, v bool) { c.PRCreateDraft = &v }),
 		{
 			key: "tmux_config_override", section: "Behavior", label: "Tmux config override", kind: kindText,
 			description: "Custom tmux config path.", applyNote: "affects new sessions",
