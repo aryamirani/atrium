@@ -46,6 +46,26 @@ func TestCreate_LoadingSessionDefers(t *testing.T) {
 	assert.Contains(t, h.menu.String(), "starting")
 }
 
+// Pressing c on a paused session must defer with a notice rather than opening a
+// confirmation it could never satisfy: pause removes the worktree on disk, so the
+// deferred gh create — which runs from that worktree path — would fail with a raw
+// chdir error. (Unlike merge, which runs gh from the always-present repo root.)
+func TestCreate_PausedSessionDefers(t *testing.T) {
+	h := newCreateFormHome(t)
+	inst := newBranchInstance(t, "parked", "zvi/feat")
+	inst.SetStatus(session.Paused)
+	// A pushed, PR-less snapshot is otherwise create-eligible; only the paused
+	// state must block it.
+	inst.SetPRStatus(&git.PRStatus{Pushed: true, HasPR: false})
+	h.list.AddInstance(inst)
+
+	pressKey(h, 'c')
+
+	assert.Equal(t, stateDefault, h.state, "no confirmation overlay for a paused session")
+	require.True(t, h.menu.HasNotice(), "the paused guard must explain itself")
+	assert.Contains(t, h.menu.String(), "resume")
+}
+
 // Pressing c on a branch that isn't pushed yet must explain why (push first)
 // rather than opening a confirmation gh would reject for lack of a remote head.
 func TestCreate_UnpushedExplains(t *testing.T) {

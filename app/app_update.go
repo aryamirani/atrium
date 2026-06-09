@@ -826,6 +826,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected.GetStatus() == session.Loading {
 			return m, m.handleInfoNotice("session is still starting — try again in a moment")
 		}
+		// A paused session has had its worktree freed, but CreatePR runs gh from that
+		// worktree path (where --fill reads the branch's commits). Merge can act on a
+		// paused session because it runs gh from the always-present repo root; create
+		// cannot, so block it with a notice rather than letting the deferred action
+		// fail with a raw chdir error. Resume rebuilds the worktree.
+		if selected.Paused() {
+			return m, m.handleInfoNotice("resume the session first — pausing freed its worktree, so there's nothing to create a PR from")
+		}
 		// A direct (non-git) session has no branch and therefore no PR to open.
 		if selected.IsDirect() {
 			return m, m.handleError(fmt.Errorf("create PR is not available for a direct (non-git) session"))
