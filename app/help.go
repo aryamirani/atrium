@@ -77,6 +77,7 @@ func (h helpTypeGeneral) toContent() string {
 		helpRow("s", "send a message (without attaching)"),
 		helpRow("p", "pause: commit changes + free the worktree"),
 		helpRow("P", "commit & push branch"),
+		helpRow("m", "merge the session's PR (squash)"),
 		helpRow("r", "resume a paused session"),
 		helpRow("y", "copy branch name to clipboard"),
 		"",

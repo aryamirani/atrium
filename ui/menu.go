@@ -51,6 +51,11 @@ var pausedHintKeys = []keys.KeyName{keys.KeyResume, keys.KeyNew, keys.KeyKill, k
 // its branch — the moment pause/push become the actions that matter.
 var dirtyHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyQuickSend, keys.KeyPause, keys.KeySubmit, keys.KeyKill, keys.KeyHelp}
 
+// mergeableHintKeys surface the merge key for a session whose PR is ready to ship
+// (open, not blocked) — the terminal "this is done" state where merge, not pause/
+// push, is the action that matters.
+var mergeableHintKeys = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyMerge, keys.KeySubmit, keys.KeyKill, keys.KeyHelp}
+
 // emptyHintKeys are the bindings surfaced when no sessions exist yet. The n/N
 // distinction is noise for a zero-session user, so only n appears.
 var emptyHintKeys = []keys.KeyName{keys.KeyNew, keys.KeyHelp, keys.KeyQuit}
@@ -116,6 +121,11 @@ func hintsFor(instance *session.Instance) []keys.KeyName {
 		return pausedHintKeys
 	}
 	if !instance.IsDirect() {
+		// A PR that's ready to merge is the most action-relevant state: surface
+		// merge ahead of the pause/push pair.
+		if pr := instance.GetPRStatus(); pr != nil && pr.MergeBlockedReason() == "" {
+			return mergeableHintKeys
+		}
 		if stats := instance.GetDiffStats(); stats != nil && stats.Error == nil &&
 			(stats.Dirty || stats.Commits > 0 || !stats.IsEmpty()) {
 			return dirtyHintKeys

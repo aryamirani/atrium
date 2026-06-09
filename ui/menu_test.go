@@ -86,6 +86,24 @@ func TestMenu_DirtyHintLineAddsPausePush(t *testing.T) {
 	require.NotContains(t, out, "push", "a clean session has nothing to push")
 }
 
+// A session whose PR is ready to merge surfaces the merge key; a blocked PR
+// (e.g. conflicting) falls back to the ordinary bar without advertising merge.
+func TestMenu_MergeableHintSurfacesMerge(t *testing.T) {
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: t.TempDir(), Program: "echo"})
+	require.NoError(t, err)
+	inst.SetStatus(session.Running)
+	inst.SetPRStatus(&git.PRStatus{HasPR: true, State: "OPEN", CI: git.CIPassing, Mergeable: "MERGEABLE"})
+
+	m := NewMenu()
+	m.SetSize(200, 3)
+	m.SetInstance(inst)
+	require.Contains(t, m.String(), "merge")
+
+	inst.SetPRStatus(&git.PRStatus{HasPR: true, State: "OPEN", Mergeable: "CONFLICTING"})
+	m.SetInstance(inst)
+	require.NotContains(t, m.String(), "merge", "a blocked PR must not advertise merge")
+}
+
 // On a terminal narrower than the hint line, the bar truncates with an
 // ellipsis instead of overflowing and wrapping — wrapping would grow the row
 // and break the one-row layout contract.

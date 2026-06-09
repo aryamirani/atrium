@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -303,4 +304,103 @@ func pushedWorktree(t *testing.T) *Worktree {
 	sha := revParse(t, repo, "HEAD")
 	mustRunGit(t, repo, "update-ref", "refs/remotes/origin/feat", sha)
 	return &Worktree{worktreePath: repo, branchName: "feat"}
+}
+
+func TestMergeBlockedReason(t *testing.T) {
+	tests := []struct {
+		name      string
+		pr        PRStatus
+		wantEmpty bool   // true => merge allowed
+		wantHas   string // substring the reason must contain (when blocked)
+	}{
+		{
+			name:    "no pr",
+			pr:      PRStatus{HasPR: false},
+			wantHas: "no open PR",
+		},
+		{
+			name:    "already merged",
+			pr:      PRStatus{HasPR: true, State: "MERGED"},
+			wantHas: "merged",
+		},
+		{
+			name:    "closed",
+			pr:      PRStatus{HasPR: true, State: "CLOSED"},
+			wantHas: "closed",
+		},
+		{
+			name:    "draft",
+			pr:      PRStatus{HasPR: true, State: "OPEN", IsDraft: true},
+			wantHas: "draft",
+		},
+		{
+			name:    "conflicting",
+			pr:      PRStatus{HasPR: true, State: "OPEN", Mergeable: "CONFLICTING"},
+			wantHas: "conflict",
+		},
+		{
+			name:    "changes requested",
+			pr:      PRStatus{HasPR: true, State: "OPEN", Review: ReviewChangesRequested},
+			wantHas: "changes",
+		},
+		{
+			name:    "ci failing",
+			pr:      PRStatus{HasPR: true, State: "OPEN", CI: CIFailing},
+			wantHas: "CI",
+		},
+		{
+			// A self-authored PR on a solo repo has no review decision; it must
+			// still be mergeable, or the user could never merge their own work.
+			name:      "open, no review, ci passing => allowed",
+			pr:        PRStatus{HasPR: true, State: "OPEN", Review: ReviewNone, CI: CIPassing, Mergeable: "MERGEABLE"},
+			wantEmpty: true,
+		},
+		{
+			// CI still running is gh's / branch-protection's call, not ours.
+			name:      "open, ci pending => allowed",
+			pr:        PRStatus{HasPR: true, State: "OPEN", CI: CIPending, Mergeable: "MERGEABLE"},
+			wantEmpty: true,
+		},
+		{
+			// Mergeability still computing: let gh be the authority.
+			name:      "open, mergeable unknown => allowed",
+			pr:        PRStatus{HasPR: true, State: "OPEN", CI: CINone, Mergeable: "UNKNOWN"},
+			wantEmpty: true,
+		},
+		{
+			name:      "approved, passing => allowed",
+			pr:        PRStatus{HasPR: true, State: "OPEN", Review: ReviewApproved, CI: CIPassing, Mergeable: "MERGEABLE"},
+			wantEmpty: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.pr.MergeBlockedReason()
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("MergeBlockedReason() = %q, want empty (merge allowed)", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("MergeBlockedReason() = empty, want a reason containing %q", tt.wantHas)
+			}
+			if !strings.Contains(got, tt.wantHas) {
+				t.Errorf("MergeBlockedReason() = %q, want it to contain %q", got, tt.wantHas)
+			}
+		})
+	}
+}
+
+func TestMergeArgv(t *testing.T) {
+	got := mergeArgv("feat/foo")
+	want := []string{"pr", "merge", "feat/foo", "--squash"}
+	if len(got) != len(want) {
+		t.Fatalf("mergeArgv len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("mergeArgv[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
 }
