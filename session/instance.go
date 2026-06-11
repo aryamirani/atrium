@@ -897,6 +897,25 @@ func (i *Instance) TapEnter() {
 	}
 }
 
+// ApprovePrompt sends a single Enter to the agent pane to answer a visible
+// prompt (tool permission, plan approval) on the user's behalf. Unlike
+// TapEnter — the self-gating autoyes path — this is user-initiated, so it
+// ignores AutoYes and returns errors instead of logging them. It deliberately
+// answers PanePromptManual prompts too: a human keypress is exactly the
+// manual confirmation the autoyes NoAutoTap guard preserves. Note that Enter
+// selects whatever option the dialog has highlighted — on claude's plan
+// dialog the default both accepts the plan and enables auto-accept edits.
+func (i *Instance) ApprovePrompt() error {
+	ts := i.tmux()
+	if !i.isStarted() || i.Paused() || ts == nil {
+		return fmt.Errorf("session is not running")
+	}
+	if err := ts.TapEnter(); err != nil {
+		return fmt.Errorf("error tapping enter: %w", err)
+	}
+	return nil
+}
+
 // Attach attaches the user's terminal to the instance's tmux session. The
 // returned channel closes when the user detaches; consult AttachExitReason and
 // AttachKillRequested afterwards for why.
