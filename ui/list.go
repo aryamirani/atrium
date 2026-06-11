@@ -316,10 +316,9 @@ type InstanceRenderer struct {
 	// stripped from each row's branch label — every session shares it, so it is
 	// pure repetition on the version-control line. Empty disables stripping.
 	branchPrefix string
-	// modelIndicator is the model-chip mode (config.GetModelIndicator):
-	// "always" / "off", with anything else — including the zero value — read as
-	// the pinned-only default, so normalization stays in config and the ui
-	// package needs no config import.
+	// modelIndicator is the model-chip mode (config.GetModelIndicator): "off"
+	// hides the chip, anything else — including the zero value — shows it, so
+	// normalization stays in config and the ui package needs no config import.
 	modelIndicator string
 }
 
@@ -425,19 +424,6 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 		}
 		right1 = append(right1, p.seg(" "+acct+" ", acctColor))
 	}
-	// Per-session model chip: transcript truth first, --model flag fallback (see
-	// Instance.ModelInfo). The pinned-only default shows it just where a flag
-	// pins a model (accent); "always" also surfaces transcript-known models
-	// (dim when unpinned); "off" hides it.
-	if r.modelIndicator != "off" {
-		if model, pinned := i.ModelInfo(); model != "" && (pinned || r.modelIndicator == "always") {
-			c := th.Palette.FgDim
-			if pinned {
-				c = th.Palette.Accent
-			}
-			right1 = append(right1, p.seg(" "+shortModelName(model)+" ", c))
-		}
-	}
 	// Per-session AUTO badge (not while paused) so "yolo" state is unmistakable.
 	// The badge carries its own background, so wrap it as a pre-rendered chip.
 	if i.AutoYes && !i.Paused() {
@@ -446,6 +432,15 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 		}
 		badge := " " + g.AutoBadge + "AUTO "
 		right1 = append(right1, rawSeg(badge, th.BadgeStyle().Render(badge)))
+	}
+	// Per-session model chip: transcript truth first, --model flag fallback (see
+	// Instance.ModelInfo). It rides the agent icon as one brand-colored unit —
+	// last before the icon, one space apart, always in the agent's full brand
+	// accent. Shown whenever the model is known; "off" hides it.
+	if r.modelIndicator != "off" {
+		if model := i.ModelInfo(); model != "" {
+			right1 = append(right1, p.seg(" "+shortModelName(model), p.agentColor(i)))
+		}
 	}
 	// Agent-identity icon (which CLI the session runs), pinned to the far right so
 	// it sits in a fixed column — a right-edge counterpart to the left status

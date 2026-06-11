@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ZviBaratz/atrium/session"
@@ -35,40 +38,84 @@ func TestShortModelName(t *testing.T) {
 	}
 }
 
-// TestRender_ModelChip pins the visibility rule per mode, following the
-// account-badge precedent: pinned (default) shows only flag-pinned sessions,
-// always also shows transcript-known models, off shows nothing.
+// TestRender_ModelChip pins the visibility rule: the chip shows whenever the
+// session's model is known — the --model flag before the first turn, transcript
+// truth after — and "off" hides it. There is no per-provenance mode: flagged
+// and observed sessions render identically.
 func TestRender_ModelChip(t *testing.T) {
 	t.Cleanup(theme.Set("unicode"))
 	s := spinner.New()
 	r := &InstanceRenderer{spinner: &s}
 	r.setWidth(80)
 
-	pinned, err := session.NewInstance(session.InstanceOptions{Title: "p", Path: ".", Program: "claude --model fable"})
+	flagged, err := session.NewInstance(session.InstanceOptions{Title: "p", Path: ".", Program: "claude --model fable"})
 	require.NoError(t, err)
 	known, err := session.NewInstance(session.InstanceOptions{Title: "k", Path: ".", Program: "claude"})
 	require.NoError(t, err)
 	known.SetModelMeta("claude-opus-4-7", transcript.Stamp{Path: "/t", Size: 1})
+	bare, err := session.NewInstance(session.InstanceOptions{Title: "b", Path: ".", Program: "claude"})
+	require.NoError(t, err)
 
-	// Default (pinned mode): the flag value renders; transcript-only does not.
-	require.Contains(t, ansi.Strip(r.Render(pinned, 0, false)), "fable",
-		"a --model-pinned session must show its chip in the default mode")
-	require.NotContains(t, ansi.Strip(r.Render(known, 0, false)), "opus",
-		"a transcript-known but unpinned model stays hidden in pinned mode")
-
-	// Always mode: both render; the known model goes through the transform.
-	r.modelIndicator = "always"
+	// On (default): both sources render; an unknown model shows nothing.
+	require.Contains(t, ansi.Strip(r.Render(flagged, 0, false)), "fable",
+		"a --model flag must show its chip before any transcript truth")
 	require.Contains(t, ansi.Strip(r.Render(known, 0, false)), "opus 4.7",
-		"always mode surfaces transcript-known models")
-	require.Contains(t, ansi.Strip(r.Render(pinned, 0, false)), "fable")
+		"a transcript-known model must show its chip")
+	require.NotContains(t, ansi.Strip(r.Render(bare, 0, false)), "opus",
+		"no flag and no transcript: no chip")
 
-	// Transcript truth overrides the flag value on a pinned session.
-	pinned.SetModelMeta("claude-fable-5", transcript.Stamp{Path: "/t", Size: 1})
-	require.Contains(t, ansi.Strip(r.Render(pinned, 0, false)), "fable 5",
+	// Transcript truth overrides the flag value once known.
+	flagged.SetModelMeta("claude-fable-5", transcript.Stamp{Path: "/t", Size: 1})
+	require.Contains(t, ansi.Strip(r.Render(flagged, 0, false)), "fable 5",
 		"the chip shows transcript truth once known, not the raw flag")
 
 	// Off mode: nothing renders.
 	r.modelIndicator = "off"
-	require.NotContains(t, ansi.Strip(r.Render(pinned, 0, false)), "fable")
+	require.NotContains(t, ansi.Strip(r.Render(flagged, 0, false)), "fable")
 	require.NotContains(t, ansi.Strip(r.Render(known, 0, false)), "opus")
+}
+
+// TestRender_ModelChip_BrandUnit pins the chip's placement and tinting: the
+// chip rides the agent icon as one brand-colored unit — after the AUTO badge,
+// one space before the icon, always in the agent's full brand color regardless
+// of whether the value came from a --model flag or the transcript.
+func TestRender_ModelChip_BrandUnit(t *testing.T) {
+	t.Cleanup(theme.Set("unicode"))
+	prof := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prof) })
+
+	s := spinner.New()
+	r := &InstanceRenderer{spinner: &s}
+	r.setWidth(80)
+
+	flagged, err := session.NewInstance(session.InstanceOptions{Title: "p", Path: ".", Program: "claude --model fable"})
+	require.NoError(t, err)
+	flagged.AutoYes = true
+	known, err := session.NewInstance(session.InstanceOptions{Title: "k", Path: ".", Program: "claude"})
+	require.NoError(t, err)
+	known.SetModelMeta("claude-opus-4-7", transcript.Stamp{Path: "/t", Size: 1})
+
+	// Placement: AUTO badge, then chip, then icon — the badge must not split
+	// the chip from the icon — and exactly one space binds chip to icon.
+	plain := ansi.Strip(r.Render(flagged, 0, false))
+	idxAuto, idxModel, idxIcon := strings.Index(plain, "AUTO"), strings.Index(plain, "fable"), strings.Index(plain, "✻")
+	require.True(t, idxAuto >= 0 && idxModel >= 0 && idxIcon >= 0, "row must carry badge, chip and icon: %q", plain)
+	require.True(t, idxAuto < idxModel && idxModel < idxIcon,
+		"chip must sit between AUTO and the agent icon: %q", plain)
+	require.Contains(t, plain, "fable ✻", "one space between chip and icon")
+
+	// Tint: claude's brand coral #d97757, one color for every chip. The icon is
+	// always coral too, so count — any row with a chip carries 2 coral spans.
+	// The retired muted variant #9a5a44 must never appear (sequence as termenv
+	// actually emitted it: hex parses through float channels and truncates, so
+	// 0x5a (90) landed as 89).
+	const coral = "38;2;217;119;87"
+	const mutedCoral = "38;2;154;89;68"
+	for name, inst := range map[string]*session.Instance{"flagged": flagged, "known": known} {
+		out := r.Render(inst, 0, false)
+		require.Equal(t, 2, strings.Count(out, coral),
+			"%s: chip + icon must both carry the brand color", name)
+		require.NotContains(t, out, mutedCoral, "%s: the muted tint is retired", name)
+	}
 }
