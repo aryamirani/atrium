@@ -66,6 +66,7 @@ func (m *home) startHints(selected *session.Instance, content string) (tea.Model
 	m.hintScreen = screen
 	m.hintTyped = ""
 	m.hintOpenVariant = false
+	m.hintSendVariant = false
 	m.state = stateHints
 	m.tabbedWindow.SetPreviewHintOverlay(selected, screen.Render("", hintStyles()))
 	m.menu.SetState(ui.StateHints)
@@ -79,6 +80,7 @@ func (m *home) exitHintMode() {
 	m.hintScreen = nil
 	m.hintTyped = ""
 	m.hintOpenVariant = false
+	m.hintSendVariant = false
 	m.tabbedWindow.ClearPreviewHintOverlay()
 	m.menu.SetState(ui.StateDefault)
 	m.recomputeLayout()
@@ -86,7 +88,7 @@ func (m *home) exitHintMode() {
 
 // handleHintsState consumes every key while hint mode is up: hint characters
 // narrow toward a match, anything else exits. An uppercase hint character
-// selects the copy+open variant.
+// selects the copy+open variant; holding alt selects the send-to-session variant.
 func (m *home) handleHintsState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !m.tabbedWindow.InPreviewHintMode() {
 		// The pane dropped the overlay out from under us (owner paused or
@@ -106,6 +108,9 @@ func (m *home) handleHintsState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.exitHintMode()
 		return m, m.instanceChanged()
 	}
+	if msg.Alt {
+		m.hintSendVariant = true
+	}
 	typed := m.hintTyped + string(lower)
 	match, valid := m.hintScreen.Resolve(typed)
 	if !valid {
@@ -122,10 +127,15 @@ func (m *home) handleHintsState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.list.GetSelectedInstance(), m.hintScreen.Render(typed, hintStyles()))
 		return m, nil
 	}
+	send := m.hintSendVariant
 	open := m.hintOpenVariant
-	selected := *match
+	chosen := *match
+	inst := m.list.GetSelectedInstance()
 	m.exitHintMode()
-	return m, tea.Batch(m.actHint(selected, open), m.instanceChanged())
+	if send {
+		return m, tea.Batch(m.actHintSend(chosen, inst), m.instanceChanged())
+	}
+	return m, tea.Batch(m.actHint(chosen, open), m.instanceChanged())
 }
 
 // actHint copies the match and, on the open variant, opens URLs in the
@@ -141,6 +151,18 @@ func (m *home) actHint(match hints.Match, open bool) tea.Cmd {
 		return m.handleInfoNotice(fmt.Sprintf("copied + opened %s", truncateForNotice(match.Text)))
 	}
 	return m.handleInfoNotice(fmt.Sprintf("'%s' copied", truncateForNotice(match.Text)))
+}
+
+// actHintSend injects the match text directly into the selected session's
+// tmux pane instead of copying to the clipboard.
+func (m *home) actHintSend(match hints.Match, inst *session.Instance) tea.Cmd {
+	if inst == nil {
+		return m.handleInfoNotice("no session selected")
+	}
+	if err := inst.SendKeys(match.Text); err != nil {
+		return m.handleInfoNotice("send failed: session is paused or not running")
+	}
+	return m.handleInfoNotice(fmt.Sprintf("sent to %s", inst.DisplayName()))
 }
 
 // truncateForNotice keeps toasts one line short; the menu row truncates too,

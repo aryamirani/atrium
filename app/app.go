@@ -240,11 +240,14 @@ type home struct {
 	generatingName bool
 
 	// hintScreen is the frozen, labeled capture hint mode is acting on.
-	// hintTyped is the entered label prefix, and hintOpenVariant records
-	// whether any hint character was typed uppercase (selecting copy+open).
+	// hintTyped is the entered label prefix, hintOpenVariant records whether
+	// any hint character was typed uppercase (selecting copy+open), and
+	// hintSendVariant records whether the alt modifier was held (selecting
+	// send-to-session instead of clipboard copy).
 	hintScreen      *hints.Screen
 	hintTyped       string
 	hintOpenVariant bool
+	hintSendVariant bool
 
 	// lastStatusPollSelection is the instance instanceChanged last fired an immediate
 	// status poll for. instanceChanged runs on every 100ms preview tick, so we only

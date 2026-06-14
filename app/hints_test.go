@@ -245,3 +245,41 @@ func TestHints_ResizeExits(t *testing.T) {
 	assert.Equal(t, stateDefault, h.state)
 	assert.False(t, h.tabbedWindow.InPreviewHintMode())
 }
+
+// Alt+hint selects the send-to-session path: clipboard is not touched, and
+// the mode exits (notice shows because the unstarted instance can't receive keys).
+func TestHints_AltHintTakesSendPath(t *testing.T) {
+	h := newHintsHome(t, newBranchInstance(t, "a", "b1"))
+	inst := h.list.GetSelectedInstance()
+	fc := withFakeClipboard(t, nil)
+	fo := withFakeOpener(t, nil)
+
+	_, _ = h.startHints(inst, "PR: https://github.com/x/y/pull/9\n")
+	require.Equal(t, stateHints, h.state)
+
+	_, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true})
+
+	assert.Equal(t, stateDefault, h.state, "hint mode must exit after send")
+	assert.False(t, fc.called, "clipboard must not be touched on alt (send) path")
+	assert.False(t, fo.called, "browser must not open on alt (send) path")
+	require.True(t, h.menu.HasNotice(), "a notice must be shown")
+	assert.NotContains(t, h.menu.String(), "copied", "notice must not say 'copied' on send path")
+}
+
+// Alt+uppercase (e.g. alt+A) takes the send path, not the copy+open path:
+// alt modifier wins and the open flag is not set.
+func TestHints_AltUppercaseSendsNotOpens(t *testing.T) {
+	h := newHintsHome(t, newBranchInstance(t, "a", "b1"))
+	inst := h.list.GetSelectedInstance()
+	fc := withFakeClipboard(t, nil)
+	fo := withFakeOpener(t, nil)
+
+	_, _ = h.startHints(inst, "PR: https://github.com/x/y/pull/9\n")
+	require.Equal(t, stateHints, h.state)
+
+	_, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}, Alt: true})
+
+	assert.Equal(t, stateDefault, h.state)
+	assert.False(t, fc.called, "clipboard must not be touched when alt is held")
+	assert.False(t, fo.called, "browser must not open when alt is held")
+}

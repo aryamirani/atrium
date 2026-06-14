@@ -240,6 +240,8 @@ func (m *Menu) String() string {
 			sepStyle().Render(separator) +
 			keyStyle().Render("A–Z") + " " + descStyle().Render("copy + open") +
 			sepStyle().Render(separator) +
+			keyStyle().Render("⌥a–z") + " " + descStyle().Render("send to session") +
+			sepStyle().Render(separator) +
 			keyStyle().Render("esc") + " " + descStyle().Render("cancel")
 	case StateEmpty:
 		line = renderHintLine(emptyHintKeys)
