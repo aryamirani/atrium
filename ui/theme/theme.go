@@ -46,6 +46,7 @@ type Glyphs struct {
 	Warn          string // heuristic-drift / stale-data warning
 	Behind        string // commits behind base
 	Dirty         string // uncommitted changes
+	Note          string // precedes a freeform session note
 	PR            string // precedes a pull-request number (may be empty)
 	AutoBadge     string // leading icon for the AUTO badge (may be empty)
 	FoldOpen      string // expanded repo group

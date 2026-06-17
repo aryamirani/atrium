@@ -19,6 +19,7 @@ const (
 	nfPencil = 0xf040 // nf-fa-pencil
 	nfBolt   = 0xf0e7 // nf-fa-bolt
 	nfPR     = 0xf407 // nf-oct-git_pull_request
+	nfNote   = 0xf249 // nf-fa-sticky_note
 )
 
 // miniDotFrames are the Braille spinner frames (each width 1, widely supported).
@@ -38,6 +39,7 @@ func nfGlyphs() Glyphs {
 		Warn:          "⚠",
 		Behind:        "⇣",
 		Dirty:         string(rune(nfPencil)),
+		Note:          string(rune(nfNote)),
 		PR:            string(rune(nfPR)),
 		AutoBadge:     string(rune(nfBolt)),
 		FoldOpen:      "▾",
@@ -116,6 +118,7 @@ var unicodeFallback = &Theme{
 		Warn:          "⚠",
 		Behind:        "⇣",
 		Dirty:         "*",
+		Note:          "✎",
 		PR:            "⇄", // plain-unicode pull-request marker
 		AutoBadge:     "",  // text-only "AUTO" chip
 		FoldOpen:      "▾",
