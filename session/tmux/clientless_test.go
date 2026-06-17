@@ -54,6 +54,23 @@ func TestSetDetachedSizeResizesWindowAndDedupes(t *testing.T) {
 	require.Contains(t, strings.Join(*argv, "\n"), "-x 100 -y 30")
 }
 
+// With the context bar (status line) enabled, the clientless detached window reserves
+// its row so the captured pane matches an attached client's pane area. Without this the
+// pane is one row too tall and the preview, which sizes itself a row short for an
+// overflow indicator, clips the agent's bottom line to "…". The width is never reserved
+// (the status line is horizontal).
+func TestSetDetachedSizeReservesStatusLineRow(t *testing.T) {
+	defer func(prev int) { statusLineRows = prev }(statusLineRows)
+	statusLineRows = 1
+
+	argv, cmdExec := recordingExec(nil)
+	s := NewSessionWithDeps(context.Background(), "geo-bar", "claude", NewMockPtyFactory(t), cmdExec)
+
+	require.NoError(t, s.SetDetachedSize(80, 24))
+	require.Contains(t, strings.Join(*argv, "\n"), "-x 80 -y 23",
+		"the status line's row is reserved so the detached pane matches the attached pane area")
+}
+
 // While attached, SetDetachedSize records the size but issues no resize-window: the
 // live client owns geometry (window-size latest), and a server-side resize would flip
 // the window back to manual and break the client's tracking.
@@ -79,9 +96,11 @@ func TestRestoreReappliesGeometryClientlessly(t *testing.T) {
 	require.Zero(t, argvCount(*argv, "attach-session"))
 }
 
-// PrepareLiveServer migrates a persisted server to the clientless options and detaches
-// every stale phantom client a prior run left attached.
-func TestPrepareLiveServerMigratesAndSweeps(t *testing.T) {
+// PrepareLiveServer detaches every stale phantom client a prior (pre-clientless) run
+// left attached — and must NOT push any global window-size option. Setting
+// `-g window-size manual` on the live server crashes tmux's next new-session (NULL
+// window deref in clients_calculate_size); per-window manual via resize-window is safe.
+func TestPrepareLiveServerSweepsWithoutGlobalManual(t *testing.T) {
 	var argv []string
 	cmdExec := cmd_test.MockCmdExec{
 		RunFunc: func(c *exec.Cmd) error { argv = append(argv, strings.Join(c.Args, " ")); return nil },
@@ -94,7 +113,8 @@ func TestPrepareLiveServerMigratesAndSweeps(t *testing.T) {
 	PrepareLiveServer(context.Background(), cmdExec)
 
 	joined := strings.Join(argv, "\n")
-	require.Contains(t, joined, "set-option -g window-size manual")
-	require.Contains(t, joined, "set-option -g aggressive-resize off")
 	require.Equal(t, 2, argvCount(argv, "detach-client"), "each stale client is detached")
+	require.NotContains(t, joined, "window-size manual",
+		"must never set GLOBAL window-size manual — it SIGSEGVs tmux on new-session")
+	require.NotContains(t, joined, "aggressive-resize")
 }

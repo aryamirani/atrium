@@ -35,6 +35,16 @@ var embeddedTmuxConfigTemplate string
 // the tmux config instead of the managed one. Set via Init from config.json.
 var configOverridePath string
 
+// statusLineRows is the number of rows Atrium's managed tmux status line (the
+// in-session context bar) occupies, recorded by Init. A detached session is
+// clientless, so its status line is never drawn and would not shrink the window's
+// pane the way an attached client's status line does; applyDetachedGeometry subtracts
+// these rows from the detached window height so the captured pane matches the
+// attached-client pane area (and the preview's content height). It is 0 when the
+// context bar is disabled, or when a user override owns the config (we make no
+// assumption about an override's status line).
+var statusLineRows int
+
 // renderManagedConfig renders the embedded template. ContextBar toggles the header
 // strip; BarBg/BarFg fill that strip's full-width background from the active theme's
 // dedicated header-bar token (a slate a clear step above BgElevated) so the header
@@ -68,6 +78,13 @@ func renderManagedConfig(contextBar bool) ([]byte, error) {
 // processes.
 func Init(overridePath string, contextBar bool) error {
 	configOverridePath = overridePath
+	// Record how many rows the managed status line occupies so the clientless detached
+	// resize can reproduce an attached client's pane area. An override owns its own
+	// config, so make no assumption about its status line.
+	statusLineRows = 0
+	if overridePath == "" && contextBar {
+		statusLineRows = 1
+	}
 	if overridePath != "" {
 		return nil
 	}

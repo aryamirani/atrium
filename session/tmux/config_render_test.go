@@ -54,6 +54,26 @@ func TestRenderManagedConfig(t *testing.T) {
 	if !strings.Contains(offStr, "status off") {
 		t.Errorf("disabled config should set status off\n---\n%s", offStr)
 	}
+
+	// REGRESSION GUARD: the managed config must NEVER set the GLOBAL window-size to
+	// manual. `set-option -g window-size manual` makes tmux size a not-yet-created
+	// window through clients_calculate_size()'s manual branch, dereferencing the NULL
+	// window pointer and SIGSEGV-ing the whole server on every new-session (observed in
+	// production, tmux 3.4). Detached geometry uses the *per-window* manual that
+	// `resize-window` sets implicitly, which is safe. Guard both bar states, scanning
+	// real directives only (a comment may legitimately mention the phrase to warn).
+	globalManual := regexp.MustCompile(`^[ \t]*set-option[ \t]+-g[ \t]+window-size[ \t]+manual\b`)
+	for _, rendered := range [][]byte{on, off} {
+		for _, line := range strings.Split(string(rendered), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue // a comment may mention the phrase to document the danger
+			}
+			if globalManual.MatchString(line) {
+				t.Fatalf("FATAL: managed config sets GLOBAL window-size manual — crashes tmux "+
+					"new-session. Use per-window resize-window instead.\n---\n%s", line)
+			}
+		}
+	}
 	if strings.Contains(offStr, "@atrium_left") {
 		t.Errorf("disabled config should not reference the context bar options\n---\n%s", offStr)
 	}

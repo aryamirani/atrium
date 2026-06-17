@@ -563,10 +563,18 @@ func (t *Session) applyDetachedGeometry() {
 	if !ok {
 		return
 	}
+	// A detached session is clientless, so tmux never draws its status line and
+	// resize-window -y H would make the pane the full H rows. An attached client, by
+	// contrast, loses the status line's row(s) from its pane. Subtract them here so the
+	// detached pane matches the attached pane area — and the preview, which sizes itself
+	// a row short for an overflow indicator — instead of being a row too tall (which
+	// makes the preview truncate the agent's bottom line to "…"). Floor at 1: a window
+	// must keep at least one row.
+	paneH := max(h-statusLineRows, 1) // a window must keep at least one row
 	ctx, cancel := t.opContext()
 	defer cancel()
 	resize := tmuxCommand(ctx, "resize-window", "-t", t.snapshotName(),
-		"-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+		"-x", strconv.Itoa(w), "-y", strconv.Itoa(paneH))
 	if err := t.cmdExec.Run(resize); err != nil {
 		log.InfoLog.Printf("resize-window for %s failed: %v", t.snapshotName(), err)
 	}
@@ -1441,28 +1449,27 @@ func (t *Session) CapturePaneContentWithOptions(start, end string) (string, erro
 	return string(output), nil
 }
 
-// PrepareLiveServer migrates an already-running tmux server to the clientless
-// geometry model at TUI startup. The managed -f config only configures a *freshly*
-// started server, but Atrium's server persists across atrium relaunches (pause only
-// detaches; nothing short of kill-server stops it), so an upgrade must push the global
-// options to the live server and clear the previous binary's leftover clients.
+// PrepareLiveServer sweeps stale phantom tmux clients left attached by a prior
+// (pre-clientless) run at TUI startup. Atrium's server persists across relaunches
+// (pause only detaches; nothing short of kill-server stops it), so a session created
+// by an older binary may still hold a background geometry client.
 //
 // In the clientless model a detached session holds NO tmux client, so any client
-// present at startup — before this TUI has attached anything — is a stale phantom from
-// the prior (pre-clientless) run; detach each. Everything is best-effort: when no
-// server is running every command errors harmlessly (and does NOT spawn one), so this
-// is a no-op on a fresh install. Call once, before the event loop, only on the
-// interactive TUI path (not the daemon).
+// present at startup — before this TUI has attached anything — is such a stale phantom;
+// detach each. It is best-effort: when no server is running the commands error
+// harmlessly (and do NOT spawn one), so this is a no-op on a fresh install. Call once,
+// before the event loop, only on the interactive TUI path (not the daemon).
+//
+// It deliberately does NOT push any global tmux option. In particular it must never set
+// `-g window-size manual`: that global option crashes tmux's new-session size
+// calculation (NULL window deref in clients_calculate_size; see atrium.conf.tmpl). The
+// per-window manual that `resize-window` sets per session is sufficient and safe.
 func PrepareLiveServer(ctx context.Context, cmdExec cmd.Executor) {
 	run := func(args ...string) error {
 		c, cancel := context.WithTimeout(ctx, tmuxOpTimeout)
 		defer cancel()
 		return cmdExec.Run(tmuxCommand(c, args...))
 	}
-
-	// Adopt the clientless geometry options on the live server.
-	_ = run("set-option", "-g", "window-size", "manual")
-	_ = run("set-option", "-g", "aggressive-resize", "off")
 
 	// Sweep any stale phantom clients left attached by a prior run.
 	listCtx, cancel := context.WithTimeout(ctx, tmuxOpTimeout)
