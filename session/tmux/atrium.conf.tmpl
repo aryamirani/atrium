@@ -70,3 +70,12 @@ set-window-option -g pane-base-index 0
 set-option -sg escape-time        10
 set-option -g  destroy-unattached off
 set-option -g  remain-on-exit     off
+
+# Detached-session geometry is driven server-side by `resize-window` (Atrium holds
+# NO tmux client while a session is detached — only while the user is interactively
+# attached). `window-size manual` makes a window keep the size Atrium sets instead of
+# tracking a client; Attach flips the window to `latest` so the live terminal drives
+# it, and detach's `resize-window` restores the preview size (auto-resetting manual).
+# aggressive-resize is irrelevant for single-window sessions; pin it off explicitly.
+set-option -g  window-size        manual
+set-option -g  aggressive-resize  off

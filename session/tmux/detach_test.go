@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,9 +14,10 @@ import (
 )
 
 // attachedSession builds a Session in the "currently attached" state without going
-// through the real-stdin Attach goroutines: it Restores a (mock) pty, then sets the
-// per-attach fields directly, mirroring what Attach establishes. The returned
-// MockPtyFactory lets a test flip StartErr to simulate a Restore failure.
+// through the real-stdin Attach goroutines: it installs the one interactive client
+// (ptmx + attachCmd) and the per-attach fields directly, mirroring what Attach
+// establishes. In the clientless model a detached session has no client, so the
+// pty/cmd exist ONLY in this attached state.
 func attachedSession(t *testing.T) (*Session, *MockPtyFactory) {
 	t.Helper()
 	ptyFactory := NewMockPtyFactory(t)
@@ -26,7 +28,10 @@ func attachedSession(t *testing.T) (*Session, *MockPtyFactory) {
 		},
 	}
 	s := NewSessionWithDeps(context.Background(), "detach-test", "claude", ptyFactory, cmdExec)
-	require.NoError(t, s.Restore()) // populate s.ptmx via the mock factory
+	ptmx, attachCmd, err := ptyFactory.Start(exec.CommandContext(context.Background(), "true"))
+	require.NoError(t, err)
+	s.ptmx = ptmx
+	s.attachCmd = attachCmd
 	s.attachCh = make(chan struct{})
 	s.wg = &sync.WaitGroup{}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
@@ -44,8 +49,8 @@ func assertClosed(t *testing.T, ch chan struct{}) {
 	}
 }
 
-// T1: a clean detach re-establishes the pty, records no error, and tears down the
-// per-attach state.
+// T1: a clean detach reaps the interactive client, records no error, and tears down
+// the per-attach state, leaving the session clientless (ptmx nil).
 func TestDetachCleanByDefault(t *testing.T) {
 	s, _ := attachedSession(t)
 	ch := s.attachCh
@@ -53,16 +58,18 @@ func TestDetachCleanByDefault(t *testing.T) {
 	require.NotPanics(t, s.Detach)
 
 	require.NoError(t, s.AttachExitError())
-	require.NotNil(t, s.ptmx, "Detach should re-Restore the pty")
+	require.Nil(t, s.ptmx, "detach is clientless: ptmx stays nil")
+	require.Nil(t, s.attachCmd, "the interactive client cmd is cleared (and reaped)")
 	require.Nil(t, s.attachCh)
 	require.Nil(t, s.cancel)
 	require.Nil(t, s.wg)
 	require.Nil(t, s.ctx)
+	require.False(t, s.attached.Load())
 	assertClosed(t, ch)
 }
 
-// T2: a failing pty close is recorded, not fatal; Restore still succeeds so ptmx is
-// re-established.
+// T2: a failing pty close is recorded in detachErr, not fatal; the session is still
+// left clientless (ptmx nil).
 func TestDetachPtyCloseErrorDoesNotPanic(t *testing.T) {
 	s, _ := attachedSession(t)
 	ch := s.attachCh
@@ -72,53 +79,76 @@ func TestDetachPtyCloseErrorDoesNotPanic(t *testing.T) {
 
 	require.Error(t, s.AttachExitError())
 	require.Contains(t, s.AttachExitError().Error(), "closing attach pty")
-	require.NotNil(t, s.ptmx, "Restore should still have succeeded")
+	require.Nil(t, s.ptmx, "detach is clientless: ptmx stays nil even on a close error")
 	require.Nil(t, s.attachCh)
 	assertClosed(t, ch)
 }
 
-// T3: a failing Restore is recorded and leaves ptmx nil instead of panicking; the nil
-// ptmx does not break polling (which goes through cmdExec subprocesses).
-func TestDetachRestoreFailureLeavesNilPty(t *testing.T) {
-	s, ptyFactory := attachedSession(t)
+// T3: detaching when the tmux session has vanished is clean — the re-baseline
+// (resize-window) failing is best-effort, NOT a detach error — and leaves the session
+// clientless without breaking polling.
+func TestDetachWhenSessionGoneStaysClean(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc:    func(cmd *exec.Cmd) error { return fmt.Errorf("no server running") },
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return nil, fmt.Errorf("no server running") },
+	}
+	s := NewSessionWithDeps(context.Background(), "detach-gone", "claude", ptyFactory, cmdExec)
+	ptmx, attachCmd, err := ptyFactory.Start(exec.CommandContext(context.Background(), "true"))
+	require.NoError(t, err)
+	s.ptmx, s.attachCmd = ptmx, attachCmd
+	s.attachCh = make(chan struct{})
+	s.wg = &sync.WaitGroup{}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.attached.Store(true)
 	ch := s.attachCh
-	ptyFactory.StartErr = fmt.Errorf("attach-session: server not found")
 
 	require.NotPanics(t, s.Detach)
 
-	require.Error(t, s.AttachExitError())
-	require.Contains(t, s.AttachExitError().Error(), "restoring attach pty")
-	require.Nil(t, s.ptmx, "a failed Restore must leave ptmx nil")
+	// The geometry re-baseline failed (session gone) but that is logged, not surfaced:
+	// the detach itself succeeded.
+	require.NoError(t, s.AttachExitError())
+	require.Nil(t, s.ptmx, "detach is clientless: ptmx stays nil")
 	require.Nil(t, s.attachCh)
+	require.False(t, s.attached.Load())
 	assertClosed(t, ch)
 
 	// A nil ptmx must not break polling — Poll never reads ptmx, only cmdExec.
 	require.NotPanics(t, func() { _ = s.Poll() })
 }
 
-// T4: Restore (the self-heal building block Attach uses when ptmx is nil) re-allocates
-// the pty on success and leaves it nil on failure, propagating the error.
-func TestRestoreReallocatesOrPropagates(t *testing.T) {
-	s, ptyFactory := attachedSession(t)
+// T4: clientless Restore allocates NO pty; it returns nil when the session exists (so
+// it can re-baseline geometry + swap the monitor) and errors when it is gone (so
+// instance Resume can fall back to kill-and-recreate).
+func TestRestoreClientlessExistenceContract(t *testing.T) {
+	exists := true
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(strings.Join(cmd.Args, " "), "has-session") && !exists {
+				return fmt.Errorf("no such session")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("x"), nil },
+	}
+	s := NewSessionWithDeps(context.Background(), "restore-test", "claude", NewMockPtyFactory(t), cmdExec)
 
-	s.ptmx = nil
-	require.NoError(t, s.Restore())
-	require.NotNil(t, s.ptmx)
+	require.NoError(t, s.Restore(), "Restore succeeds when the session exists")
+	require.Nil(t, s.ptmx, "clientless Restore never allocates a pty")
 
-	ptyFactory.StartErr = fmt.Errorf("attach-session failed")
-	s.ptmx = nil
-	require.Error(t, s.Restore())
+	exists = false
+	require.Error(t, s.Restore(), "Restore errors when the session is gone")
 	require.Nil(t, s.ptmx)
 }
 
-// T5: DetachSafely is unchanged — it tears down without re-Restoring (leaving ptmx
-// nil), and a second call is a no-op (no double-close panic).
+// T5: DetachSafely tears down without re-creating a client (leaving ptmx nil), and a
+// second call is a no-op (no double-close panic).
 func TestDetachSafelyUnchangedAndIdempotent(t *testing.T) {
 	s, _ := attachedSession(t)
 	ch := s.attachCh
 
 	require.NoError(t, s.DetachSafely())
-	require.Nil(t, s.ptmx, "DetachSafely does not re-Restore")
+	require.Nil(t, s.ptmx, "DetachSafely leaves the session clientless")
 	require.Nil(t, s.attachCh)
 	assertClosed(t, ch)
 

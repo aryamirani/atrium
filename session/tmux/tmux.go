@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,12 +140,22 @@ type Session struct {
 	// can't flood the log with hundreds of identical lines per second.
 	captureErrLog *log.Every
 
-	// Initialized by Start or Restore
-	//
-	// ptmx is a PTY is running the tmux attach command. This can be resized to change the
-	// stdout dimensions of the tmux pane. On detach, we close it and set a new one.
-	// This should never be nil.
+	// ptmx is the PTY master of the *interactive* tmux attach client. It is non-nil
+	// ONLY while the user is interactively attached (set in Attach, closed+nil'd in
+	// detachCleanup). A detached session holds NO tmux client — its geometry is driven
+	// server-side by resize-window — so ptmx == nil is the normal detached state.
 	ptmx *os.File
+	// attachCmd is the interactive attach-session process behind ptmx. Closing ptmx
+	// makes that process exit; we Wait() on it in detachCleanup to reap it (without a
+	// Wait the exited client lingers as a zombie). Non-nil only while attached.
+	attachCmd *exec.Cmd
+	// detachedW/H is the last preview size pushed via SetDetachedSize. applyDetachedGeometry
+	// resize-windows the detached session to it, and the dedupe skips redundant resizes.
+	// detachedSizeMu guards all three against a layout-thread SetDetachedSize racing a
+	// detach/start goroutine's applyDetachedGeometry.
+	detachedW, detachedH int
+	detachedSizeSet      bool
+	detachedSizeMu       sync.Mutex
 	// monitor monitors the tmux pane content and sends signals to the UI when it's status changes
 	monitor *statusMonitor
 	// monitorMu serializes Poll. The metadata tick polls each session once per cycle, but
@@ -406,7 +417,7 @@ func (t *Session) start(workDir string, program string) error {
 	args = append(args, program)
 	cmd := tmuxCommand(t.baseContext(), args...)
 
-	ptmx, err := t.ptyFactory.Start(cmd)
+	ptmx, ptmxCmd, err := t.ptyFactory.Start(cmd)
 	if err != nil {
 		// Cleanup any partially created session if any exists.
 		if t.DoesSessionExist() {
@@ -441,7 +452,10 @@ func (t *Session) start(workDir string, program string) error {
 			}
 		}
 	}
+	// The new-session client has done its job (the session exists); close its pty and
+	// reap the process so it doesn't linger as a zombie.
 	_ = ptmx.Close()
+	reapClient(ptmxCmd)
 
 	// history-limit and mouse are set server-globally by the bundled managed
 	// config, so no per-session set-option is needed here.
@@ -499,24 +513,63 @@ func (t *Session) IsReadyForPrompt() bool {
 	return !gated
 }
 
-// Restore attaches to an existing session and restores the window size
+// Restore re-baselines an existing detached session: it (clientlessly) re-applies the
+// detached window geometry and resets the status monitor. It does NOT open a tmux
+// client — a detached session holds none — so it never touches t.ptmx; the next
+// Attach creates the one interactive client.
+//
+// It errors when the session no longer exists. Resume/recover callers (instance.go)
+// rely on that signal to fall back to kill-and-recreate; in the old client model the
+// signal came from the attach-session fork failing, so the explicit has-session probe
+// preserves it.
 func (t *Session) Restore() error {
-	// The attach client lives until detach/close, so it runs under the bare base
-	// context (killed on app shutdown), never a per-op timeout.
-	ptmx, err := t.ptyFactory.Start(tmuxCommand(t.baseContext(), "attach-session", "-t", t.sanitizedName))
-	if err != nil {
-		return fmt.Errorf("error opening PTY: %w", err)
+	if !t.DoesSessionExist() {
+		return fmt.Errorf("cannot restore: tmux session %s does not exist", t.snapshotName())
 	}
-	t.ptmx = ptmx
+	// Re-apply detached geometry server-side (no client). Best-effort: a transient
+	// resize failure shouldn't fail the resume — capture still works, geometry
+	// self-heals on the next SetDetachedSize.
+	t.applyDetachedGeometry()
 	// Serialize the monitor swap against Poll/RuntimePermissionMode, which read
-	// t.monitor under this lock. Detach calls Restore on the detach goroutine
-	// while an in-flight tick may still be inside Poll; the lock (around the
-	// pointer write only, not the pty I/O above) closes the data race. No Restore
-	// caller holds monitorMu, so this cannot deadlock.
+	// t.monitor under this lock. Detach calls Restore on the detach goroutine while an
+	// in-flight tick may still be inside Poll; the lock closes the data race. No
+	// Restore caller holds monitorMu, so this cannot deadlock.
 	t.monitorMu.Lock()
 	t.monitor = newStatusMonitor(t.program)
 	t.monitorMu.Unlock()
 	return nil
+}
+
+// reapClient Wait()s a finished tmux client process so it is not left a zombie. The
+// pty master must already be closed (that is what makes the client exit). It runs in
+// a goroutine so a detach never blocks on client teardown; a never-Started cmd (test
+// fakes) returns a harmless error that is discarded.
+func reapClient(c *exec.Cmd) {
+	if c == nil {
+		return
+	}
+	go func() { _ = c.Wait() }()
+}
+
+// applyDetachedGeometry sizes the detached session's window to the last preview size
+// using a server-side resize-window (resize-window auto-sets the window to
+// window-size manual, so no client and no separate set-option are needed). No-op
+// until a size has been recorded. Must NOT be called while attached — a resize-window
+// then would flip the window back to manual and fight the live client.
+func (t *Session) applyDetachedGeometry() {
+	t.detachedSizeMu.Lock()
+	w, h, ok := t.detachedW, t.detachedH, t.detachedSizeSet
+	t.detachedSizeMu.Unlock()
+	if !ok {
+		return
+	}
+	ctx, cancel := t.opContext()
+	defer cancel()
+	resize := tmuxCommand(ctx, "resize-window", "-t", t.snapshotName(),
+		"-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+	if err := t.cmdExec.Run(resize); err != nil {
+		log.InfoLog.Printf("resize-window for %s failed: %v", t.snapshotName(), err)
+	}
 }
 
 type statusMonitor struct {
@@ -985,14 +1038,24 @@ func classifyAttachInput(in []byte, allowKill bool) attachInputAction {
 // key (Ctrl+X) detaches and sets KillRequested so the caller can tear the session
 // down; the Terminal-tab shell passes false so Ctrl+X stays a normal shell key.
 func (t *Session) Attach(allowKill bool) (chan struct{}, error) {
-	// A prior Detach whose Restore failed leaves ptmx nil rather than panicking;
-	// re-establish the attach pty here so the degraded session heals transparently
-	// on the next attach. If Restore fails again, propagate it to the caller.
-	if t.ptmx == nil {
-		if err := t.Restore(); err != nil {
-			return nil, fmt.Errorf("cannot attach: pty unavailable and restore failed: %w", err)
-		}
+	// A detached session holds no client; this attach creates the one interactive
+	// client. First flip the window back to client-tracking so the live terminal
+	// drives its size (detached it was window-size manual at the preview size). This
+	// must be the WINDOW option; best-effort — if it fails the window stays manual and
+	// renders at the preview size, degraded but not fatal.
+	latest := tmuxCommand(t.baseContext(), "set-window-option", "-t", t.sanitizedName, "window-size", "latest")
+	if err := t.cmdExec.Run(latest); err != nil {
+		log.InfoLog.Printf("set window-size latest for %s failed: %v", t.sanitizedName, err)
 	}
+
+	// The attach client lives until detach/close, so it runs under the bare base
+	// context (killed on app shutdown), never a per-op timeout.
+	ptmx, ptmxCmd, err := t.ptyFactory.Start(tmuxCommand(t.baseContext(), "attach-session", "-t", t.sanitizedName))
+	if err != nil {
+		return nil, fmt.Errorf("cannot attach: %w", err)
+	}
+	t.ptmx = ptmx
+	t.attachCmd = ptmxCmd
 
 	t.attachCh = make(chan struct{})
 	t.killRequested = false
@@ -1143,14 +1206,18 @@ func (t *Session) detachCleanup() []error {
 		t.cancel = nil
 	}
 
-	// Close the attached pty session. Closing unblocks the io.Copy goroutine via
-	// EOF; nil the field so a stale pointer is never reused.
+	// Close the attached pty session. Closing unblocks the io.Copy goroutine via EOF
+	// and makes the attach-session client process exit; nil the field so a stale
+	// pointer is never reused. Reap the client (async) so its exit is collected
+	// instead of leaving a zombie.
 	if t.ptmx != nil {
 		if err := t.ptmx.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("error closing attach pty session: %w", err))
 		}
 		t.ptmx = nil
 	}
+	reapClient(t.attachCmd)
+	t.attachCmd = nil
 
 	if t.wg != nil {
 		t.wg.Wait()
@@ -1162,9 +1229,9 @@ func (t *Session) detachCleanup() []error {
 	return errs
 }
 
-// DetachSafely disconnects from the current tmux session without panicking. It does
-// not re-establish the attach pty; the next Attach self-heals a nil ptmx. Used by
-// the programmatic lifecycle paths (pause, lost-session recovery).
+// DetachSafely disconnects from the current tmux session without panicking. Used by
+// the programmatic lifecycle paths (pause, lost-session recovery). It re-applies the
+// detached (clientless) geometry best-effort so the session is sized for capture.
 func (t *Session) DetachSafely() error {
 	if t.attachCh == nil {
 		return nil // Already detached
@@ -1172,8 +1239,10 @@ func (t *Session) DetachSafely() error {
 
 	errs := t.detachCleanup()
 
-	// This path nils ptmx without re-Restoring; the next Attach self-heals. Clear
-	// the poll guard so the session is polled again while detached.
+	// Re-baseline detached geometry (best-effort; harmless if the session is gone).
+	t.applyDetachedGeometry()
+
+	// Clear the poll guard so the session is polled again while detached.
 	t.attached.Store(false)
 
 	// attachCh closed last; nothing reads detachErr on this path, but keep ordering
@@ -1189,11 +1258,13 @@ func (t *Session) DetachSafely() error {
 	return nil
 }
 
-// Detach disconnects from the current tmux session and re-establishes the attach pty
-// for the next Attach. It degrades rather than panicking: a failed pty close or
-// Restore is recorded in detachErr (surfaced via AttachExitError) and logged, leaving
-// the session recoverable — polling tolerates a nil ptmx, and the next Attach
-// re-Restores it. The caller has already set detachReason / killRequested.
+// Detach disconnects the interactive client and re-baselines the detached session
+// (clientless): the client process is reaped, the window is resized back to the
+// preview size, and the status monitor is reset. It degrades rather than panicking:
+// a failed pty close is recorded in detachErr (surfaced via AttachExitError) and
+// logged. A failed geometry resize is best-effort only (logged, NOT folded into
+// detachErr) — the detach itself succeeded; geometry is cosmetic and self-heals.
+// The caller has already set detachReason / killRequested.
 func (t *Session) Detach() {
 	if t.attachCh == nil {
 		return // already detached / never attached
@@ -1201,10 +1272,12 @@ func (t *Session) Detach() {
 
 	errs := t.detachCleanup()
 
-	// Re-establish the attach pty for the next Attach. On failure leave ptmx nil
-	// (detachCleanup already did) and record it; Attach/Resume will re-Restore.
+	// Re-baseline the now-detached session: resize-window back to the preview size
+	// (Attach left it window-size latest at the live terminal size) and reset the
+	// monitor. Restore errors only if the session vanished — best-effort here, not a
+	// detach failure.
 	if err := t.Restore(); err != nil {
-		errs = append(errs, fmt.Errorf("error restoring attach pty after detach: %w", err))
+		log.InfoLog.Printf("re-baseline after detach for %s: %v", t.sanitizedName, err)
 	}
 
 	if len(errs) > 0 {
@@ -1214,9 +1287,9 @@ func (t *Session) Detach() {
 		t.detachErr = nil
 	}
 
-	// Clear the poll guard only now, after Restore has reinstalled the detached
-	// ptmx/monitor, so no metadata tick observes a half-swapped monitor. Keep
-	// this strictly after Restore on any future reorder.
+	// Clear the poll guard only now, after Restore has re-applied geometry + swapped
+	// the monitor, so no metadata tick observes a half-swapped monitor. Keep this
+	// strictly after Restore on any future reorder.
 	t.attached.Store(false)
 
 	// attachCh closed LAST, after detachErr is written, so the reader observes it.
@@ -1242,6 +1315,10 @@ func (t *Session) Close() error {
 		}
 		t.ptmx = nil
 	}
+	// Reap the interactive client if Close races a live attach (normally nil while
+	// detached).
+	reapClient(t.attachCmd)
+	t.attachCmd = nil
 
 	ctx, cancel := t.opContext()
 	defer cancel()
@@ -1264,10 +1341,24 @@ func (t *Session) Close() error {
 	return errors.New(errMsg)
 }
 
-// SetDetachedSize set the width and height of the session while detached. This makes the
-// tmux output conform to the specified shape.
+// SetDetachedSize sets the window size of the session so its captured output conforms
+// to the preview pane's shape. It records the size for later re-baselining, then:
+//   - while ATTACHED: records only. The live client owns geometry (window-size latest);
+//     issuing resize-window here would auto-flip the window back to manual and break the
+//     client's size tracking. The size is re-applied on detach.
+//   - while DETACHED: resizes the window server-side (no client), skipping the call when
+//     the size is unchanged so the per-layout-pass fan-out over every session is free.
 func (t *Session) SetDetachedSize(width, height int) error {
-	return t.updateWindowSize(width, height)
+	t.detachedSizeMu.Lock()
+	unchanged := t.detachedSizeSet && t.detachedW == width && t.detachedH == height
+	t.detachedW, t.detachedH, t.detachedSizeSet = width, height, true
+	t.detachedSizeMu.Unlock()
+
+	if t.attached.Load() || unchanged {
+		return nil
+	}
+	t.applyDetachedGeometry()
+	return nil
 }
 
 // clampUint16 bounds an int into the uint16 range. PTY winsize fields are
@@ -1283,8 +1374,9 @@ func clampUint16(n int) uint16 {
 	return uint16(n)
 }
 
-// updateWindowSize updates the window size of the PTY. A nil ptmx (e.g. during the
-// degraded window after a failed Restore) makes it a no-op rather than a crash.
+// updateWindowSize resizes the interactive attach client's PTY. It is called only
+// while attached (by monitorWindowSize on SIGWINCH), where t.ptmx is the live client;
+// the nil guard stays as defense for a late winch after detach closed the pty.
 func (t *Session) updateWindowSize(cols, rows int) error {
 	if t.ptmx == nil {
 		return nil
@@ -1347,6 +1439,45 @@ func (t *Session) CapturePaneContentWithOptions(start, end string) (string, erro
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %w", err)
 	}
 	return string(output), nil
+}
+
+// PrepareLiveServer migrates an already-running tmux server to the clientless
+// geometry model at TUI startup. The managed -f config only configures a *freshly*
+// started server, but Atrium's server persists across atrium relaunches (pause only
+// detaches; nothing short of kill-server stops it), so an upgrade must push the global
+// options to the live server and clear the previous binary's leftover clients.
+//
+// In the clientless model a detached session holds NO tmux client, so any client
+// present at startup — before this TUI has attached anything — is a stale phantom from
+// the prior (pre-clientless) run; detach each. Everything is best-effort: when no
+// server is running every command errors harmlessly (and does NOT spawn one), so this
+// is a no-op on a fresh install. Call once, before the event loop, only on the
+// interactive TUI path (not the daemon).
+func PrepareLiveServer(ctx context.Context, cmdExec cmd.Executor) {
+	run := func(args ...string) error {
+		c, cancel := context.WithTimeout(ctx, tmuxOpTimeout)
+		defer cancel()
+		return cmdExec.Run(tmuxCommand(c, args...))
+	}
+
+	// Adopt the clientless geometry options on the live server.
+	_ = run("set-option", "-g", "window-size", "manual")
+	_ = run("set-option", "-g", "aggressive-resize", "off")
+
+	// Sweep any stale phantom clients left attached by a prior run.
+	listCtx, cancel := context.WithTimeout(ctx, tmuxOpTimeout)
+	defer cancel()
+	out, err := cmdExec.Output(tmuxCommand(listCtx, "list-clients", "-F", "#{client_tty}"))
+	if err != nil {
+		return // no server, or no clients — nothing to sweep
+	}
+	for _, tty := range strings.Fields(string(out)) {
+		if err := run("detach-client", "-t", tty); err != nil {
+			log.InfoLog.Printf("sweep stale client %s: %v", tty, err)
+		} else {
+			log.InfoLog.Printf("swept stale tmux client %s", tty)
+		}
+	}
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"

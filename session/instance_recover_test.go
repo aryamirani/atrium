@@ -24,13 +24,14 @@ type recordingPtyFactory struct {
 	startErr error
 }
 
-func (f *recordingPtyFactory) Start(cmd *exec.Cmd) (*os.File, error) {
+func (f *recordingPtyFactory) Start(cmd *exec.Cmd) (*os.File, *exec.Cmd, error) {
 	f.cmds = append(f.cmds, cmd)
 	if f.startErr != nil {
-		return nil, f.startErr
+		return nil, nil, f.startErr
 	}
 	// A real *os.File the caller can Close(); contents are irrelevant.
-	return os.CreateTemp("", "pty-stub")
+	file, err := os.CreateTemp("", "pty-stub")
+	return file, cmd, err
 }
 
 func (f *recordingPtyFactory) Close() {}

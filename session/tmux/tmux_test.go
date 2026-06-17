@@ -31,9 +31,9 @@ type MockPtyFactory struct {
 	StartErr error
 }
 
-func (pt *MockPtyFactory) Start(cmd *exec.Cmd) (*os.File, error) {
+func (pt *MockPtyFactory) Start(cmd *exec.Cmd) (*os.File, *exec.Cmd, error) {
 	if pt.StartErr != nil {
-		return nil, pt.StartErr
+		return nil, nil, pt.StartErr
 	}
 	filePath := filepath.Join(pt.t.TempDir(), fmt.Sprintf("pty-%s-%d", pt.t.Name(), rand.Int31()))
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
@@ -41,7 +41,7 @@ func (pt *MockPtyFactory) Start(cmd *exec.Cmd) (*os.File, error) {
 		pt.cmds = append(pt.cmds, cmd)
 		pt.files = append(pt.files, f)
 	}
-	return f, err
+	return f, cmd, err
 }
 
 func (pt *MockPtyFactory) Close() {}
@@ -819,7 +819,10 @@ func TestStartSession(t *testing.T) {
 
 	err := session.Start(workdir)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(ptyFactory.cmds))
+	// Clientless: start spawns ONE pty (the new-session bootstrap), not the old
+	// new-session + persistent attach-session phantom. A detached session holds no
+	// client.
+	require.Equal(t, 1, len(ptyFactory.cmds))
 
 	// Atrium runs on a dedicated socket with a bundled config, so every command is
 	// prefixed with `-L <socket> -f <conf>`. The conf path is absolute and
@@ -831,19 +834,13 @@ func TestStartSession(t *testing.T) {
 	require.Contains(t, newSession, "-c "+workdir)
 	require.Contains(t, newSession, "-n test-session")
 	require.Contains(t, newSession, "claude")
+	require.NotContains(t, newSession, "attach-session")
 
-	attach := cmd2.ToString(ptyFactory.cmds[1])
-	require.Contains(t, attach, "-L "+socketName())
-	require.Contains(t, attach, "attach-session -t "+Prefix()+"test-session")
+	require.Equal(t, 1, len(ptyFactory.files))
 
-	require.Equal(t, 2, len(ptyFactory.files))
-
-	// File should be closed.
+	// The bootstrap pty is closed once the session exists.
 	_, err = ptyFactory.files[0].Stat()
 	require.Error(t, err)
-	// File should be open
-	_, err = ptyFactory.files[1].Stat()
-	require.NoError(t, err)
 }
 
 // Regression: a session title with a shell metacharacter (e.g. "Surya's comment") flows

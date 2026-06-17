@@ -77,6 +77,10 @@ var (
 			if err := tmux.Init(cfg.TmuxConfigOverride, cfg.GetSessionContextBar()); err != nil {
 				log.WarningLog.Printf("failed to initialize tmux config: %v", err)
 			}
+			// Migrate an already-running tmux server (which persists across relaunches)
+			// to the clientless geometry model and sweep any phantom clients a prior
+			// pre-clientless run left attached. Best-effort; no-op on a fresh server.
+			tmux.PrepareLiveServer(ctx, cmd2.MakeExecutor())
 
 			// Program flag overrides config
 			program := cfg.GetProgram()

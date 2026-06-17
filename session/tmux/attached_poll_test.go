@@ -50,7 +50,7 @@ func TestPollRestoreNoRace(t *testing.T) {
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("hello"), nil },
 	}
 	s := NewSessionWithDeps(context.Background(), "race", "aider", NewMockPtyFactory(t), cmdExec)
-	require.NoError(t, s.Restore()) // seed an initial ptmx/monitor
+	require.NoError(t, s.Restore()) // seed an initial monitor (clientless: no ptmx)
 
 	const iters = 500
 	var wg sync.WaitGroup
