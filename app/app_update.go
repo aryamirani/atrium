@@ -146,6 +146,37 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateRename
 		m.recomputeLayout() // the progress bar gave up its row; the overlay self-documents
 		return m, nil
+	case smartDispatchDoneMsg:
+		// Drop a result the user has moved past: the exact form it was launched for is no
+		// longer the active overlay (cancelled, submitted, or a different form opened).
+		if msg.form == nil || m.textInputOverlay != msg.form {
+			return m, nil
+		}
+		m.textInputOverlay.SetProjectHint("")
+		if msg.err != nil {
+			return m, nil // routing failed; leave the form as the user left it
+		}
+		// Upgrade the title independently of routing: a confident match wants only a
+		// better title, and even an unrouted result may carry a usable one. Replace the
+		// deterministic placeholder only while the user hasn't typed their own. Do this
+		// before any re-point so the retarget's async branch check below validates the
+		// final title (not the placeholder) against the routed repo.
+		if msg.title != "" && m.textInputOverlay.GetTitle() == m.smartDispatchSeededTitle {
+			m.textInputOverlay.SetTitleValue(msg.title)
+			m.refreshTitleError()
+		}
+		var cmds []tea.Cmd
+		// Re-point the project only when the router found one and the user hasn't moved
+		// the picker themselves (still on the contextual default the form opened with).
+		// A confident match already sits on its project, so this is a no-op there.
+		if msg.project != "" {
+			if path := m.candidatePathForBasename(msg.project); path != "" &&
+				m.textInputOverlay.GetSelectedPath() == m.newSessionPath && path != m.newSessionPath {
+				m.textInputOverlay.SelectPath(path)
+				cmds = append(cmds, m.retargetNewSession(path))
+			}
+		}
+		return m, tea.Batch(cmds...)
 	case metadataUpdateDoneMsg:
 		if recoverLostInstances(msg.results, m.lostStrikes) {
 			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
@@ -677,6 +708,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// The quick entry point: the same form, focused on the title, so
 		// "n → type a name → ⌃S" creates a session in the contextual repo.
 		return m, m.openCreateForm(true)
+	case keys.KeySmartDispatch:
+		// Smart dispatch: one free-form line routed to a project and a pre-filled form.
+		m.state = statePrompt
+		m.textInputOverlay = overlay.NewSmartDispatchOverlay("Describe the session")
+		return m, tea.WindowSize()
 	case keys.KeyQuickSend:
 		return m.openQuickSend()
 	case keys.KeyApprove:
