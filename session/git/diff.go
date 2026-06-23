@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ZviBaratz/atrium/log"
 )
 
 // revListCacheTTL is how long the rev-list commit counts (ahead/behind) returned
@@ -73,12 +75,9 @@ func (g *Worktree) Diff() *DiffStats {
 	// against the local without holding the lock.
 	wt := g.snapshotWorktreePath()
 
-	// -N stages untracked files (intent to add), including them in the diff
-	_, err := g.runGitCommand(wt, "add", "-N", ".")
-	if err != nil {
-		stats.Error = err
-		return stats
-	}
+	// Surface untracked files in the diff (see intentAddUntracked). Best-effort: a
+	// failure here must not blank the diff, so its error is intentionally not propagated.
+	g.intentAddUntracked(wt)
 
 	content, err := g.runGitCommand(wt, "--no-pager", "diff", g.GetBaseCommitSHA())
 	if err != nil {
@@ -109,12 +108,8 @@ func (g *Worktree) DiffNumstat() *DiffStats {
 	// See Diff: snapshot the worktree path so a concurrent rename can't tear the read.
 	wt := g.snapshotWorktreePath()
 
-	// -N stages untracked files (intent to add), including them in the diff
-	_, err := g.runGitCommand(wt, "add", "-N", ".")
-	if err != nil {
-		stats.Error = err
-		return stats
-	}
+	// See Diff: best-effort intent-add, error intentionally not propagated.
+	g.intentAddUntracked(wt)
 
 	out, err := g.runGitCommand(wt, "--no-pager", "diff", "--numstat", g.GetBaseCommitSHA())
 	if err != nil {
@@ -134,6 +129,45 @@ func (g *Worktree) snapshotWorktreePath() string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.worktreePath
+}
+
+// intentAddUntracked makes the agent's untracked files visible in `git diff <base>`
+// by staging just those paths as intent-to-add (`git add -N`). The old code ran an
+// unconditional `add -N .` on every 500ms poll tick, which rewrites the index even when
+// the worktree is clean — needless churn that also races the agent's own git operations
+// on the shared index. This first lists untracked paths with a read-only
+// `git ls-files --others` and only runs `add -N` when there is something to add, so the
+// common steady state costs one read-only tree walk and no index write.
+//
+// ls-files (rather than parsing `git status`) is deliberate: it is not affected by
+// `status.showUntrackedFiles`, so new files still surface even when the user has
+// configured `git status` to hide untracked files — matching the original `add .`, which
+// ignored that setting (a status-based scan would silently drop them). `--exclude-standard`
+// applies .gitignore/exclude exactly like `add -N .` did, and `--directory` collapses a
+// wholly-untracked directory to a single `dir/` entry that `add -N -- dir/` recurses into,
+// bounding the argument list.
+//
+// It is best-effort and never blocks the diff: on failure the untracked files are simply
+// absent from this tick (tracked changes still render) and the next poll retries. In
+// particular `add -N` is allowed to fail silently on the common race where the agent
+// creates and then deletes an untracked temp/swap file between the listing and the add —
+// failing the whole command there would otherwise blank the diff on every editor write.
+func (g *Worktree) intentAddUntracked(wt string) {
+	// -z emits raw, NUL-terminated paths so names with spaces/tabs/unicode round-trip
+	// through `add -N --` without the C-quoting git applies by default.
+	out, err := g.runGitCommand(wt, "ls-files", "--others", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		log.WarningLog.Printf("intent-add: list untracked files failed: %v", err)
+		return
+	}
+	out = strings.TrimRight(out, "\x00")
+	if out == "" {
+		return
+	}
+	paths := strings.Split(out, "\x00")
+	// Tolerate a path that vanished between the listing and the add (see above); the
+	// next poll recovers, so a transient race must not surface as a diff error.
+	_, _ = g.runGitCommand(wt, append([]string{"add", "-N", "--"}, paths...)...)
 }
 
 // computeRepoStats fills in the commit/behind/dirty fields on stats. It is
