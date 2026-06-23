@@ -846,8 +846,8 @@ func (i *Instance) Preview() (string, error) {
 	//
 	// A started session whose tmux pane has died (server restart, the agent process exited,
 	// an external kill) would otherwise fail capture every refresh and escalate to the error
-	// box. Treat a missing session as empty; the metadata loop detects it via TmuxAlive() and
-	// recovers the instance to Paused.
+	// box. Treat a missing session as empty; the metadata loop detects it via Poll's PaneDead
+	// and recovers the instance to Paused.
 	ts := i.tmux()
 	if ts == nil || !ts.DoesSessionExist() {
 		return "", nil
@@ -885,7 +885,9 @@ func (i *Instance) PollNow() tmux.PaneState {
 // the session is blocked on the user, so surface NeedsInput. PanePromptManual surfaces
 // NeedsInput even under AutoYes — its auto-answer is destructive (claude's plan approval:
 // Enter accepts the plan AND enables auto-accept). PaneUnknown (an unreadable or
-// not-yet-started pane) leaves the status untouched.
+// not-yet-started pane) and PaneDead (the session is gone) both leave the status
+// untouched: a dead session is recovered to Paused separately, debounced by the
+// metadata loop's recoverLostInstances, not from here.
 func (i *Instance) ApplyPaneState(state tmux.PaneState) (tapped bool) {
 	switch state {
 	case tmux.PaneWorking:
@@ -900,7 +902,7 @@ func (i *Instance) ApplyPaneState(state tmux.PaneState) (tapped bool) {
 		i.SetStatus(NeedsInput)
 	case tmux.PaneIdle:
 		i.SetStatus(Ready)
-	case tmux.PaneUnknown:
+	case tmux.PaneUnknown, tmux.PaneDead:
 	}
 	return false
 }
