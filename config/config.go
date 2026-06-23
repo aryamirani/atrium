@@ -195,6 +195,17 @@ type Config struct {
 	// ready for review (on GitHub); set this false for the one-key push→PR→merge
 	// loop entirely in-app.
 	PRCreateDraft *bool `json:"pr_create_draft,omitempty"`
+	// UpdateBaseOnCreate selects whether a new session fetches its base branch and
+	// branches off the freshest remote tip (origin/<base> when local is behind),
+	// rather than a possibly-stale local branch. nil means use the default (on), so
+	// configs predating this key freshen by default. Non-invasive: it never moves a
+	// local branch — see FastForwardLocalBase for that.
+	UpdateBaseOnCreate *bool `json:"update_base_on_create,omitempty"`
+	// FastForwardLocalBase, when UpdateBaseOnCreate is also on, additionally
+	// fast-forwards the local base branch to origin during session creation (a pure
+	// ref move when the branch is not checked out, or git merge --ff-only when it is
+	// and the tree is clean). Opt-in: nil/false means Atrium makes no local changes.
+	FastForwardLocalBase *bool `json:"fast_forward_local_base,omitempty"`
 	// ClaudeAccounts routes sessions to a per-session CLAUDE_CONFIG_DIR (which
 	// Claude Code account a session runs under) by matching the worktree's git
 	// origin remote or, for a non-git/direct session with no remote, its
@@ -367,6 +378,20 @@ func (c *Config) GetPRCreateDraft() bool {
 	return c == nil || c.PRCreateDraft == nil || *c.PRCreateDraft
 }
 
+// GetUpdateBaseOnCreate reports whether new sessions branch off the freshest
+// remote tip of their base. A nil field (an older config file with no such key)
+// — or a nil Config — defaults to on.
+func (c *Config) GetUpdateBaseOnCreate() bool {
+	return c == nil || c.UpdateBaseOnCreate == nil || *c.UpdateBaseOnCreate
+}
+
+// GetFastForwardLocalBase reports whether session creation also fast-forwards the
+// local base branch to origin. Defaults to off (opt-in): a nil field or nil
+// Config makes no local changes.
+func (c *Config) GetFastForwardLocalBase() bool {
+	return c != nil && c.FastForwardLocalBase != nil && *c.FastForwardLocalBase
+}
+
 // GetAutoUpdateMode returns the normalized auto-update mode: AutoUpdateAuto,
 // AutoUpdateOff, or AutoUpdateNotify for a nil Config, an empty value, or
 // anything unrecognized — a typo must never silently disable update hints nor
@@ -510,6 +535,7 @@ func DefaultConfig() *Config {
 	sessionContextBar := true
 	hintBar := true
 	showReleaseNotes := true
+	updateBaseOnCreate := true
 	return &Config{
 		DefaultProgram:     defaultProgram,
 		AutoYes:            false,
@@ -528,6 +554,7 @@ func DefaultConfig() *Config {
 		AutoAttach:                  &autoAttach,
 		KillDoubleTapConfirm:        &killDoubleTap,
 		ShowReleaseNotesAfterUpdate: &showReleaseNotes,
+		UpdateBaseOnCreate:          &updateBaseOnCreate,
 		CarryFiles:                  append([]string(nil), defaultCarryFiles...),
 	}
 }

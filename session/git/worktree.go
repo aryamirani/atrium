@@ -23,6 +23,11 @@ const (
 	// gitNetworkTimeout bounds network-bound operations (push, fetch,
 	// gh repo sync / auth / browse).
 	gitNetworkTimeout = 60 * time.Second
+	// baseFetchTimeout bounds the create-time fetch of a session's base branch.
+	// It is deliberately shorter than gitNetworkTimeout: this fetch runs while the
+	// session shows "Setting up workspace…", so it must give up quickly and fall
+	// back to the local base rather than stall creation on a slow/offline remote.
+	baseFetchTimeout = 10 * time.Second
 )
 
 func getWorktreeDirectory() (string, error) {
@@ -51,7 +56,8 @@ type Worktree struct {
 	// branchPrefix is the configured prefix for session branches (default "<username>/").
 	// Captured at construction time so Rename does not need a config.LoadConfig() disk read.
 	branchPrefix string
-	// Base commit hash for the worktree
+	// Base commit hash for the worktree. Guarded by baseMu (written in
+	// setupNewWorktree on the Start goroutine, read by storage persistence).
 	baseCommitSHA string
 	// baseRef is the ref the session branch is created from (a branch name to base on,
 	// or "" to base on HEAD). The session always gets its own branch; baseRef only
@@ -61,6 +67,14 @@ type Worktree struct {
 	// When true, the branch will not be deleted on cleanup. Only set for sessions restored
 	// from storage that predate the branch-off model; new sessions are always branch-owners.
 	isExistingBranch bool
+	// updateBaseOnCreate, when true, makes setupNewWorktree fetch the base branch
+	// and start the session off the freshest remote tip. fastForwardLocalBase, when
+	// also true, additionally fast-forwards the local base branch (opt-in local
+	// mutation). Both are captured from config at construction (newSessionWorktree)
+	// and are only consulted on first creation; a zero-value Worktree (test literals)
+	// has both off, reproducing the historical local-preferred behavior.
+	updateBaseOnCreate   bool
+	fastForwardLocalBase bool
 	// statsCache caches rev-list commit counts (ahead/behind) for revListCacheTTL
 	// and the dirty flag for dirtyCacheTTL. The dirty TTL (1s) is shorter than the
 	// rev-list TTL (3s) because dirty reflects uncommitted file edits that should
@@ -75,6 +89,15 @@ type Worktree struct {
 	// independent of mu and statsCacheMu, so it never shares a lock ordering.
 	prCache   PRStatus
 	prCacheMu sync.Mutex
+	// baseMu guards baseRef and baseCommitSHA. Both are written during
+	// setupNewWorktree (on the Start goroutine) — baseCommitSHA always, baseRef when
+	// freshening rewrites it to origin/<ref> — after the worktree is already shared
+	// with the Instance. Storage persistence (ToInstanceData via SaveInstances, which
+	// serializes every instance regardless of Started state) can read both from the
+	// main thread during that window, so the writes and those reads must synchronize.
+	// A dedicated leaf mutex, like statsCacheMu/prCacheMu, so it never shares a lock
+	// ordering with mu.
+	baseMu sync.RWMutex
 }
 
 // NewWorktreeFromStorage rehydrates a Worktree from its persisted fields
@@ -151,13 +174,15 @@ func newSessionWorktree(ctx context.Context, repoPath string, sessionName string
 	}
 
 	return &Worktree{
-		baseCtx:      ctx,
-		repoPath:     repoPath,
-		sessionName:  sessionName,
-		branchName:   branchName,
-		branchPrefix: cfg.BranchPrefix,
-		worktreePath: worktreePath,
-		baseRef:      baseRef,
+		baseCtx:              ctx,
+		repoPath:             repoPath,
+		sessionName:          sessionName,
+		branchName:           branchName,
+		branchPrefix:         cfg.BranchPrefix,
+		worktreePath:         worktreePath,
+		baseRef:              baseRef,
+		updateBaseOnCreate:   cfg.GetUpdateBaseOnCreate(),
+		fastForwardLocalBase: cfg.GetFastForwardLocalBase(),
 	}, branchName, nil
 }
 
@@ -190,15 +215,38 @@ func (g *Worktree) GetRepoName() string {
 	return filepath.Base(g.repoPath)
 }
 
-// GetBaseCommitSHA returns the base commit SHA for the worktree
+// GetBaseCommitSHA returns the base commit SHA for the worktree, read under baseMu
+// so it is safe against the setupNewWorktree write on the Start goroutine.
 func (g *Worktree) GetBaseCommitSHA() string {
+	g.baseMu.RLock()
+	defer g.baseMu.RUnlock()
 	return g.baseCommitSHA
+}
+
+// setBaseCommitSHA updates baseCommitSHA under baseMu. Called from setupNewWorktree
+// once the start point resolves; the lock makes that write safe against concurrent
+// GetBaseCommitSHA reads (storage persistence) on other goroutines.
+func (g *Worktree) setBaseCommitSHA(sha string) {
+	g.baseMu.Lock()
+	g.baseCommitSHA = sha
+	g.baseMu.Unlock()
 }
 
 // GetBaseRef returns the ref the session branch was based on ("" if branched from HEAD
 // or if not persisted for a legacy session).
 func (g *Worktree) GetBaseRef() string {
+	g.baseMu.RLock()
+	defer g.baseMu.RUnlock()
 	return g.baseRef
+}
+
+// setBaseRef updates baseRef under its mutex. Called from resolveStartPoint when
+// freshening rebases the session onto origin/<ref>; the lock makes that write safe
+// against concurrent GetBaseRef/revListCounts reads on other goroutines.
+func (g *Worktree) setBaseRef(ref string) {
+	g.baseMu.Lock()
+	g.baseRef = ref
+	g.baseMu.Unlock()
 }
 
 // baseContext returns the lifecycle context subprocesses derive from,

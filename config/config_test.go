@@ -508,6 +508,40 @@ func TestGetPRCreateDraft(t *testing.T) {
 	})
 }
 
+func TestGetUpdateBaseOnCreate(t *testing.T) {
+	t.Run("default config freshens", func(t *testing.T) {
+		assert.True(t, DefaultConfig().GetUpdateBaseOnCreate())
+	})
+	t.Run("nil field (older config) defaults to on", func(t *testing.T) {
+		assert.True(t, (&Config{}).GetUpdateBaseOnCreate())
+	})
+	t.Run("nil receiver defaults to on", func(t *testing.T) {
+		var c *Config
+		assert.True(t, c.GetUpdateBaseOnCreate())
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		v := false
+		assert.False(t, (&Config{UpdateBaseOnCreate: &v}).GetUpdateBaseOnCreate())
+	})
+}
+
+func TestGetFastForwardLocalBase(t *testing.T) {
+	t.Run("default config does not mutate local", func(t *testing.T) {
+		assert.False(t, DefaultConfig().GetFastForwardLocalBase())
+	})
+	t.Run("nil field (older config) defaults to off", func(t *testing.T) {
+		assert.False(t, (&Config{}).GetFastForwardLocalBase())
+	})
+	t.Run("nil receiver defaults to off", func(t *testing.T) {
+		var c *Config
+		assert.False(t, c.GetFastForwardLocalBase())
+	})
+	t.Run("explicit true (opt-in)", func(t *testing.T) {
+		v := true
+		assert.True(t, (&Config{FastForwardLocalBase: &v}).GetFastForwardLocalBase())
+	})
+}
+
 func TestGetCarryFiles(t *testing.T) {
 	t.Run("default config seeds claude settings.local.json", func(t *testing.T) {
 		assert.Equal(t, []string{".claude/settings.local.json"}, DefaultConfig().GetCarryFiles())

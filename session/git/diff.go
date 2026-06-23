@@ -174,7 +174,8 @@ func (g *Worktree) intentAddUntracked(wt string) {
 // best-effort: any failure leaves the corresponding field at its zero value and
 // never sets stats.Error, so a hiccup in a cosmetic counter can't blank the diff.
 // wt is the worktree path snapshotted by the caller under the read lock; baseRef and
-// baseCommitSHA are not mutated by Rename, so they're read directly.
+// baseCommitSHA are not mutated by Rename, so they need no g.mu — revListCounts reads
+// them through baseMu (their getters) instead, which guards the setup-time writes.
 //
 // The rev-list result (commits ahead/behind) is cached for revListCacheTTL because
 // it only changes on an explicit commit and the subprocess is relatively expensive on
@@ -238,8 +239,10 @@ func (g *Worktree) computeRepoStats(stats *DiffStats, wt string) {
 func (g *Worktree) revListCounts(wt string) (commits, behind int, ok bool) {
 	// A single rev-list gives both "ahead" (session commits) and "behind" (base
 	// advanced) when the base ref is known; fall back to ahead-only otherwise.
-	if g.baseRef != "" {
-		out, err := g.runGitCommand(wt, "rev-list", "--left-right", "--count", g.baseRef+"...HEAD")
+	// Read baseRef/baseCommitSHA through baseMu (via their getters): setup writes
+	// both on the Start goroutine while this can run from the poll loop.
+	if baseRef := g.GetBaseRef(); baseRef != "" {
+		out, err := g.runGitCommand(wt, "rev-list", "--left-right", "--count", baseRef+"...HEAD")
 		if err != nil {
 			return 0, 0, false
 		}
@@ -249,8 +252,8 @@ func (g *Worktree) revListCounts(wt string) (commits, behind int, ok bool) {
 		}
 		return ahead, behind, true
 	}
-	if g.baseCommitSHA != "" {
-		out, err := g.runGitCommand(wt, "rev-list", "--count", g.baseCommitSHA+"..HEAD")
+	if baseCommitSHA := g.GetBaseCommitSHA(); baseCommitSHA != "" {
+		out, err := g.runGitCommand(wt, "rev-list", "--count", baseCommitSHA+"..HEAD")
 		if err != nil {
 			return 0, 0, false
 		}

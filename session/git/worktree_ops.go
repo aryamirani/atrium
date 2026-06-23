@@ -134,6 +134,14 @@ func (g *Worktree) setupNewWorktree() error {
 	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
 	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
 
+	// Optionally refresh the base branch from origin so the session starts off the
+	// freshest remote tip rather than a stale local branch (and, when opted in,
+	// fast-forward the local base). Strictly best-effort: it never fails creation,
+	// logging and falling back to the local base on any problem — see worktree_base.go.
+	if g.updateBaseOnCreate {
+		g.updateBaseRef()
+	}
+
 	// Resolve the start point. Branching off a ref (rather than checking it out) succeeds
 	// even when that ref is checked out in another worktree, which is the whole point.
 	startPoint, err := g.resolveStartPoint()
@@ -145,7 +153,7 @@ func (g *Worktree) setupNewWorktree() error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve start point %s: %w", startPoint, err)
 	}
-	g.baseCommitSHA = strings.TrimSpace(output)
+	g.setBaseCommitSHA(strings.TrimSpace(output))
 
 	// Create a new worktree on its own branch from the start point. Starting from a commit
 	// (rather than the current worktree) gives the session a clean slate without inheriting
@@ -160,6 +168,13 @@ func (g *Worktree) setupNewWorktree() error {
 // resolveStartPoint returns the ref to branch the session off. When baseRef is empty this is
 // HEAD; otherwise it is the local branch baseRef, falling back to its remote-tracking
 // counterpart origin/<baseRef> when no local branch exists.
+//
+// When updateBaseOnCreate is set, it instead prefers origin/<ref> whenever the remote tip is
+// ahead of (or equal to) local — freshenRef decides — so the session starts from the latest
+// remote state. In that case it rewrites g.baseRef to the chosen origin/<ref> so the
+// ahead/behind diff stays honest (see freshenRef). A start point is only ever chosen from a
+// ref that exists; local-ahead/diverged and remoteless cases fall through to the historical
+// local-preferred resolution unchanged.
 func (g *Worktree) resolveStartPoint() (string, error) {
 	if g.baseRef == "" {
 		if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", "HEAD"); err != nil {
@@ -170,14 +185,33 @@ func (g *Worktree) resolveStartPoint() (string, error) {
 			}
 			return "", fmt.Errorf("failed to get HEAD commit hash: %w", err)
 		}
+		if g.updateBaseOnCreate {
+			if branch := CurrentBranchName(g.baseContext(), g.repoPath); branch != "" && branch != "HEAD" {
+				if remote := g.freshenRef(branch); remote != "" {
+					g.setBaseRef(remote)
+					return remote, nil
+				}
+			}
+		}
 		return "HEAD", nil
 	}
 
-	if _, err := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.baseRef)); err == nil {
-		return g.baseRef, nil
+	// An explicit base ref may carry a re-entry "origin/" prefix (set by a prior
+	// freshen and persisted); strip it back to the bare branch name for lookups.
+	name := strings.TrimPrefix(g.baseRef, "origin/")
+
+	if g.updateBaseOnCreate {
+		if remote := g.freshenRef(name); remote != "" {
+			g.setBaseRef(remote)
+			return remote, nil
+		}
 	}
-	if _, err := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/remotes/origin/%s", g.baseRef)); err == nil {
-		return fmt.Sprintf("origin/%s", g.baseRef), nil
+
+	if _, err := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", name)); err == nil {
+		return name, nil
+	}
+	if _, err := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/remotes/origin/%s", name)); err == nil {
+		return fmt.Sprintf("origin/%s", name), nil
 	}
 	return "", fmt.Errorf("base branch %q not found locally or on remote", g.baseRef)
 }
