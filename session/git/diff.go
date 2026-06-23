@@ -238,8 +238,10 @@ func (g *Worktree) computeRepoStats(stats *DiffStats, wt string) {
 func (g *Worktree) revListCounts(wt string) (commits, behind int, ok bool) {
 	// A single rev-list gives both "ahead" (session commits) and "behind" (base
 	// advanced) when the base ref is known; fall back to ahead-only otherwise.
-	if g.baseRef != "" {
-		out, err := g.runGitCommand(wt, "rev-list", "--left-right", "--count", g.baseRef+"...HEAD")
+	// Read baseRef through its mutex: freshening can rewrite it on the Start
+	// goroutine while this runs from the poll loop.
+	if baseRef := g.GetBaseRef(); baseRef != "" {
+		out, err := g.runGitCommand(wt, "rev-list", "--left-right", "--count", baseRef+"...HEAD")
 		if err != nil {
 			return 0, 0, false
 		}

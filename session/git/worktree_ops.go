@@ -188,7 +188,7 @@ func (g *Worktree) resolveStartPoint() (string, error) {
 		if g.updateBaseOnCreate {
 			if branch := CurrentBranchName(g.baseContext(), g.repoPath); branch != "" && branch != "HEAD" {
 				if remote := g.freshenRef(branch); remote != "" {
-					g.baseRef = remote
+					g.setBaseRef(remote)
 					return remote, nil
 				}
 			}
@@ -202,7 +202,7 @@ func (g *Worktree) resolveStartPoint() (string, error) {
 
 	if g.updateBaseOnCreate {
 		if remote := g.freshenRef(name); remote != "" {
-			g.baseRef = remote
+			g.setBaseRef(remote)
 			return remote, nil
 		}
 	}

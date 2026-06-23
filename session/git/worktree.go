@@ -88,6 +88,13 @@ type Worktree struct {
 	// independent of mu and statsCacheMu, so it never shares a lock ordering.
 	prCache   PRStatus
 	prCacheMu sync.Mutex
+	// baseRefMu guards baseRef. baseRef is written once during setupNewWorktree (on
+	// the Start goroutine) when freshening rewrites it to origin/<ref>, after the
+	// worktree is already shared with the Instance — so reads from other goroutines
+	// (GetBaseRef via storage persistence; revListCounts via the poll loop) must
+	// synchronize. A dedicated leaf mutex, like statsCacheMu/prCacheMu, so it never
+	// shares a lock ordering with mu.
+	baseRefMu sync.RWMutex
 }
 
 // NewWorktreeFromStorage rehydrates a Worktree from its persisted fields
@@ -213,7 +220,18 @@ func (g *Worktree) GetBaseCommitSHA() string {
 // GetBaseRef returns the ref the session branch was based on ("" if branched from HEAD
 // or if not persisted for a legacy session).
 func (g *Worktree) GetBaseRef() string {
+	g.baseRefMu.RLock()
+	defer g.baseRefMu.RUnlock()
 	return g.baseRef
+}
+
+// setBaseRef updates baseRef under its mutex. Called from resolveStartPoint when
+// freshening rebases the session onto origin/<ref>; the lock makes that write safe
+// against concurrent GetBaseRef/revListCounts reads on other goroutines.
+func (g *Worktree) setBaseRef(ref string) {
+	g.baseRefMu.Lock()
+	g.baseRef = ref
+	g.baseRefMu.Unlock()
 }
 
 // baseContext returns the lifecycle context subprocesses derive from,
