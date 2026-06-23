@@ -153,7 +153,7 @@ func (g *Worktree) setupNewWorktree() error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve start point %s: %w", startPoint, err)
 	}
-	g.baseCommitSHA = strings.TrimSpace(output)
+	g.setBaseCommitSHA(strings.TrimSpace(output))
 
 	// Create a new worktree on its own branch from the start point. Starting from a commit
 	// (rather than the current worktree) gives the session a clean slate without inheriting

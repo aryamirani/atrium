@@ -35,7 +35,11 @@ func (g *Worktree) updateBaseRef() {
 	ctx, cancel := context.WithTimeout(g.baseContext(), baseFetchTimeout)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "git", "-C", g.repoPath, "fetch", "origin", name).Run(); err != nil {
-		log.WarningLog.Printf("base update: fetch origin %s failed, using local base: %v", name, err)
+		// Info, not warning: this is a best-effort freshen that always falls back to
+		// the local base, and the common cause is benign — a local-only base branch
+		// that was never pushed (routine in a stacked-branch workflow), not just an
+		// offline remote. The session is still created correctly from local.
+		log.InfoLog.Printf("base update: could not fetch origin %s, using local base: %v", name, err)
 		return
 	}
 
