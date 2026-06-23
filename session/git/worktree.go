@@ -23,6 +23,11 @@ const (
 	// gitNetworkTimeout bounds network-bound operations (push, fetch,
 	// gh repo sync / auth / browse).
 	gitNetworkTimeout = 60 * time.Second
+	// baseFetchTimeout bounds the create-time fetch of a session's base branch.
+	// It is deliberately shorter than gitNetworkTimeout: this fetch runs while the
+	// session shows "Setting up workspace…", so it must give up quickly and fall
+	// back to the local base rather than stall creation on a slow/offline remote.
+	baseFetchTimeout = 10 * time.Second
 )
 
 func getWorktreeDirectory() (string, error) {
@@ -61,6 +66,14 @@ type Worktree struct {
 	// When true, the branch will not be deleted on cleanup. Only set for sessions restored
 	// from storage that predate the branch-off model; new sessions are always branch-owners.
 	isExistingBranch bool
+	// updateBaseOnCreate, when true, makes setupNewWorktree fetch the base branch
+	// and start the session off the freshest remote tip. fastForwardLocalBase, when
+	// also true, additionally fast-forwards the local base branch (opt-in local
+	// mutation). Both are captured from config at construction (newSessionWorktree)
+	// and are only consulted on first creation; a zero-value Worktree (test literals)
+	// has both off, reproducing the historical local-preferred behavior.
+	updateBaseOnCreate   bool
+	fastForwardLocalBase bool
 	// statsCache caches rev-list commit counts (ahead/behind) for revListCacheTTL
 	// and the dirty flag for dirtyCacheTTL. The dirty TTL (1s) is shorter than the
 	// rev-list TTL (3s) because dirty reflects uncommitted file edits that should
@@ -151,13 +164,15 @@ func newSessionWorktree(ctx context.Context, repoPath string, sessionName string
 	}
 
 	return &Worktree{
-		baseCtx:      ctx,
-		repoPath:     repoPath,
-		sessionName:  sessionName,
-		branchName:   branchName,
-		branchPrefix: cfg.BranchPrefix,
-		worktreePath: worktreePath,
-		baseRef:      baseRef,
+		baseCtx:              ctx,
+		repoPath:             repoPath,
+		sessionName:          sessionName,
+		branchName:           branchName,
+		branchPrefix:         cfg.BranchPrefix,
+		worktreePath:         worktreePath,
+		baseRef:              baseRef,
+		updateBaseOnCreate:   cfg.GetUpdateBaseOnCreate(),
+		fastForwardLocalBase: cfg.GetFastForwardLocalBase(),
 	}, branchName, nil
 }
 
