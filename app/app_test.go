@@ -77,6 +77,44 @@ func TestDeliverReadyPrompts(t *testing.T) {
 	})
 }
 
+func TestSendPromptCmdSurfacesErrorAfterRetries(t *testing.T) {
+	// An instance that was never Started makes every SendPrompt attempt fail with
+	// "instance not started", so the cmd must exhaust its retries and report the failure
+	// as a promptSendErrorMsg instead of swallowing it (the old behavior returned nil and
+	// only logged, leaving the session Ready-but-idle with no surfaced error).
+	defer func(d time.Duration) { promptSendRetryDelay = d }(promptSendRetryDelay)
+	promptSendRetryDelay = 0 // don't sleep between retries in the test
+
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title: "lost-prompt", Path: t.TempDir(), Program: "claude",
+	})
+	require.NoError(t, err)
+
+	msg := sendPromptCmd(inst, "do the thing")()
+
+	failure, ok := msg.(promptSendErrorMsg)
+	require.True(t, ok, "a failed delivery must yield a promptSendErrorMsg, not be swallowed (got %T)", msg)
+	require.Same(t, inst, failure.instance, "the message must name the instance whose prompt was lost")
+	require.Error(t, failure.err)
+}
+
+func TestPromptSendErrorMsgSurfacesInUI(t *testing.T) {
+	// Routing a promptSendErrorMsg through Update must surface the failure (here, a toast
+	// on the always-on hint bar) so the user learns the queued prompt was lost rather than
+	// the error being silently dropped.
+	h := newCreateFormHome(t)
+	h.errBox.SetSize(80, 1)
+
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title: "lost-prompt", Path: t.TempDir(), Program: "claude",
+	})
+	require.NoError(t, err)
+
+	_, _ = h.Update(promptSendErrorMsg{instance: inst, err: fmt.Errorf("instance not started")})
+
+	assert.True(t, h.menu.HasNotice(), "a failed queued-prompt delivery must surface, not be swallowed")
+}
+
 func TestPromptDeliveryReady(t *testing.T) {
 	now := time.Now()
 	queued := now.Add(-1 * time.Second)          // queued recently, within grace

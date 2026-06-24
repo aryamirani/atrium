@@ -220,6 +220,11 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.instance.ApplyPaneState(msg.state)
 		}
 		return m, nil
+	case promptSendErrorMsg:
+		// A queued initial prompt that could not be delivered (the session died after
+		// the readiness gate passed). Surface it like the manual send path rather than
+		// leaving the session Ready-but-idle with no sign the prompt was lost.
+		return m, m.handleError(fmt.Errorf("failed to deliver prompt to %q: %w", msg.instance.Title, msg.err))
 	case tea.MouseMsg:
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
