@@ -860,6 +860,9 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 	// is non-destructive; everything else (clean form, quick-send, smart-dispatch)
 	// is discarded as before.
 	if m.textInputOverlay != nil && m.textInputOverlay.IsCreateForm() && m.textInputOverlay.IsDirty() {
+		// Drop any pending "⌃R again" arm so it can't survive a Ctrl+C cancel (which
+		// bypasses the overlay's own disarm) and make the next single Ctrl+R a wipe.
+		m.textInputOverlay.DisarmClear()
 		m.stashedDraft = m.textInputOverlay
 	}
 	m.textInputOverlay = nil

@@ -67,6 +67,27 @@ func TestDraft_EscapeOnNonCreateOverlayDoesNotStash(t *testing.T) {
 	assert.Nil(t, h.textInputOverlay, "cancel still clears the live overlay")
 }
 
+// A Ctrl+C cancel is intercepted by the app before the overlay sees it, so it does
+// not disarm a pending double-tap the way Esc (which flows through the overlay) does.
+// Stashing must drop that arm; otherwise a single Ctrl+R after reopening would wipe
+// the restored draft, defeating the double-tap guard.
+func TestDraft_ArmDoesNotSurviveCtrlCCancel(t *testing.T) {
+	h := newCreateFormHome(t)
+
+	h.handleKeyPress(draftRunes("n"))
+	h.handleKeyPress(draftRunes("my-draft"))
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlR}) // arm the clear
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlC}) // cancel (bypasses the overlay's disarm)
+	require.NotNil(t, h.stashedDraft, "a dirty form is still stashed on Ctrl+C")
+
+	h.handleKeyPress(draftRunes("n"))                // reopen, restoring the draft
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlR}) // a single press must only arm, not wipe
+
+	require.NotNil(t, h.textInputOverlay)
+	assert.Equal(t, "my-draft", h.textInputOverlay.GetTitle(),
+		"one Ctrl+R after restore must not clear the draft")
+}
+
 func TestDraft_DoubleCtrlRRebuildsFresh(t *testing.T) {
 	h := newCreateFormHome(t)
 

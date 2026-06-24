@@ -793,6 +793,12 @@ func (t *TextInputOverlay) IsCreateForm() bool {
 // the create form. The app consumes it by rebuilding a fresh overlay.
 func (t *TextInputOverlay) ClearRequested() bool { return t.clearRequested }
 
+// DisarmClear drops a half-completed double-tap Ctrl+R (the "⌃R again" arm).
+// HandleKeyPress disarms on any other key, but a Ctrl+C cancel is intercepted by
+// the app before it reaches the overlay; stashing this form as a draft calls this
+// so the arm can't ride into the stash and turn the next single Ctrl+R into a wipe.
+func (t *TextInputOverlay) DisarmClear() { t.clearArmed = false }
+
 // SetTitleError sets (or, with "", clears) the inline validation message shown
 // on the title label. The error never disables submit — the app layer blocks a
 // conflicting submit itself and re-focuses the title.
