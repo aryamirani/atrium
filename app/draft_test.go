@@ -49,3 +49,20 @@ func TestDraft_ReopenRestoresStash(t *testing.T) {
 	assert.Equal(t, "my-draft", h.textInputOverlay.GetTitle(), "the draft is restored")
 	assert.Nil(t, h.stashedDraft, "the stash is consumed into the live overlay")
 }
+
+func TestDraft_DoubleCtrlRRebuildsFresh(t *testing.T) {
+	h := newCreateFormHome(t)
+
+	h.handleKeyPress(draftRunes("n"))
+	h.handleKeyPress(draftRunes("my-draft"))
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+	h.handleKeyPress(draftRunes("n")) // reopen with the restored draft
+	require.Equal(t, "my-draft", h.textInputOverlay.GetTitle())
+
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlR}) // arm
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlR}) // confirm
+
+	require.NotNil(t, h.textInputOverlay)
+	assert.Equal(t, "", h.textInputOverlay.GetTitle(), "the form is rebuilt fresh")
+	assert.Nil(t, h.stashedDraft, "the stash is dropped on clear")
+}

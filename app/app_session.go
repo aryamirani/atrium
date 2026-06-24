@@ -720,6 +720,7 @@ func (m *home) createSessionFromForm(prompt string) tea.Cmd {
 	}
 
 	m.textInputOverlay = nil
+	m.stashedDraft = nil
 	m.state = stateDefault
 	m.menu.SetState(ui.StateDefault)
 	m.resetTitleCheck()
