@@ -569,6 +569,9 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 	// kick the background fetch plus the initial (undebounced) branch search.
 	m.fetchedPaths = map[string]bool{}
 	cmds := []tea.Cmd{tea.WindowSize()}
+	// Refresh the repo scan when the last completed one has gone stale (a
+	// long-running TUI would otherwise serve launch-time results forever). The
+	// completion live-updates this form's picker in place.
 	if !m.scanInFlight && time.Since(m.lastScanAt) > projectScanTTL {
 		cmds = append(cmds, m.startProjectScan())
 	}

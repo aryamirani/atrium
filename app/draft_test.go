@@ -6,6 +6,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ZviBaratz/atrium/ui/overlay"
 )
 
 // runes is a small helper to type text into the focused field.
@@ -41,13 +43,28 @@ func TestDraft_ReopenRestoresStash(t *testing.T) {
 
 	h.handleKeyPress(draftRunes("n"))
 	h.handleKeyPress(draftRunes("my-draft"))
+	h.textInputOverlay.SetPrompt("draft body")
 	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
 	require.NotNil(t, h.stashedDraft)
 
 	h.handleKeyPress(draftRunes("n")) // reopen
 	require.NotNil(t, h.textInputOverlay)
 	assert.Equal(t, "my-draft", h.textInputOverlay.GetTitle(), "the draft is restored")
+	assert.Equal(t, "draft body", h.textInputOverlay.GetValue(), "the prompt body is restored too")
 	assert.Nil(t, h.stashedDraft, "the stash is consumed into the live overlay")
+}
+
+func TestDraft_EscapeOnNonCreateOverlayDoesNotStash(t *testing.T) {
+	h := newCreateFormHome(t)
+	ov := overlay.NewSmartDispatchOverlay("Describe the session")
+	ov.SetPrompt("some text")
+	h.textInputOverlay = ov
+	h.state = statePrompt
+
+	h.cancelPromptOverlay()
+
+	assert.Nil(t, h.stashedDraft, "a non-create overlay must never be stashed")
+	assert.Nil(t, h.textInputOverlay, "cancel still clears the live overlay")
 }
 
 func TestDraft_DoubleCtrlRRebuildsFresh(t *testing.T) {
