@@ -77,6 +77,44 @@ func TestDeliverReadyPrompts(t *testing.T) {
 	})
 }
 
+func TestSendWithRetrySucceedsAfterTransientFailure(t *testing.T) {
+	// The bounded retry exists for exactly this case: a send that fails once and then
+	// succeeds must be reported as success (nil), with no error surfaced. This is the
+	// retry's whole reason for existing, so it gets direct coverage that a real instance
+	// (which can only fail, never fail-then-succeed) cannot provide.
+	defer func(d time.Duration) { promptSendRetryDelay = d }(promptSendRetryDelay)
+	promptSendRetryDelay = 0 // don't sleep between retries in the test
+
+	calls := 0
+	err := sendWithRetry(func() error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("transient tmux hiccup")
+		}
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, calls, "must retry once after the first failure, then stop on success")
+}
+
+func TestSendWithRetryGivesUpAfterAttempts(t *testing.T) {
+	// A persistent failure (the common dead-pane case) must exhaust the bounded attempts
+	// and return the last error so the caller can surface it, rather than retrying forever.
+	defer func(d time.Duration) { promptSendRetryDelay = d }(promptSendRetryDelay)
+	promptSendRetryDelay = 0
+
+	calls := 0
+	wantErr := fmt.Errorf("dead pane")
+	err := sendWithRetry(func() error {
+		calls++
+		return wantErr
+	})
+
+	require.Equal(t, promptSendAttempts, calls, "a persistent failure must use every attempt")
+	require.ErrorIs(t, err, wantErr, "the last error must be returned for surfacing")
+}
+
 func TestSendPromptCmdSurfacesErrorAfterRetries(t *testing.T) {
 	// An instance that was never Started makes every SendPrompt attempt fail with
 	// "instance not started", so the cmd must exhaust its retries and report the failure
