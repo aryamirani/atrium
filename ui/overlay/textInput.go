@@ -1149,7 +1149,7 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 	}
 	clearHint := "⌃R clear"
 	if t.clearArmed {
-		clearHint = "⌃R again to clear"
+		clearHint = "⌃R again"
 	}
 	b.WriteString(tiHintStyle().Render(help+" · "+clearHint) + "\n")
 	b.WriteString(t.renderEnterButton())

@@ -121,11 +121,11 @@ func TestSessionCreateOverlay_CtrlRDisarmsOnOtherKey(t *testing.T) {
 
 func TestSessionCreateOverlay_ClearHintInFooter(t *testing.T) {
 	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"}, "")
-	o.SetSize(100, 40)
+	o.SetSize(80, 40)
 	assert.Contains(t, o.Render(), "⌃R clear")
 
 	ctrlR(o)
-	assert.Contains(t, o.Render(), "⌃R again to clear")
+	assert.Contains(t, o.Render(), "⌃R again")
 }
 
 func TestTextInputOverlay_SimpleFocusCycle(t *testing.T) {
