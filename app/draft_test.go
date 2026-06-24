@@ -35,3 +35,17 @@ func TestDraft_EscapeDiscardsCleanForm(t *testing.T) {
 
 	assert.Nil(t, h.stashedDraft, "an untouched form leaves no stash")
 }
+
+func TestDraft_ReopenRestoresStash(t *testing.T) {
+	h := newCreateFormHome(t)
+
+	h.handleKeyPress(draftRunes("n"))
+	h.handleKeyPress(draftRunes("my-draft"))
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+	require.NotNil(t, h.stashedDraft)
+
+	h.handleKeyPress(draftRunes("n")) // reopen
+	require.NotNil(t, h.textInputOverlay)
+	assert.Equal(t, "my-draft", h.textInputOverlay.GetTitle(), "the draft is restored")
+	assert.Nil(t, h.stashedDraft, "the stash is consumed into the live overlay")
+}
