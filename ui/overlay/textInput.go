@@ -163,6 +163,8 @@ type TextInputOverlay struct {
 	isCreateForm    bool        // true for the new-session form (has a title field)
 	smartDispatch   bool        // true for the single-line smart-dispatch input overlay
 	submitOnEnter   bool        // true for the quick-send overlay: Enter submits, Alt+Enter is a newline
+	clearArmed      bool        // first Ctrl+R seen; a second consecutive press confirms a clear
+	clearRequested  bool        // a confirmed double-tap Ctrl+R; the app rebuilds a fresh form
 	// projectHint is a transient inline note rendered beside the project picker on the
 	// create form (e.g. "detecting…" while smart dispatch routes asynchronously). Empty = none.
 	projectHint    string
@@ -635,6 +637,20 @@ func (t *TextInputOverlay) updateFocusState() {
 // HandleKeyPress processes a key press and updates the state accordingly.
 // Returns (shouldClose, branchFilterChanged).
 func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
+	// Double-tap Ctrl+R clears the form (create form only): the first press arms,
+	// any other key disarms, a second consecutive press requests the clear. The app
+	// performs the rebuild — it owns the config/profiles the pickers need.
+	if t.isCreateForm && msg.Type == tea.KeyCtrlR {
+		if t.clearArmed {
+			t.clearArmed = false
+			t.clearRequested = true
+		} else {
+			t.clearArmed = true
+		}
+		return false, false
+	}
+	t.clearArmed = false
+
 	switch msg.Type {
 	case tea.KeyTab:
 		// In the project field, Tab first tries shell-style path completion; only when
@@ -772,6 +788,10 @@ func (t *TextInputOverlay) GetTitle() string {
 func (t *TextInputOverlay) IsCreateForm() bool {
 	return t.isCreateForm
 }
+
+// ClearRequested reports whether a confirmed double-tap Ctrl+R has asked to reset
+// the create form. The app consumes it by rebuilding a fresh overlay.
+func (t *TextInputOverlay) ClearRequested() bool { return t.clearRequested }
 
 // SetTitleError sets (or, with "", clears) the inline validation message shown
 // on the title label. The error never disables submit — the app layer blocks a
@@ -1127,7 +1147,11 @@ func (t *TextInputOverlay) renderCreateForm(divider string) string {
 	if t.isTextarea() {
 		help = promptFocusHelp
 	}
-	b.WriteString(tiHintStyle().Render(help) + "\n")
+	clearHint := "⌃R clear"
+	if t.clearArmed {
+		clearHint = "⌃R again to clear"
+	}
+	b.WriteString(tiHintStyle().Render(help+" · "+clearHint) + "\n")
 	b.WriteString(t.renderEnterButton())
 
 	return b.String()
