@@ -229,6 +229,9 @@ type home struct {
 	spinner spinner.Model
 	// textInputOverlay handles text input with state
 	textInputOverlay *overlay.TextInputOverlay
+	// stashedDraft keeps a dirty new-session form across Escape so reopening with
+	// n/N restores it. In-memory only (this run) — never persisted to state.json.
+	stashedDraft *overlay.TextInputOverlay
 	// textOverlay displays text information
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals

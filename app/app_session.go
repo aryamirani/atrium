@@ -845,6 +845,12 @@ func (m *home) recordRecentPath(path string) {
 
 // cancelPromptOverlay cancels the prompt overlay.
 func (m *home) cancelPromptOverlay() tea.Cmd {
+	// Keep a dirty create form as a draft so a deliberate Escape-to-check-something
+	// is non-destructive; everything else (clean form, quick-send, smart-dispatch)
+	// is discarded as before.
+	if m.textInputOverlay != nil && m.textInputOverlay.IsCreateForm() && m.textInputOverlay.IsDirty() {
+		m.stashedDraft = m.textInputOverlay
+	}
 	m.textInputOverlay = nil
 	m.state = stateDefault
 	m.resetTitleCheck()
