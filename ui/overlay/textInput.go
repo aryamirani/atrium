@@ -223,6 +223,14 @@ func (t *TextInputOverlay) SetTitleValue(s string) {
 	t.titleInput.SetValue(s)
 }
 
+// IsDirty reports whether the create form holds user-entered free text (title or
+// prompt). The draft-stash logic uses it so an untouched form is still discarded
+// on Escape; picker-only changes do not count as dirty.
+func (t *TextInputOverlay) IsDirty() bool {
+	return strings.TrimSpace(t.titleInput.Value()) != "" ||
+		strings.TrimSpace(t.textarea.Value()) != ""
+}
+
 // SelectPath pre-selects path in the project picker, returning false when path is not
 // a candidate. No-op (false) without a directory picker.
 func (t *TextInputOverlay) SelectPath(path string) bool {

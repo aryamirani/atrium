@@ -1001,3 +1001,19 @@ func TestFitRows_GrowsPickersOnTallTerminals(t *testing.T) {
 		t.Fatalf("height 24: got (%d, %d), want (1, 2)", pickerRows, promptRows)
 	}
 }
+
+func TestSessionCreateOverlay_IsDirty(t *testing.T) {
+	o := NewSessionCreateOverlay(nil, nil, []string{"/repo/a"}, "")
+	assert.False(t, o.IsDirty(), "a fresh form is not dirty")
+
+	o.SetTitleValue("draft")
+	assert.True(t, o.IsDirty(), "a typed title makes the form dirty")
+
+	o.SetTitleValue("")
+	o.SetPrompt("some prompt")
+	assert.True(t, o.IsDirty(), "a typed prompt makes the form dirty")
+
+	o.SetPrompt("   ")
+	o.SetTitleValue("  ")
+	assert.False(t, o.IsDirty(), "whitespace-only is not dirty")
+}
