@@ -103,6 +103,12 @@ func (m *home) handlePromptState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Sequence(tea.WindowSize(), m.instanceChanged())
 	}
 
+	// A confirmed double-tap Ctrl+R rebuilds the form fresh and drops any draft.
+	if m.textInputOverlay.ClearRequested() {
+		m.stashedDraft = nil
+		return m, m.openCreateForm(true)
+	}
+
 	// If the target directory changed in the picker, re-scope the form to the
 	// new repo (branch search + async target-state re-check; see
 	// retargetNewSession for why the check is debounced and async).

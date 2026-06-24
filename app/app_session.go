@@ -504,59 +504,69 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 			fmt.Errorf("you can't create more than %d sessions (max_sessions in config.json)", limit))
 	}
 
-	m.newSessionPath = seedPath
+	// Restore a stashed draft only on the bare n/N entry (no seed path, no prefill):
+	// the smart-dispatch and seeded paths carry explicit intent that must win.
+	restore := prefill == nil && seedPath == "" && m.stashedDraft != nil
+
+	if restore {
+		m.newSessionPath = m.stashedDraft.GetSelectedPath()
+	} else {
+		m.newSessionPath = seedPath
+	}
 	if m.newSessionPath == "" {
 		m.newSessionPath = m.defaultNewSessionPath()
 	}
 	target := m.newSessionPath
 	// Scope the duplicate-title check to the target's repo group from the first
-	// keystroke (one sync git call, in line with the open-time plumbing below);
-	// the async validity check re-points it as the picker moves.
+	// keystroke; the async validity check re-points it as the picker moves.
 	m.newSessionGroup = git.RepoGroupKey(m.ctx, target)
 	m.resetTitleCheck()
-
 	m.state = statePrompt
-	ov, isGit := m.newSessionFormOverlay()
-	m.textInputOverlay = ov
-	if prefill != nil {
-		ov.SetPrompt(prefill.Prompt)
-		if prefill.Title != "" {
-			ov.SetTitleValue(prefill.Title)
-		}
-		if prefill.Path != "" {
-			ov.SelectPath(prefill.Path)
-		}
-		if prefill.Confident {
-			// Project and title are trusted; land on the Permissions chip — the one
-			// decision smart dispatch deliberately defers (←/→ to plan, ⌃S to create).
-			// Falls back to the Create button when there is no mode field (non-claude).
-			ov.FocusMode()
-		} else {
-			ov.FocusTitle()
-		}
-		// A pre-filled title needs the same duplicate verdict a keystroke would trigger,
-		// so a collision shows inline (and is re-checked async) before the user submits.
+
+	var isGit bool
+	if restore {
+		m.textInputOverlay = m.stashedDraft
+		m.stashedDraft = nil
+		valid, direct, _ := targetValidity(m.ctx, target)
+		isGit = valid && !direct
+		// Re-run the inline duplicate verdict for the restored title.
 		m.refreshTitleError()
-	} else if focusTitle {
-		m.textInputOverlay.FocusTitle()
-	}
-	// Open the account picker on the auto-routed account for the contextual target,
-	// so the preselected choice matches what creating without touching it would do.
-	// A non-git target has no remote and routes by path; no-op when the form has no
-	// account picker (≤1 account configured).
-	remoteURL := ""
-	if isGit {
-		remoteURL = git.GetRemoteURL(m.ctx, target)
-	}
-	if name, _, _ := m.appConfig.ResolveClaudeAccount(remoteURL, target); name != "" {
-		m.textInputOverlay.PreselectAccount(name)
+	} else {
+		var ov *overlay.TextInputOverlay
+		ov, isGit = m.newSessionFormOverlay()
+		m.textInputOverlay = ov
+		if prefill != nil {
+			ov.SetPrompt(prefill.Prompt)
+			if prefill.Title != "" {
+				ov.SetTitleValue(prefill.Title)
+			}
+			if prefill.Path != "" {
+				ov.SelectPath(prefill.Path)
+			}
+			if prefill.Confident {
+				// Project and title are trusted; land on the Permissions chip — the one
+				// decision smart dispatch defers. Falls back to Create on non-claude.
+				ov.FocusMode()
+			} else {
+				ov.FocusTitle()
+			}
+			// A pre-filled title needs the same duplicate verdict a keystroke triggers.
+			m.refreshTitleError()
+		} else if focusTitle {
+			m.textInputOverlay.FocusTitle()
+		}
+		// Open the account picker on the auto-routed account for the contextual target.
+		remoteURL := ""
+		if isGit {
+			remoteURL = git.GetRemoteURL(m.ctx, target)
+		}
+		if name, _, _ := m.appConfig.ResolveClaudeAccount(remoteURL, target); name != "" {
+			m.textInputOverlay.PreselectAccount(name)
+		}
 	}
 
-	// Branch plumbing only applies to a git target: seed the fetched-once set and kick
-	// the background fetch plus the initial (undebounced) branch search. A non-git
-	// target's branch section is inert, so there is nothing to fetch or list — and a
-	// later path change onto a git repo triggers its own verdict-driven fetch (every
-	// other candidate is fetched when, and if, it is confirmed as git while selected).
+	// Branch plumbing only applies to a git target: seed the fetched-once set and
+	// kick the background fetch plus the initial (undebounced) branch search.
 	m.fetchedPaths = map[string]bool{}
 	cmds := []tea.Cmd{tea.WindowSize()}
 	// Refresh the repo scan when the last completed one has gone stale (a
@@ -571,10 +581,10 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 			m.runBranchFetch(target),
 			m.runBranchSearch("", m.textInputOverlay.BranchFilterVersion()))
 	}
-	// Verify a pre-filled title against orphan branches in the seeded repo, the same
-	// async check a keystroke schedules (the inline in-memory verdict already ran above).
-	if prefill != nil && prefill.Title != "" {
-		cmds = append(cmds, m.scheduleTitleCheck(prefill.Title, target))
+	// Verify a pre-filled or restored title against orphan branches in the target repo,
+	// the same async check a keystroke schedules.
+	if title := m.textInputOverlay.GetTitle(); title != "" {
+		cmds = append(cmds, m.scheduleTitleCheck(title, target))
 	}
 	return tea.Batch(cmds...)
 }
@@ -713,6 +723,7 @@ func (m *home) createSessionFromForm(prompt string) tea.Cmd {
 	}
 
 	m.textInputOverlay = nil
+	m.stashedDraft = nil
 	m.state = stateDefault
 	m.menu.SetState(ui.StateDefault)
 	m.resetTitleCheck()
@@ -845,6 +856,15 @@ func (m *home) recordRecentPath(path string) {
 
 // cancelPromptOverlay cancels the prompt overlay.
 func (m *home) cancelPromptOverlay() tea.Cmd {
+	// Keep a dirty create form as a draft so a deliberate Escape-to-check-something
+	// is non-destructive; everything else (clean form, quick-send, smart-dispatch)
+	// is discarded as before.
+	if m.textInputOverlay != nil && m.textInputOverlay.IsCreateForm() && m.textInputOverlay.IsDirty() {
+		// Drop any pending "⌃R again" arm so it can't survive a Ctrl+C cancel (which
+		// bypasses the overlay's own disarm) and make the next single Ctrl+R a wipe.
+		m.textInputOverlay.DisarmClear()
+		m.stashedDraft = m.textInputOverlay
+	}
 	m.textInputOverlay = nil
 	m.state = stateDefault
 	m.resetTitleCheck()
