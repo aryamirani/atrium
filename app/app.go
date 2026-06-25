@@ -117,6 +117,10 @@ const (
 	// stateHints is the state when hint (fingers) mode overlays the preview
 	// pane with copy/open labels; every key routes to hint selection.
 	stateHints
+	// stateVisual is multi-select ("visual") mode: space marks/unmarks the
+	// highlighted session and a lifecycle action (pause/resume/kill) applies to
+	// the marked set; esc clears the marks and exits.
+	stateVisual
 )
 
 type home struct {

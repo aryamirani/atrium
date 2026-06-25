@@ -231,6 +231,13 @@ type List struct {
 	// switch back to creation read it; applySort derives the displayed items from
 	// it. Keeping it nil in the common case guarantees creation mode is unchanged.
 	manual []*session.Instance
+
+	// marked is the set of sessions tagged in multi-select ("visual") mode, keyed
+	// by instance pointer. It is ephemeral — cleared on mode exit and after a
+	// batch action — so it is empty (and invisible) during normal navigation. A
+	// stale pointer (instance removed while marked) is harmless: every read
+	// intersects with items, so it simply drops out. See MarkedInstancesInView.
+	marked map[*session.Instance]bool
 }
 
 // NewList returns an empty List.
@@ -439,7 +446,7 @@ func (r *InstanceRenderer) stateGlyph(i *session.Instance, th *theme.Theme) (gly
 // fresh session with nothing to show falls back to its age. A direct (non-git)
 // session instead shows a dim marker and its age. The selected row carries a left
 // accent bar and a filled background. idx is unused (kept for the caller's signature).
-func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) string {
+func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected, marked bool) string {
 	_ = idx
 	th := theme.Current()
 	g := th.Glyphs
@@ -579,9 +586,15 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool) s
 		}
 	}
 
-	// --- Left marker (accent bar when selected) + compose ---
+	// --- Left marker (mark glyph when marked, else accent bar when selected) ---
+	// Marked outranks selected for the one-column gutter: a marked row still shows
+	// as the cursor via its elevated row background (newRowPaint), so the mark
+	// glyph can claim column 0 without losing the cursor.
 	marker := p.pad(1)
-	if selected {
+	switch {
+	case marked:
+		marker = p.seg(g.MarkChecked, th.Palette.Accent).render()
+	case selected:
 		marker = p.seg(g.SelectionMark, th.Palette.Accent).render()
 	}
 	rows := []string{marker + line1, marker + line2}
@@ -661,7 +674,7 @@ func (l *List) String() string {
 				if l.isHidden(j) {
 					continue
 				}
-				at := appendBlock(zone.Mark(listRowZoneID(l.items[j]), l.renderer.Render(l.items[j], j+1, j == l.selectedIdx)))
+				at := appendBlock(zone.Mark(listRowZoneID(l.items[j]), l.renderer.Render(l.items[j], j+1, j == l.selectedIdx, l.IsMarked(l.items[j]))))
 				if j == l.selectedIdx {
 					selStart, selH = at, len(lines)-at
 				}
@@ -1601,6 +1614,55 @@ func (l *List) ActiveInstancesInView() []*session.Instance {
 	for _, it := range l.items {
 		status := it.GetStatus()
 		if status != session.Paused && status != session.Loading && !it.IsDirect() && l.filterMatches(it) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// ToggleMark flips the multi-select mark on inst (no-op for nil), lazily
+// allocating the set on first use.
+func (l *List) ToggleMark(inst *session.Instance) {
+	if inst == nil {
+		return
+	}
+	if l.marked == nil {
+		l.marked = map[*session.Instance]bool{}
+	}
+	if l.marked[inst] {
+		delete(l.marked, inst)
+	} else {
+		l.marked[inst] = true
+	}
+}
+
+// IsMarked reports whether inst is currently marked in multi-select mode.
+func (l *List) IsMarked(inst *session.Instance) bool {
+	return l.marked[inst]
+}
+
+// ClearMarks drops every multi-select mark (mode exit / post-action reset).
+func (l *List) ClearMarks() {
+	l.marked = nil
+}
+
+// MarkedCount returns the number of marked instances, counting only those still
+// present in the list (a marked instance removed since is not counted).
+func (l *List) MarkedCount() int {
+	return len(l.MarkedInstancesInView())
+}
+
+// MarkedInstancesInView returns every marked instance that passes the active
+// filter, in list order. Iterating items (not the marked map) keeps the order
+// stable and drops any instance removed since it was marked — mirroring
+// PausedInstancesInView / ActiveInstancesInView.
+func (l *List) MarkedInstancesInView() []*session.Instance {
+	if len(l.marked) == 0 {
+		return nil
+	}
+	var out []*session.Instance
+	for _, it := range l.items {
+		if l.marked[it] && l.filterMatches(it) {
 			out = append(out, it)
 		}
 	}
