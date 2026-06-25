@@ -369,9 +369,21 @@ func (m *home) resumeAll() tea.Cmd {
 	if len(paused) == 0 {
 		return m.handleInfoNotice("no paused sessions to resume")
 	}
+	message := fmt.Sprintf("Resume %d paused session%s?", len(paused), plural(len(paused)))
+	return m.resumeInstances(paused, message)
+}
+
+// resumeInstances resumes an explicit set of (already-paused) sessions behind a
+// count confirmation — the shared core of resumeAll and resumeMarked. A
+// per-instance failure (e.g. BranchCheckedOutError) is recorded and the run
+// continues; the outcome is surfaced as a summary. Resume only mutates in-memory
+// status, so the action persists once at the end. Resume is non-destructive, so
+// it keeps confirmAction's default accent border (only kill wears the danger
+// border).
+func (m *home) resumeInstances(insts []*session.Instance, message string) tea.Cmd {
 	action := func() tea.Msg {
 		var res batchResumeDoneMsg
-		for _, inst := range paused {
+		for _, inst := range insts {
 			if err := inst.Resume(); err != nil {
 				res.failures = append(res.failures, resumeFailure{inst.Title, err})
 				continue
@@ -380,14 +392,11 @@ func (m *home) resumeAll() tea.Cmd {
 		}
 		if res.resumed > 0 {
 			if err := m.persistInstances(); err != nil {
-				log.WarningLog.Printf("resume all: failed to persist resumed instances: %v", err)
+				log.WarningLog.Printf("batch resume: failed to persist resumed instances: %v", err)
 			}
 		}
 		return res
 	}
-	message := fmt.Sprintf("Resume %d paused session%s?", len(paused), plural(len(paused)))
-	// Resume is non-destructive, so it keeps confirmAction's default accent
-	// border (only kill wears the danger border).
 	return m.confirmAction(message, action)
 }
 
@@ -447,9 +456,21 @@ func (m *home) pauseAll() tea.Cmd {
 	if len(active) == 0 {
 		return m.handleInfoNotice("no active sessions to pause")
 	}
+	message := fmt.Sprintf("Pause %d active session%s?", len(active), plural(len(active)))
+	return m.pauseInstances(active, message)
+}
+
+// pauseInstances parks an explicit set of (pausable) sessions behind a count
+// confirmation — the shared core of pauseAll and pauseMarked. Each Pause commits
+// WIP, detaches tmux, and removes the worktree (keeping the branch); a
+// per-instance failure is recorded and the run continues, with the outcome
+// surfaced as a summary. State is persisted once at the end. Pause is
+// non-destructive (every branch is kept), so it keeps confirmAction's default
+// accent border.
+func (m *home) pauseInstances(insts []*session.Instance, message string) tea.Cmd {
 	action := func() tea.Msg {
 		var res batchPauseDoneMsg
-		for _, inst := range active {
+		for _, inst := range insts {
 			if err := inst.Pause(); err != nil {
 				res.failures = append(res.failures, pauseFailure{inst.Title, err})
 				continue
@@ -459,15 +480,148 @@ func (m *home) pauseAll() tea.Cmd {
 		}
 		if res.paused > 0 {
 			if err := m.persistInstances(); err != nil {
-				log.WarningLog.Printf("pause all: failed to persist paused instances: %v", err)
+				log.WarningLog.Printf("batch pause: failed to persist paused instances: %v", err)
 			}
 		}
 		return res
 	}
-	message := fmt.Sprintf("Pause %d active session%s?", len(active), plural(len(active)))
-	// Pause auto-commits WIP and frees worktrees but keeps every branch, so it is
-	// non-destructive and keeps confirmAction's default accent border.
 	return m.confirmAction(message, action)
+}
+
+// killFailure records one instance that could not be killed during a batch kill,
+// paired with the reason so the summary can name it.
+type killFailure struct {
+	title string
+	err   error
+}
+
+// batchKillDoneMsg reports the outcome of a batch kill back through Update so the
+// feedback (notice vs. modal), preview-terminal teardown, and list refresh all
+// run on the main loop. killed counts the successes; killedInstances carries the
+// torn-down instances so Update can clean up their preview terminals; failures
+// lists the rest, in list order.
+type batchKillDoneMsg struct {
+	killed          int
+	killedInstances []*session.Instance
+	failures        []killFailure
+}
+
+// summary renders the dismissible-modal text for a batch kill that had at least
+// one failure. It is empty when nothing failed (the caller uses a transient
+// notice for the all-success case instead).
+func (msg batchKillDoneMsg) summary() string {
+	if len(msg.failures) == 0 {
+		return ""
+	}
+	total := msg.killed + len(msg.failures)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Killed %d of %d session%s. %d could not be killed:",
+		msg.killed, total, plural(total), len(msg.failures))
+	for _, f := range msg.failures {
+		fmt.Fprintf(&b, "\n  • %s — %s", f.title, f.err.Error())
+	}
+	return b.String()
+}
+
+// killInstances tears down an explicit set of sessions behind a single count
+// confirmation — the batch counterpart of confirmKill, used by killMarked. Each
+// teardown reuses confirmKill's per-instance logic: it refuses only when the
+// branch is held by the base repo itself (recorded as a failure so the run
+// continues), then deletes from storage and kills. Storage deletion and
+// KillInstance run on the main loop (the action is invoked there), so they don't
+// race the list. Kill is destructive, so the confirmation wears the danger
+// border like the single-kill dialog.
+func (m *home) killInstances(insts []*session.Instance, message string) tea.Cmd {
+	action := func() tea.Msg {
+		var res batchKillDoneMsg
+		for _, inst := range insts {
+			// Mirror confirmKill: refuse only when the branch is checked out in the
+			// primary repo itself; a live session's branch is in its own worktree, so
+			// IsBranchHeldByBaseRepo (not IsBranchCheckedOut) is the right predicate.
+			// Fail open if the worktree/repo is unreachable so an orphan can still be
+			// deleted. Direct sessions have no branch/worktree, so skip the check.
+			if !inst.IsDirect() {
+				if worktree, err := inst.GetGitWorktree(); err != nil {
+					log.WarningLog.Printf("kill %s: cannot resolve worktree, proceeding: %v", inst.Title, err)
+				} else if heldByBase, cerr := worktree.IsBranchHeldByBaseRepo(); cerr != nil {
+					log.WarningLog.Printf("kill %s: cannot verify branch checkout, proceeding: %v", inst.Title, cerr)
+				} else if heldByBase {
+					res.failures = append(res.failures, killFailure{inst.Title,
+						fmt.Errorf("branch checked out in the main repo")})
+					continue
+				}
+			}
+			if err := m.storage.DeleteInstance(inst.Title, inst.Path); err != nil {
+				res.failures = append(res.failures, killFailure{inst.Title, err})
+				continue
+			}
+			m.list.KillInstance(inst)
+			res.killed++
+			res.killedInstances = append(res.killedInstances, inst)
+		}
+		return res
+	}
+	cmd := m.confirmAction(message, action)
+	// Kill is destructive, so it wears the danger border (confirmAction created
+	// m.confirmationOverlay synchronously above).
+	m.confirmationOverlay.SetBorderColor(theme.Current().Palette.Danger)
+	return cmd
+}
+
+// pauseMarked parks the pausable subset of the multi-select-marked sessions
+// (mirroring ActiveInstancesInView's predicate: not paused/loading/direct). With
+// nothing eligible it explains itself and stays in the mode; otherwise it leaves
+// visual mode (capturing the slice first) so a cancelled confirmation leaves no
+// stale marks behind.
+func (m *home) pauseMarked() tea.Cmd {
+	var insts []*session.Instance
+	for _, inst := range m.list.MarkedInstancesInView() {
+		status := inst.GetStatus()
+		if status != session.Paused && status != session.Loading && !inst.IsDirect() {
+			insts = append(insts, inst)
+		}
+	}
+	if len(insts) == 0 {
+		return m.handleInfoNotice("no marked sessions to pause")
+	}
+	m.exitVisualMode()
+	message := fmt.Sprintf("Pause %d marked session%s?", len(insts), plural(len(insts)))
+	return m.pauseInstances(insts, message)
+}
+
+// resumeMarked resumes the paused subset of the multi-select-marked sessions.
+// Same eligibility/exit semantics as pauseMarked.
+func (m *home) resumeMarked() tea.Cmd {
+	var insts []*session.Instance
+	for _, inst := range m.list.MarkedInstancesInView() {
+		if inst.GetStatus() == session.Paused {
+			insts = append(insts, inst)
+		}
+	}
+	if len(insts) == 0 {
+		return m.handleInfoNotice("no marked sessions to resume")
+	}
+	m.exitVisualMode()
+	message := fmt.Sprintf("Resume %d marked session%s?", len(insts), plural(len(insts)))
+	return m.resumeInstances(insts, message)
+}
+
+// killMarked tears down the killable subset of the multi-select-marked sessions
+// (everything except a still-Loading session, which single-kill also refuses).
+// Same eligibility/exit semantics as pauseMarked.
+func (m *home) killMarked() tea.Cmd {
+	var insts []*session.Instance
+	for _, inst := range m.list.MarkedInstancesInView() {
+		if inst.GetStatus() != session.Loading {
+			insts = append(insts, inst)
+		}
+	}
+	if len(insts) == 0 {
+		return m.handleInfoNotice("no marked sessions to kill")
+	}
+	m.exitVisualMode()
+	message := fmt.Sprintf("Kill %d marked session%s?", len(insts), plural(len(insts)))
+	return m.killInstances(insts, message)
 }
 
 // newSessionFormOverlay builds the unified new-session form (title, project, optional

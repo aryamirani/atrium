@@ -461,6 +461,22 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		}
 		return m, tea.Batch(m.showInfo(msg.summary()), m.instanceChanged())
+	case batchKillDoneMsg:
+		// A confirmed batch kill finished. Tear down each killed session's preview
+		// terminal on the main loop (single-session kill does the same). All-success
+		// gets a transient notice; any failures go to a persistent modal naming which
+		// sessions survived and why. Either way, refresh the list so the now-gone rows
+		// disappear.
+		for _, inst := range msg.killedInstances {
+			m.tabbedWindow.CleanupTerminalForInstance(inst)
+		}
+		if len(msg.failures) == 0 {
+			return m, tea.Batch(
+				m.handleInfoNotice(fmt.Sprintf("killed %d session%s", msg.killed, plural(msg.killed))),
+				m.instanceChanged(),
+			)
+		}
+		return m, tea.Batch(m.showInfo(msg.summary()), m.instanceChanged())
 	case prMergedMsg:
 		// A confirmed merge succeeded: acknowledge it and refresh so the PR badge
 		// reflects the now-merged state on the next poll.
@@ -665,6 +681,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.handleHintsState(msg)
 	}
 
+	// Multi-select (visual) mode: space marks, lifecycle keys act on the marked
+	// set, esc exits. Must run before the global esc/quit handling below so esc
+	// clears the marks (not the filter) and q never quits.
+	if m.state == stateVisual {
+		return m.handleMultiSelectState(msg)
+	}
+
 	// Exit scrolling mode when ESC is pressed and preview pane is in scrolling mode
 	// Check if Escape key was pressed and we're not in the diff tab (meaning we're in preview tab)
 	// Always check for escape key first to ensure it doesn't get intercepted elsewhere
@@ -782,6 +805,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.menu.SetState(ui.StateFilter)
 		m.recomputeLayout() // the hint bar now claims a row; shrink the panes to fit
 		return m, m.instanceChanged()
+	case keys.KeyMultiSelect:
+		return m.enterMultiSelect()
 	case keys.KeyRename:
 		return m.openRenameSelected()
 	case keys.KeyAutoName:

@@ -102,6 +102,15 @@ const (
 	// KeySmartDispatch opens the single-line smart-dispatch input: type a free-form
 	// description and Atrium routes it to a project and pre-fills the new-session form.
 	KeySmartDispatch
+
+	// KeyMultiSelect enters multi-select ("visual") mode from the list, where
+	// space marks/unmarks rows and a lifecycle action (pause/resume/kill) applies
+	// to the marked set behind a single confirmation.
+	KeyMultiSelect
+
+	// KeyToggleMark marks/unmarks the highlighted session while in multi-select
+	// mode. It is consumed only by the mode handler, never the default state.
+	KeyToggleMark
 )
 
 // KillKey is the chord that triggers a kill from the session list. It mirrors the
@@ -158,6 +167,8 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"ctrl+q":     KeyAttachToggle,
 	"f":          KeyHints,
 	"a":          KeyApprove,
+	"v":          KeyMultiSelect,
+	" ":          KeyToggleMark,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName to keybinding.
@@ -265,6 +276,14 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyResumeAll: key.NewBinding(
 		key.WithKeys("ctrl+r"),
 		key.WithHelp("ctrl+r", "resume all"),
+	),
+	KeyMultiSelect: key.NewBinding(
+		key.WithKeys("v"),
+		key.WithHelp("v", "multi-select"),
+	),
+	KeyToggleMark: key.NewBinding(
+		key.WithKeys(" "),
+		key.WithHelp("space", "mark/unmark"),
 	),
 
 	KeyMoveUp: key.NewBinding(

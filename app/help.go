@@ -74,6 +74,7 @@ func (h helpTypeGeneral) toContent() string {
 		helpRow("R", "rename session (label only)"),
 		helpRow("A", "auto-name session (via its agent)"),
 		helpRow("/", "filter sessions"),
+		helpRow("v", "multi-select: space marks, p/r/x act on the marked set"),
 		"",
 		helpHeaderStyle().Render("Handoff"),
 		helpRow("↵/o", "attach to the selected session"),
