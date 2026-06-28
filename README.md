@@ -260,7 +260,6 @@ list to your config file:
 > resolves to the work identity and key regardless of its path under
 > `~/.atrium/worktrees/`. Atrium deliberately carries no git-identity logic; it relies
 > on that system, which keys off the same remote signal as `remote_matches` above.
-
 ### FAQs
 
 #### Failed to start new session
