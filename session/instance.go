@@ -999,9 +999,11 @@ func (i *Instance) IsReadyForPrompt() bool {
 // AwaitingInput reports whether the agent is rendered with its live input box on screen
 // and no startup gate or blocking prompt up — i.e. keystrokes typed now would land in the
 // composer. It is the positive readiness signal that gates queued-prompt delivery, stronger
-// than IsReadyForPrompt: it confirms the box is present rather than only that no known gate
-// is, so a gate that has not rendered yet (or one the adapter does not model) cannot be
-// mistaken for readiness and swallow the prompt.
+// than IsReadyForPrompt: it additionally confirms the box is present, so a pre-box boot
+// frame or a not-yet-painted startup screen that is briefly idle-looking can't be mistaken
+// for readiness. Menu-style gates (claude's trust/new-MCP screens render a "❯ 1. …" selector
+// that looks like a box) are still excluded by the gate/prompt checks, not by the box check;
+// see Session.AwaitingInput.
 func (i *Instance) AwaitingInput() bool {
 	ts := i.tmux()
 	if !i.isStarted() || ts == nil {
@@ -1733,9 +1735,14 @@ func (i *Instance) typePrompt(ts *tmux.Session, prompt string) error {
 //  3. confirms the text landed in the box before submitting (soft error if it never does);
 //  4. presses Enter and confirms the box cleared (soft error if it did not submit).
 //
-// It is idempotent: step 2 is skipped when the box already holds the prompt, so a retry
-// after a soft failure re-submits rather than re-types — no doubled prompt. Hard tmux
-// failures (dead pane, send-keys error) are returned wrapped for the caller to surface.
+// It is idempotent across the common soft-failure paths: step 2 is skipped when the box
+// already holds the prompt, so a retry after a not-yet-submitted attempt re-submits rather
+// than re-types. The one residual doubling window is a submit that actually succeeded but
+// whose post-Enter confirmation (step 4) timed out before the box repainted as cleared: the
+// next attempt then sees an empty box and re-types. That needs the box to clear later than
+// promptSubmitAttempts*promptVerifyInterval after a successful Enter, which the agents we
+// target do effectively instantly, so it is accepted rather than guarded. Hard tmux failures
+// (dead pane, send-keys error) are returned wrapped for the caller to surface.
 func (i *Instance) SendPrompt(prompt string) error {
 	ts := i.tmux()
 	if !i.isStarted() {

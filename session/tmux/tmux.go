@@ -513,10 +513,17 @@ func (t *Session) IsReadyForPrompt() bool {
 // input box. It is the positive readiness signal for delivering a queued initial prompt:
 // the session exists, the pane has rendered, no startup gate (GateUp, raw pane) and no
 // blocking prompt (DetectPrompt) is up, and the composer's input box is actually on screen
-// (InputBoxVisible). Unlike IsReadyForPrompt — which only confirms the absence of a *known*
-// gate — this requires the box's presence, so a gate that has not painted yet, or one the
-// adapter does not model, cannot be mistaken for readiness and swallow the prompt. It is a
-// read-only check: it captures the pane once and never sends keystrokes.
+// (InputBoxVisible).
+//
+// Requiring the box's presence — not merely the absence of a *known* gate, as
+// IsReadyForPrompt does — closes the timing race this fix targets: a pre-box boot frame or
+// a late-painting startup screen that is briefly idle-looking has no composer yet, so it can
+// no longer be mistaken for readiness and swallow the prompt. It does not, on its own,
+// distinguish a menu-style gate from the composer: claude renders its trust/new-MCP screens
+// as a "❯ 1. …" selector, which reads as a box line, so those gates are still excluded by
+// GateUp / DetectPrompt above, not by the box check. Readiness is therefore the conjunction:
+// no known gate or prompt AND a box on screen. It is a read-only check: it captures the pane
+// once and never sends keystrokes.
 func (t *Session) AwaitingInput() bool {
 	if !t.DoesSessionExist() {
 		return false

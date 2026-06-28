@@ -132,14 +132,22 @@ func stripBoxInterior(line string) string {
 }
 
 // inputBoxText returns the text currently entered in the agent's live input box and
-// whether a box is on screen at all. The box is the composer at the bottom of the pane:
-// one or more "│"-bordered interior lines, the first opening with the "❯"/">" prompt char;
-// a long entry wraps across several interior lines, which are stripped of borders and
-// joined with single spaces so the readback is width-independent. Detection is confined to
-// the bottom WindowPrompt non-empty lines (the same budget the prompt matchers use) so a
-// ">" quoted in the scrolled-back transcript never counts as the box. The returned text is
-// empty when the box is present but blank (an unsubmitted prompt has cleared, or nothing
-// was ever typed) — found stays true, so callers can tell "no box" from "empty box".
+// whether a box is on screen at all. The box is the composer at the bottom of the pane: a
+// line opening with the "❯"/">" prompt char, optionally inside "│" side borders. Builds
+// differ — claude draws a borderless interior wrapped by "─" horizontal rules; others use
+// full "│"-bordered rows — so a long entry that wraps across several rows is read by joining
+// every interior line below the prompt char up to the box's bottom rule (or the next box
+// line), stripped of any borders and squashed to single spaces, making the readback
+// width- and border-style-independent. Detection is confined to the bottom WindowPrompt
+// non-empty lines (the same budget the prompt matchers use) so a ">" quoted in the
+// scrolled-back transcript never counts as the box.
+//
+// found=false means no composer is on screen. found=true with empty text means the box is
+// genuinely blank; note that an otherwise-empty composer showing a placeholder/ghost
+// suggestion (claude's `Try "…"` hint) reads that hint back as the text, so callers must
+// not treat the readback as the user's input verbatim — they compare it against the prompt
+// signature with a substring check (see boxHasSignature) precisely so ghost text and the
+// wrap point never cause a false match.
 func inputBoxText(content string) (string, bool) {
 	lines := strings.Split(content, "\n")
 
@@ -170,13 +178,17 @@ func inputBoxText(content string) (string, bool) {
 		return "", false
 	}
 
+	// Join the wrapped interior rows below the prompt char. A "│"-bordered build and a
+	// borderless one both terminate the box with a horizontal rule (the bottom border), so
+	// reading until that rule — or a blank line, or a second prompt-char line (a new box) —
+	// captures the whole entry without swallowing the footer that lives below the box.
 	parts := []string{stripBoxInterior(window[anchor])}
 	for i := anchor + 1; i < len(window); i++ {
-		s := strings.TrimSpace(window[i])
-		if !strings.HasPrefix(s, "│") { // box interior continuation only
+		line := window[i]
+		if strings.TrimSpace(line) == "" || isHorizontalRule(line) || isInputBoxLine(line) {
 			break
 		}
-		parts = append(parts, stripBoxInterior(window[i]))
+		parts = append(parts, stripBoxInterior(line))
 	}
 	text := whiteSpaceRegex.ReplaceAllString(strings.Join(parts, " "), " ")
 	return strings.TrimSpace(text), true

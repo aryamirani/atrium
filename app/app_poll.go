@@ -175,8 +175,10 @@ var promptSendRetryDelay = 250 * time.Millisecond
 // the retry budget — returning that soft error for the caller to route. Only a hard error
 // is retried; the last error is returned once every attempt has failed.
 //
-// SendPrompt is idempotent (it re-submits an already-staged prompt instead of re-typing
-// it), so a retry after a partial send cannot double the prompt.
+// SendPrompt is idempotent across the soft-failure paths (it re-submits an already-staged
+// prompt instead of re-typing it), so a retry after a partial send does not double the
+// prompt — bar the one narrow window noted on SendPrompt where a submit succeeds but its
+// confirmation times out before the box repaints.
 func sendWithRetry(send func() error) error {
 	var err error
 	for attempt := range promptSendAttempts {
@@ -245,8 +247,10 @@ const promptDeliveryTimeout = 60 * time.Second
 // blocking prompt is up, AND its live input box is on screen. This is a hard precondition
 // the timeout never bypasses — keystrokes sent while anything but the box is up are consumed
 // by that screen, not the agent's input box, so the prompt would be lost. Requiring the
-// box's *presence* (not merely the absence of a known gate) closes the race where a gate
-// that has not painted yet, or one the adapter does not model, is mistaken for readiness.
+// box's *presence* (not merely the absence of a known gate) closes the race where a startup
+// screen that has not painted yet — no box on screen — is briefly mistaken for readiness.
+// (A menu-style gate that has painted still reads as a box, so it is the gate/prompt checks
+// inside AwaitingInput, not the box check, that keep its "❯ 1. …" selector out.)
 //
 // Normally we also wait for the pane to leave PaneWorking to avoid the post-trust
 // "loading" transition window. But a chatty agent that writes continuously on boot can
