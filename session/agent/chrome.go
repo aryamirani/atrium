@@ -119,6 +119,69 @@ func isInputBoxLine(line string) bool {
 	return strings.HasPrefix(s, "❯") || strings.HasPrefix(s, ">")
 }
 
+// stripBoxInterior removes an input-box interior line's side borders, leading prompt
+// char ("❯"/">"), and surrounding whitespace, leaving just the typed text. Used to read
+// back what the user (or a queued-prompt send) has entered into the composer.
+func stripBoxInterior(line string) string {
+	s := strings.TrimSpace(line)
+	s = strings.TrimSpace(strings.TrimPrefix(s, "│")) // left border
+	s = strings.TrimSpace(strings.TrimSuffix(s, "│")) // right border
+	s = strings.TrimPrefix(s, "❯")
+	s = strings.TrimPrefix(s, ">")
+	return strings.TrimSpace(s)
+}
+
+// inputBoxText returns the text currently entered in the agent's live input box and
+// whether a box is on screen at all. The box is the composer at the bottom of the pane:
+// one or more "│"-bordered interior lines, the first opening with the "❯"/">" prompt char;
+// a long entry wraps across several interior lines, which are stripped of borders and
+// joined with single spaces so the readback is width-independent. Detection is confined to
+// the bottom WindowPrompt non-empty lines (the same budget the prompt matchers use) so a
+// ">" quoted in the scrolled-back transcript never counts as the box. The returned text is
+// empty when the box is present but blank (an unsubmitted prompt has cleared, or nothing
+// was ever typed) — found stays true, so callers can tell "no box" from "empty box".
+func inputBoxText(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+
+	// Restrict to the bottom WindowPrompt non-empty lines.
+	start := 0
+	nonEmpty := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			nonEmpty++
+			if nonEmpty == WindowPrompt {
+				start = i
+				break
+			}
+		}
+	}
+	window := lines[start:]
+
+	// Anchor on the bottom-most prompt-char line; the box always sits below the
+	// transcript, so the lowest "❯"/">" is the live composer.
+	anchor := -1
+	for i := len(window) - 1; i >= 0; i-- {
+		if isInputBoxLine(window[i]) {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		return "", false
+	}
+
+	parts := []string{stripBoxInterior(window[anchor])}
+	for i := anchor + 1; i < len(window); i++ {
+		s := strings.TrimSpace(window[i])
+		if !strings.HasPrefix(s, "│") { // box interior continuation only
+			break
+		}
+		parts = append(parts, stripBoxInterior(window[i]))
+	}
+	text := whiteSpaceRegex.ReplaceAllString(strings.Join(parts, " "), " ")
+	return strings.TrimSpace(text), true
+}
+
 // footerVisibleInSegments reports whether a live key-hint footer — recognized by the
 // tokens predicate — is on screen. It exists for footers a custom multi-line statusLine
 // can render *below*, pushing them out of any fixed bottom-N window — and a statusLine may

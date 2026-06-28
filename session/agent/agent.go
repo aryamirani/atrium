@@ -277,3 +277,22 @@ func (a *Adapter) GateUp(content string) (Gate, bool) {
 	}
 	return Gate{}, false
 }
+
+// InputBoxText returns the text entered in the agent's live input box and whether a
+// box is on screen, reading the cleaned full pane. found=false means no composer is
+// rendered (a startup frame before the box, or an overlay covering it); found=true with
+// an empty string means the box is present but blank. It is the positive readback used to
+// confirm a queued prompt actually landed in the composer before it is submitted.
+func (a *Adapter) InputBoxText(content string) (string, bool) {
+	return inputBoxText(content)
+}
+
+// InputBoxVisible reports whether the agent's live input box is on screen in the cleaned
+// full pane. It is the positive half of the prompt-delivery readiness check: keystrokes
+// are only safe to type when the composer — not a startup gate, an overlay, or a pre-box
+// boot frame — is what would receive them. The caller pairs this with GateUp (raw pane)
+// and DetectPrompt to exclude the screens that consume keystrokes.
+func (a *Adapter) InputBoxVisible(content string) bool {
+	_, ok := inputBoxText(content)
+	return ok
+}
