@@ -710,50 +710,9 @@ func resolveClaudeCandidate(whichOutput string) (string, bool) {
 
 // LoadConfig reads config.json from the data dir. It never fails: a missing
 // file is created with defaults, and any read/parse error logs a warning and
-// falls back to DefaultConfig.
+// falls back to DefaultConfig. See loadJSONFile for the shared load behavior.
 func LoadConfig() *Config {
-	configDir, err := GetConfigDir()
-	if err != nil {
-		log.ErrorLog.Printf("failed to get config directory: %v", err)
-		return seededDefaultConfig()
-	}
-
-	configPath := filepath.Join(configDir, ConfigFileName)
-	// Clear any temp files orphaned by a crash mid-write (see writeFileAtomic).
-	sweepStaleTempFiles(configPath)
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Create and save default config if file doesn't exist
-			defaultCfg := seededDefaultConfig()
-			if saveErr := saveConfig(defaultCfg); saveErr != nil {
-				log.WarningLog.Printf("failed to save default config: %v", saveErr)
-			}
-			return defaultCfg
-		}
-
-		log.WarningLog.Printf("failed to get config file: %v", err)
-		return seededDefaultConfig()
-	}
-
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		// Preserve an unparseable config for recovery rather than silently
-		// replacing it with defaults the next save would overwrite it with.
-		if len(data) > 0 {
-			if dst, qerr := quarantineCorruptFile(configPath); qerr != nil {
-				log.ErrorLog.Printf("failed to parse config file and could not preserve it: parse=%v rename=%v", err, qerr)
-			} else {
-				log.ErrorLog.Printf("failed to parse config file; preserved corrupt copy at %s: %v", dst, err)
-			}
-		} else {
-			log.ErrorLog.Printf("failed to parse config file: %v", err)
-		}
-		return seededDefaultConfig()
-	}
-
-	return &config
+	return loadJSONFile(ConfigFileName, "config", seededDefaultConfig, saveConfig)
 }
 
 // saveConfig saves the configuration to disk
