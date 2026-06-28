@@ -1386,7 +1386,7 @@ func (l *List) groupBounds(idx int) (start, end int) {
 }
 
 // effectiveCollapsed reports whether a group is folded *and* folding is meaningful. Folding
-// is only meaningful when more than one repo is present (headers don't render otherwise), so
+// is only meaningful when more than one repo is present (a lone group's header has no fold marker), so
 // this guard lives here and every collapse read goes through it — preventing a stale flag from
 // hiding the sole remaining group after others are killed.
 func (l *List) effectiveCollapsed(key string) bool {
