@@ -183,42 +183,22 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				log.ErrorLog.Printf("failed to persist recovered sessions: %v", err)
 			}
 		}
-		for _, r := range msg.results {
-			// Skip instances that were paused while metadata was being computed, or
-			// that were just recovered to Paused above because their session died.
-			if r.sessionLost || r.instance.Paused() {
-				continue
-			}
-			r.instance.ApplyPaneState(r.state)
-			if r.diffStats != nil && r.diffStats.Error != nil {
-				if !strings.Contains(r.diffStats.Error.Error(), "base commit SHA not set") {
-					log.WarningLog.Printf("could not update diff stats: %v", r.diffStats.Error)
-				}
-				r.instance.SetDiffStats(nil)
-			} else {
-				r.instance.SetDiffStats(r.diffStats)
-			}
-			r.instance.SetPRStatus(r.prStatus)
-			if r.modelOK {
-				r.instance.SetModelMeta(r.model, r.modelStamp)
-			}
-			if r.modeOK {
-				r.instance.SetModeMeta(r.mode)
-			}
-		}
-		// Re-apply the status sort now that pane states are fresh, so urgent sessions
-		// keep floating to the top of their group. No-op in creation mode; the
-		// selected session stays under the cursor (preserved by identity).
-		m.list.ApplySort()
-		m.pushSessionContexts()
-		cmds := deliverReadyPrompts(msg.results)
+		cmds := m.applyMetadataResults(msg.results)
 		m.metadataTick++
 		fullSweep := m.metadataTick%metadataFullSweepEvery == 0
 		cmds = append(cmds, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance(), fullSweep))
 		return m, tea.Batch(cmds...)
+	case metadataSweepDoneMsg:
+		// A one-shot background refresh fired on detach (sweepMetadataNowCmd). Apply the
+		// results but do NOT reschedule the metadata tick — that chain is owned by
+		// metadataUpdateDoneMsg above; touching it here would spawn a second tick loop —
+		// and do NOT touch metadataTick, which phases the periodic full-sweep cadence.
+		// Lost-session recovery is intentionally left to the periodic tick so its strike
+		// debounce isn't shortened by a same-resume double observation.
+		return m, tea.Batch(m.applyMetadataResults(msg.results)...)
 	case instancePolledMsg:
-		// An off-cadence single-instance refresh (selection change / detach). Apply the
-		// state but do NOT reschedule the metadata tick — that chain is owned by
+		// An off-cadence single-instance status refresh (selection change). Apply the state
+		// but do NOT reschedule the metadata tick — that chain is owned by
 		// metadataUpdateDoneMsg above; touching it here would spawn a second tick loop.
 		if msg.instance.GetStatus() != session.Paused {
 			msg.instance.ApplyPaneState(msg.state)
@@ -568,14 +548,17 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.attachExec(next.Attach, next)
 			}
 		}
-		// Polling stalled while attached, so the smoothing state is stale: refresh the
-		// selected session at face value (fresh) rather than letting a stale "running" on a
-		// now-idle agent linger — and re-run through the hysteresis — until it settles. Pin
-		// the poll tracker to the current selection first so instanceChanged's own
-		// (hysteresis) poll doesn't also fire for the same instance.
+		// Polling stalled for the whole list while attached, so every row is stale on
+		// return. Sweep every active session immediately instead of waiting up to a full
+		// ~2s sweep cycle: the selected row is polled face-value (PollNow) so a stale
+		// "running" on a now-idle agent doesn't linger — and re-runs through the hysteresis
+		// from there — while background rows keep the hysteresis Poll so a mid-turn agent
+		// isn't falsely flagged done. Pin the poll tracker to the current selection first so
+		// instanceChanged's own (hysteresis) poll doesn't also fire for the same instance.
 		selected := m.list.GetSelectedInstance()
 		m.lastStatusPollSelection = selected
-		return m, tea.Batch(tea.WindowSize(), m.instanceChanged(), pollSelectedCmd(selected, true))
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged(),
+			sweepMetadataNowCmd(m.snapshotActiveInstances(), selected))
 	case infoMsg:
 		// An action requested a dismissible info modal (e.g. an actionable resume
 		// error). Unlike handleError's transient box, this persists until dismissed.

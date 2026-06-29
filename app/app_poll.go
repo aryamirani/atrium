@@ -3,6 +3,7 @@ package app
 // Per-tick metadata poll loop, pane-state application, and prompt delivery.
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -39,7 +40,7 @@ func (m *home) instanceChanged() tea.Cmd {
 	if selected != m.lastStatusPollSelection {
 		m.lastStatusPollSelection = selected
 		m.selectedSince = time.Now()
-		return pollSelectedCmd(selected, false)
+		return pollSelectedCmd(selected)
 	}
 	return nil
 }
@@ -104,32 +105,30 @@ type instanceMetaResult struct {
 	modeOK bool
 }
 
-// instancePolledMsg carries the result of an off-cadence poll of a single instance,
-// triggered when the selection changes or a session is detached. It refreshes that one
-// instance's status immediately instead of waiting up to a full 500ms metadata tick —
-// which is why an idle session no longer lingers as "running" right after you switch to
-// it or step out of it.
+// instancePolledMsg carries the result of an off-cadence status poll of a single instance,
+// triggered when the selection changes. It refreshes that one instance's status immediately
+// instead of waiting up to a full 500ms metadata tick — which is why an idle session no
+// longer lingers as "running" right after you switch to it. (A detach refreshes the whole
+// list at once via sweepMetadataNowCmd, not this message.)
 type instancePolledMsg struct {
 	instance *session.Instance
 	state    tmux.PaneState
 }
 
-// pollSelectedCmd polls a single instance off the UI thread for an immediate status
-// refresh. Returns nil for a session that can't be polled; Poll itself also yields
-// PaneDead for a dead session, which ApplyPaneState ignores.
+// pollSelectedCmd polls a single instance off the UI thread for an immediate status refresh
+// when the selection changes, so an idle session no longer lingers as "running" right after
+// you switch to it. It uses the hysteresis-respecting Poll — the tick loop kept the monitor
+// current for a live selection change. Returns nil for a session that can't be polled; Poll
+// itself also yields PaneDead for a dead session, which ApplyPaneState ignores.
 //
-// fresh selects PollNow over Poll: use it after a detach, where the tick stream was stalled
-// while attached so the hysteresis state is stale and a face-value snapshot is correct. A
-// live selection change uses the hysteresis-respecting Poll (the tick loop kept the monitor
-// current).
-func pollSelectedCmd(inst *session.Instance, fresh bool) tea.Cmd {
+// A detach is different — the tick stream was stalled while attached, so every row is stale
+// — and is handled by sweepMetadataNowCmd (a face-value PollNow for the selected row plus a
+// full background sweep), not here.
+func pollSelectedCmd(inst *session.Instance) tea.Cmd {
 	if inst == nil || !inst.Started() || inst.Paused() {
 		return nil
 	}
 	return func() tea.Msg {
-		if fresh {
-			return instancePolledMsg{instance: inst, state: inst.PollNow()}
-		}
 		return instancePolledMsg{instance: inst, state: inst.Poll()}
 	}
 }
@@ -305,6 +304,29 @@ type metadataUpdateDoneMsg struct {
 	results []instanceMetaResult
 }
 
+// metadataSweepDoneMsg carries the result of a one-shot, off-cadence metadata refresh
+// (see sweepMetadataNowCmd). Unlike metadataUpdateDoneMsg, its handler applies the
+// results without re-arming the periodic tick.
+type metadataSweepDoneMsg struct {
+	results []instanceMetaResult
+}
+
+// sweepMetadataNowCmd refreshes every active session immediately (no 500ms sleep, no
+// metadataFullSweepEvery throttle), for use right after a detach where the event loop was
+// suspended and every row is stale. It brings the next full sweep forward to now and does
+// NOT re-arm the periodic tick. The selected row is polled face-value (PollNow, fresh=true)
+// so a stale "running" on a now-idle agent doesn't linger; background rows keep the
+// hysteresis Poll so a mid-turn agent isn't falsely flagged done (see collectMetadata's
+// fresh argument). Returns nil when there are no active sessions to refresh.
+func sweepMetadataNowCmd(active []*session.Instance, selected *session.Instance) tea.Cmd {
+	if len(active) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		return metadataSweepDoneMsg{results: collectMetadata(active, selected, true)}
+	}
+}
+
 // snapshotActiveInstances returns the currently active (started, not paused)
 // instances. Called on the main thread so the filtering doesn't race with
 // state mutations.
@@ -344,6 +366,115 @@ func pollTargets(active []*session.Instance, selected *session.Instance, fullSwe
 	return out
 }
 
+// collectMetadata polls each instance in poll on its own background goroutine and returns
+// the per-instance results, to be applied on the main thread by applyMetadataResults. The
+// selected instance gets a full diff (with Content) for the diff pane; the rest get a
+// lightweight numstat-only summary, keeping per-instance memory bounded. Shared by the
+// periodic metadata tick and the one-shot detach sweep.
+//
+// fresh takes a face-value PollNow for the selected instance instead of the hysteresis
+// Poll: the detach sweep sets it because the tick stream was stalled while attached, so the
+// selected row's smoothing state is stale and a snapshot is correct (ArmReadySuppression,
+// armed by the detach handler, absorbs the synthetic Running→Ready). Background rows always
+// use the hysteresis Poll — they carry no ready-suppression, so a single marker-absent
+// sample of a mid-turn agent must not be allowed to flag a false completion. The periodic
+// tick passes fresh=false, so every row uses the hysteresis Poll there.
+func collectMetadata(poll []*session.Instance, selected *session.Instance, fresh bool) []instanceMetaResult {
+	results := make([]instanceMetaResult, len(poll))
+	var wg sync.WaitGroup
+	for idx, inst := range poll {
+		wg.Add(1)
+		go func(i int, instance *session.Instance) {
+			defer wg.Done()
+			r := &results[i]
+			r.instance = instance
+			// A started session whose tmux pane has died would fail every probe
+			// (capture, diff) and flood the log/error box. Poll reports a dead
+			// session as PaneDead from its own (single) has-session check, so derive
+			// sessionLost from that rather than forking a second has-session here.
+			// The main thread recovers it to Paused, debounced by recoverLostInstances
+			// (which also re-guards Paused, so a raced-paused instance is ignored).
+			if fresh && instance == selected {
+				r.state = instance.PollNow()
+			} else {
+				r.state = instance.Poll()
+			}
+			if r.state == tmux.PaneDead {
+				r.sessionLost = true
+				return
+			}
+			// Only probe readiness while a prompt is actually queued (a brief
+			// window after a new session), so the extra pane capture is rare.
+			if instance.Prompt != "" {
+				r.readyForPrompt = promptDeliveryReady(
+					r.state, instance.AwaitingInput(),
+					instance.PromptQueuedAt, time.Now())
+			}
+			if instance == selected {
+				r.diffStats = instance.ComputeDiff()
+			} else {
+				r.diffStats = instance.ComputeDiffNumstat()
+			}
+			// PR status is network-bound but TTL-cached, so most ticks return
+			// instantly with no I/O; the selected session refreshes eagerly.
+			r.prStatus = instance.ComputePRStatus(instance == selected)
+			// Transcript model is stamp-gated: an idle claude session costs one
+			// ReadDir + Stat per tick, a streaming one a ≤128KB tail parse.
+			r.model, r.modelStamp, r.modelOK = instance.ComputeModel()
+			// Live permission mode reads the value Poll just detected from the
+			// footer — no extra capture; only applied when it changed.
+			r.mode, r.modeOK = instance.ComputeMode()
+		}(idx, inst)
+	}
+	wg.Wait()
+	return results
+}
+
+// applyMetadataResults applies a batch of metadata results to their instances on the main
+// thread (pane state, diff, PR, model, mode), re-floats urgent rows, refreshes the session
+// context bars, and returns any queued-prompt delivery commands. Shared by the periodic
+// metadata tick and the one-shot detach sweep. It deliberately does NOT recover lost
+// sessions or reschedule the tick — those stay with the periodic handler (recovery's
+// strike debounce must not be shortened by a same-resume double observation).
+func (m *home) applyMetadataResults(results []instanceMetaResult) []tea.Cmd {
+	for _, r := range results {
+		// Skip instances that were paused while metadata was being computed, or that
+		// were just recovered to Paused because their session died.
+		if r.sessionLost || r.instance.Paused() {
+			continue
+		}
+		r.instance.ApplyPaneState(r.state)
+		applyDiffStats(r.instance, r.diffStats)
+		r.instance.SetPRStatus(r.prStatus)
+		if r.modelOK {
+			r.instance.SetModelMeta(r.model, r.modelStamp)
+		}
+		if r.modeOK {
+			r.instance.SetModeMeta(r.mode)
+		}
+	}
+	// Re-apply the status sort now that pane states are fresh, so urgent sessions keep
+	// floating to the top of their group. No-op in creation mode; the selected session
+	// stays under the cursor (preserved by identity).
+	m.list.ApplySort()
+	m.pushSessionContexts()
+	return deliverReadyPrompts(results)
+}
+
+// applyDiffStats stores freshly computed diff stats on an instance (main thread only),
+// dropping the result to nil on a real error so the row shows no stale numbers. The
+// "base commit SHA not set" case is an expected pre-baseline state, not worth logging.
+func applyDiffStats(inst *session.Instance, stats *git.DiffStats) {
+	if stats != nil && stats.Error != nil {
+		if !strings.Contains(stats.Error.Error(), "base commit SHA not set") {
+			log.WarningLog.Printf("could not update diff stats: %v", stats.Error)
+		}
+		inst.SetDiffStats(nil)
+		return
+	}
+	inst.SetDiffStats(stats)
+}
+
 // tickUpdateMetadataCmd returns a self-chaining Cmd that sleeps 500ms, then performs
 // expensive metadata I/O (tmux capture, git diff) in parallel background goroutines.
 // Because it only re-schedules after completing, overlapping ticks are impossible.
@@ -371,50 +502,6 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 			return metadataUpdateDoneMsg{}
 		}
 
-		results := make([]instanceMetaResult, len(poll))
-		var wg sync.WaitGroup
-		for idx, inst := range poll {
-			wg.Add(1)
-			go func(i int, instance *session.Instance) {
-				defer wg.Done()
-				r := &results[i]
-				r.instance = instance
-				// A started session whose tmux pane has died would fail every probe
-				// (capture, diff) and flood the log/error box. Poll reports a dead
-				// session as PaneDead from its own (single) has-session check, so derive
-				// sessionLost from that rather than forking a second has-session here.
-				// The main thread recovers it to Paused, debounced by recoverLostInstances
-				// (which also re-guards Paused, so a raced-paused instance is ignored).
-				r.state = instance.Poll()
-				if r.state == tmux.PaneDead {
-					r.sessionLost = true
-					return
-				}
-				// Only probe readiness while a prompt is actually queued (a brief
-				// window after a new session), so the extra pane capture is rare.
-				if instance.Prompt != "" {
-					r.readyForPrompt = promptDeliveryReady(
-						r.state, instance.AwaitingInput(),
-						instance.PromptQueuedAt, time.Now())
-				}
-				if instance == selected {
-					r.diffStats = instance.ComputeDiff()
-				} else {
-					r.diffStats = instance.ComputeDiffNumstat()
-				}
-				// PR status is network-bound but TTL-cached, so most ticks return
-				// instantly with no I/O; the selected session refreshes eagerly.
-				r.prStatus = instance.ComputePRStatus(instance == selected)
-				// Transcript model is stamp-gated: an idle claude session costs one
-				// ReadDir + Stat per tick, a streaming one a ≤128KB tail parse.
-				r.model, r.modelStamp, r.modelOK = instance.ComputeModel()
-				// Live permission mode reads the value Poll just detected from the
-				// footer — no extra capture; only applied when it changed.
-				r.mode, r.modeOK = instance.ComputeMode()
-			}(idx, inst)
-		}
-		wg.Wait()
-
-		return metadataUpdateDoneMsg{results: results}
+		return metadataUpdateDoneMsg{results: collectMetadata(poll, selected, false)}
 	}
 }
