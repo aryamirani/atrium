@@ -26,6 +26,18 @@ var (
 	gracefulStopPoll    = 25 * time.Millisecond
 )
 
+// effectivePollInterval converts a configured poll interval in milliseconds into
+// a positive ticker duration. A non-positive value — the field absent from a
+// legacy or hand-edited config.json, or explicitly set <= 0 — would panic
+// time.NewTicker, so it falls back to the built-in default and keeps the daemon
+// running instead of crashing the autoyes process.
+func effectivePollInterval(ms int) time.Duration {
+	if ms <= 0 {
+		ms = config.DefaultDaemonPollIntervalMs
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
 // It's expected that the main process kills the daemon when the main process starts.
 // ctx carries the daemon's shutdown signal (main installs signal.NotifyContext for
@@ -47,7 +59,7 @@ func RunDaemon(ctx context.Context, cfg *config.Config) error {
 		instance.AutoYes = true
 	}
 
-	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond
+	pollInterval := effectivePollInterval(cfg.DaemonPollInterval)
 
 	// If we get an error for a session, it's likely that we'll keep getting the error. Log every 30 seconds.
 	everyN := log.NewEvery(60 * time.Second)
