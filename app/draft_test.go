@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/ui/overlay"
 )
 
@@ -16,6 +17,7 @@ func draftRunes(s string) tea.KeyMsg {
 }
 
 func TestDraft_EscapeStashesDirtyForm(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	h := newCreateFormHome(t)
 
 	h.handleKeyPress(draftRunes("n")) // open, focus on title
@@ -30,6 +32,7 @@ func TestDraft_EscapeStashesDirtyForm(t *testing.T) {
 }
 
 func TestDraft_EscapeDiscardsCleanForm(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	h := newCreateFormHome(t)
 
 	h.handleKeyPress(draftRunes("n")) // open, type nothing
@@ -39,6 +42,7 @@ func TestDraft_EscapeDiscardsCleanForm(t *testing.T) {
 }
 
 func TestDraft_ReopenRestoresStash(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	h := newCreateFormHome(t)
 
 	h.handleKeyPress(draftRunes("n"))
@@ -108,7 +112,111 @@ func TestDraft_RestoredDraftSubmitsOnEnter(t *testing.T) {
 	assert.Nil(t, h.textInputOverlay)
 }
 
+// The whole point of issue #211: a stashed draft must survive a crash/quit, not just
+// an in-run reopen. Stashing now mirrors the draft to state.json; a fresh home reading
+// that state back (a simulated restart) must rebuild the form from it on the next n/N.
+func TestDraft_SurvivesRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h := newCreateFormHome(t)
+
+	h.handleKeyPress(draftRunes("n"))
+	typeString(h, "my-draft")
+	h.textInputOverlay.SetPrompt("draft body")
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc}) // stash + persist
+	require.NotNil(t, h.stashedDraft)
+	require.NotNil(t, config.LoadState().GetDraft(), "the stash is mirrored to disk")
+
+	// Simulate a restart: a fresh home reading state from disk, no in-memory stash.
+	h2 := newCreateFormHome(t)
+	h2.appState = config.LoadState()
+	require.Nil(t, h2.stashedDraft, "a fresh run starts with no in-memory stash")
+
+	h2.handleKeyPress(draftRunes("n")) // reopen → rehydrate from disk, then restore
+	require.NotNil(t, h2.textInputOverlay)
+	assert.Equal(t, "my-draft", h2.textInputOverlay.GetTitle(), "the title survives the restart")
+	assert.Equal(t, "draft body", h2.textInputOverlay.GetValue(), "the prompt body survives too")
+	assert.Nil(t, h2.stashedDraft, "the rehydrated stash is consumed into the live overlay")
+	assert.Nil(t, config.LoadState().GetDraft(), "consuming the draft clears the disk copy")
+}
+
+// A draft recovered from disk after a restart must show the project's auto-routed Claude
+// account, exactly like a fresh form — the account is re-derived from the target, never
+// persisted, so the rehydrated overlay must re-run the same preselection. Without it the
+// picker would default to the first account, misrepresenting which login the session runs.
+func TestDraft_RehydratedDraftPreselectsRoutedAccount(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir() // direct (non-git) target → routes by path, hermetic
+	accounts := []config.ClaudeAccount{
+		{Name: "personal", ConfigDir: "~/.claude"},                  // catch-all default (accounts[0])
+		{Name: "work", ConfigDir: "/w", PathMatches: []string{dir}}, // path route for this target
+	}
+
+	h := newCreateFormHome(t)
+	h.appConfig.ClaudeAccounts = accounts
+	addDirectInstance(t, h, "existing", dir) // make dir the contextual target
+
+	h.handleKeyPress(draftRunes("n"))
+	typeString(h, "my-draft")
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc}) // stash + persist (Path = dir)
+	d := config.LoadState().GetDraft()
+	require.NotNil(t, d)
+	require.Equal(t, dir, d.Path, "the draft persists its project")
+
+	// Simulate a restart: a fresh home reading the persisted draft back.
+	h2 := newCreateFormHome(t)
+	h2.appConfig.ClaudeAccounts = accounts
+	h2.appState = config.LoadState()
+
+	h2.handleKeyPress(draftRunes("n")) // reopen → rehydrate from disk
+	require.NotNil(t, h2.textInputOverlay)
+	require.Equal(t, "my-draft", h2.textInputOverlay.GetTitle(), "the draft is restored")
+	assert.Equal(t, "work", h2.textInputOverlay.SelectedAccountName(),
+		"the recovered draft shows the path-routed account, not the first-account default")
+}
+
+// Submitting must leave no stale draft on disk, so a created session is never shadowed
+// by a lingering crash-recovery copy.
+func TestDraft_SubmitClearsPersistedDraft(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h := newCreateFormHome(t)
+	dir := t.TempDir()
+	addDirectInstance(t, h, "existing", dir) // contextual non-git target → a direct session
+
+	h.handleKeyPress(draftRunes("n"))
+	typeString(h, "my-draft")
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc}) // stash + persist
+	require.NotNil(t, config.LoadState().GetDraft())
+
+	h.handleKeyPress(draftRunes("n")) // reopen → restore the draft
+	require.Equal(t, "my-draft", h.textInputOverlay.GetTitle())
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlS}) // submit
+
+	require.Nil(t, h.textInputOverlay, "a successful submit closes the form")
+	assert.Nil(t, config.LoadState().GetDraft(), "submitting leaves no draft on disk")
+}
+
+// A confirmed double-tap Ctrl+R wipes the form; the on-disk mirror must go with it,
+// so a wiped draft cannot resurface after a restart.
+func TestDraft_ClearFormDropsPersistedDraft(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h := newCreateFormHome(t)
+
+	h.handleKeyPress(draftRunes("n"))
+	typeString(h, "my-draft")
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyEsc}) // stash + persist
+	h.handleKeyPress(draftRunes("n"))              // reopen with the restored draft
+	require.Equal(t, "my-draft", h.textInputOverlay.GetTitle())
+
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlR}) // arm
+	h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlR}) // confirm → rebuild fresh, drop draft
+
+	require.NotNil(t, h.textInputOverlay)
+	assert.Equal(t, "", h.textInputOverlay.GetTitle(), "the form is rebuilt fresh")
+	assert.Nil(t, config.LoadState().GetDraft(), "the wiped draft is gone from disk too")
+}
+
 func TestDraft_EscapeOnNonCreateOverlayDoesNotStash(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	h := newCreateFormHome(t)
 	ov := overlay.NewSmartDispatchOverlay("Describe the session")
 	ov.SetPrompt("some text")
@@ -126,6 +234,7 @@ func TestDraft_EscapeOnNonCreateOverlayDoesNotStash(t *testing.T) {
 // Stashing must drop that arm; otherwise a single Ctrl+R after reopening would wipe
 // the restored draft, defeating the double-tap guard.
 func TestDraft_ArmDoesNotSurviveCtrlCCancel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	h := newCreateFormHome(t)
 
 	h.handleKeyPress(draftRunes("n"))
@@ -143,6 +252,7 @@ func TestDraft_ArmDoesNotSurviveCtrlCCancel(t *testing.T) {
 }
 
 func TestDraft_DoubleCtrlRRebuildsFresh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	h := newCreateFormHome(t)
 
 	h.handleKeyPress(draftRunes("n"))

@@ -652,6 +652,33 @@ func (m *home) newSessionFormOverlay() (_ *overlay.TextInputOverlay, isGit bool)
 	return ov, valid && !direct
 }
 
+// seedOverlay fills a freshly built create-form overlay with the free-text values and
+// project selection shared by the prefill and crash-recovery paths. SetTitleValue("")
+// is a harmless no-op on a fresh field; SelectPath is skipped for an empty path (and a
+// no-op for a non-candidate one). Branch/profile/model/account are not seeded — they
+// are re-derived from the target, exactly as on a fresh form.
+func seedOverlay(ov *overlay.TextInputOverlay, title, prompt, path string) {
+	ov.SetTitleValue(title)
+	ov.SetPrompt(prompt)
+	if path != "" {
+		ov.SelectPath(path)
+	}
+}
+
+// preselectAccountFor points ov's account picker at the Claude account auto-routed for
+// target, so the form shows the same account a submit would resolve. A no-op once the
+// user drives the picker (see AccountPicker.SelectByName). isGit gates the remote
+// lookup: a non-git target has no remote and routes by path.
+func (m *home) preselectAccountFor(ov *overlay.TextInputOverlay, target string, isGit bool) {
+	remoteURL := ""
+	if isGit {
+		remoteURL = git.GetRemoteURL(m.ctx, target)
+	}
+	if name, _, _ := m.appConfig.ResolveClaudeAccount(remoteURL, target); name != "" {
+		ov.PreselectAccount(name)
+	}
+}
+
 // openCreateForm opens the unified new-session form — the single creation flow
 // behind both `n` (focusTitle, for "type a name and go") and `N` (project picker
 // first). The session itself is not created (and no list row appears) until the
@@ -670,6 +697,31 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 	if limit := m.appConfig.GetMaxSessions(); limit > 0 && m.list.NumInstances() >= limit {
 		return m.handleError(
 			fmt.Errorf("you can't create more than %d sessions (max_sessions in config.json)", limit))
+	}
+
+	// On the first bare n/N open after a restart, rebuild a crash-persisted draft into
+	// the in-memory stash so the restore branch below surfaces it exactly like an
+	// in-run Escape stash — same overlay, same auto-routed account, indistinguishable
+	// from a fresh form. Skipped when this run already has a stash (its live overlay
+	// wins, carrying every field) or the open carries explicit intent (prefill/seed).
+	// The disk copy is left intact here; the consume site clears it, so disk and the
+	// in-memory stash stay in lockstep at every handler boundary.
+	if m.stashedDraft == nil && prefill == nil && seedPath == "" {
+		if d := m.appState.GetDraft(); d != nil {
+			// Set the target before building the overlay (newSessionFormOverlay reads
+			// m.newSessionPath); the restore branch below re-derives it from the overlay's
+			// own selection, which round-trips this value (the draft path is candidate[0]).
+			m.newSessionPath = d.Path
+			if m.newSessionPath == "" {
+				m.newSessionPath = m.defaultNewSessionPath()
+			}
+			ov, isGit := m.newSessionFormOverlay()
+			seedOverlay(ov, d.Title, d.Prompt, d.Path)
+			// Re-route the account like a fresh form so the recovered draft shows the
+			// project's auto-routed account, not a misleading first-account default.
+			m.preselectAccountFor(ov, m.newSessionPath, isGit)
+			m.stashedDraft = ov
+		}
 	}
 
 	// Restore a stashed draft only on the bare n/N entry (no seed path, no prefill):
@@ -695,6 +747,8 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 	if restore {
 		m.textInputOverlay = m.stashedDraft
 		m.stashedDraft = nil
+		// The draft is now live in the form; drop the disk copy to mirror the stash.
+		m.clearPersistedDraft()
 		valid, direct, _ := targetValidity(m.ctx, target)
 		isGit = valid && !direct
 		// Re-run the inline duplicate verdict for the restored title.
@@ -704,13 +758,7 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 		ov, isGit = m.newSessionFormOverlay()
 		m.textInputOverlay = ov
 		if prefill != nil {
-			ov.SetPrompt(prefill.Prompt)
-			if prefill.Title != "" {
-				ov.SetTitleValue(prefill.Title)
-			}
-			if prefill.Path != "" {
-				ov.SelectPath(prefill.Path)
-			}
+			seedOverlay(ov, prefill.Title, prefill.Prompt, prefill.Path)
 			if prefill.Confident {
 				// Project and title are trusted; land on the Permissions chip — the one
 				// decision smart dispatch defers. Falls back to Create on non-claude.
@@ -724,13 +772,7 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 			m.textInputOverlay.FocusTitle()
 		}
 		// Open the account picker on the auto-routed account for the contextual target.
-		remoteURL := ""
-		if isGit {
-			remoteURL = git.GetRemoteURL(m.ctx, target)
-		}
-		if name, _, _ := m.appConfig.ResolveClaudeAccount(remoteURL, target); name != "" {
-			m.textInputOverlay.PreselectAccount(name)
-		}
+		m.preselectAccountFor(m.textInputOverlay, target, isGit)
 	}
 
 	// Branch plumbing only applies to a git target: seed the fetched-once set and
@@ -898,6 +940,8 @@ func (m *home) createSessionFromForm(prompt string) tea.Cmd {
 
 	m.textInputOverlay = nil
 	m.stashedDraft = nil
+	// The form was submitted, so any persisted draft is now stale — drop it.
+	m.clearPersistedDraft()
 	m.state = stateDefault
 	m.menu.SetState(ui.StateDefault)
 	m.resetTitleCheck()
@@ -1032,6 +1076,30 @@ func (m *home) recordRecentPath(path string) {
 	}
 }
 
+// persistDraft mirrors the in-memory stashed draft to state.json so a non-destructive
+// Escape survives a crash or quit, not just an in-run reopen. It serializes only the
+// values with stable overlay setters (title, prompt, project) — the live overlay is
+// not serializable. Best-effort, like recordRecentPath: a write error is logged, never
+// surfaced. Only called for a dirty create form, so it never persists an empty draft.
+func (m *home) persistDraft(ov *overlay.TextInputOverlay) {
+	draft := &config.SessionDraft{
+		Title:  ov.GetTitle(),
+		Prompt: ov.GetValue(),
+		Path:   ov.GetSelectedPath(),
+	}
+	if err := m.appState.SetDraft(draft); err != nil {
+		log.WarningLog.Printf("failed to persist new-session draft: %v", err)
+	}
+}
+
+// clearPersistedDraft drops the on-disk stashed draft, keeping it in lockstep with the
+// in-memory stash (cleared on submit, restore-consume, and clear-form). Best-effort.
+func (m *home) clearPersistedDraft() {
+	if err := m.appState.ClearDraft(); err != nil {
+		log.WarningLog.Printf("failed to clear new-session draft: %v", err)
+	}
+}
+
 // cancelPromptOverlay cancels the prompt overlay.
 func (m *home) cancelPromptOverlay() tea.Cmd {
 	// Keep a dirty create form as a draft so a deliberate Escape-to-check-something
@@ -1049,6 +1117,8 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 		m.textInputOverlay.Canceled = false
 		m.textInputOverlay.Submitted = false
 		m.stashedDraft = m.textInputOverlay
+		// Mirror the stash to disk so it outlives a crash/quit before the reopen.
+		m.persistDraft(m.textInputOverlay)
 	}
 	m.textInputOverlay = nil
 	m.state = stateDefault
