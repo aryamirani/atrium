@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ZviBaratz/atrium/cmd/cmd_test"
@@ -20,6 +21,7 @@ import (
 // (e.g. `claude --continue` vs a blank `claude`). When startErr is set every
 // Start fails, letting tests drive the failure branches without a real tmux.
 type recordingPtyFactory struct {
+	mu       sync.Mutex // guards cmds and opened against concurrent Start/Close
 	cmds     []*exec.Cmd
 	startErr error
 	opened   []*os.File // pty stub files handed out by Start, released by Close
@@ -36,6 +38,8 @@ func newRecordingPtyFactory(t *testing.T, startErr error) *recordingPtyFactory {
 }
 
 func (f *recordingPtyFactory) Start(cmd *exec.Cmd) (*os.File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.cmds = append(f.cmds, cmd)
 	if f.startErr != nil {
 		return nil, f.startErr
@@ -52,6 +56,8 @@ func (f *recordingPtyFactory) Start(cmd *exec.Cmd) (*os.File, error) {
 
 // Close closes and removes every pty stub file Start handed out.
 func (f *recordingPtyFactory) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, file := range f.opened {
 		_ = file.Close()
 		_ = os.Remove(file.Name())
@@ -60,6 +66,8 @@ func (f *recordingPtyFactory) Close() {
 }
 
 func (f *recordingPtyFactory) commands() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.cmds))
 	for _, c := range f.cmds {
 		out = append(out, strings.Join(c.Args, " "))
