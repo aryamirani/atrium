@@ -859,8 +859,6 @@ func (l *List) ClickHeader(key string) bool {
 	return true
 }
 
-// Down selects the next visible item in the list, wrapping at the end and skipping the hidden
-// members of collapsed groups.
 // moveSelection advances the selection by delta (+1 next, -1 previous), wrapping at
 // either end and skipping hidden rows (collapsed-group members, filtered-out items).
 // It backs both Down and Up so the wrap-and-skip logic lives in one place.
@@ -879,6 +877,8 @@ func (l *List) moveSelection(delta int) {
 	}
 }
 
+// Down selects the next visible item in the list, wrapping at the end and skipping the hidden
+// members of collapsed groups.
 func (l *List) Down() { l.moveSelection(1) }
 
 // NextUnread moves the selection to the next unread Ready session (forward,
