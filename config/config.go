@@ -570,6 +570,13 @@ func containsAny(lower string, subs []string) bool {
 	return false
 }
 
+// DefaultDaemonPollIntervalMs is the built-in autoyes daemon poll interval in
+// milliseconds. It is the value DefaultConfig seeds and the floor the daemon
+// falls back to when a loaded config carries a non-positive interval (the field
+// absent from a legacy or hand-edited config.json, or set <= 0) that would
+// otherwise panic time.NewTicker.
+const DefaultDaemonPollIntervalMs = 1000
+
 // DefaultConfig returns the built-in defaults without probing the machine: no
 // profiles, and the bare "claude" literal as the program. It is what tests
 // construct directly (hermetic — no PATH lookups or shell spawns), while every
@@ -585,7 +592,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		DefaultProgram:     defaultProgram,
 		AutoYes:            false,
-		DaemonPollInterval: 1000,
+		DaemonPollInterval: DefaultDaemonPollIntervalMs,
 		Theme:              "tokyo-night",
 		SessionContextBar:  &sessionContextBar,
 		HintBar:            &hintBar,

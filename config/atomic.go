@@ -116,6 +116,15 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// WriteFileAtomic writes data to path atomically (temp file → fsync → rename →
+// directory fsync), the same crash-safe primitive used for config.json and
+// state.json. It is the exported entry point for callers outside this package —
+// e.g. the daemon's PID file — that want the same all-or-nothing guarantee
+// instead of a plain os.WriteFile that can leave a torn file on a crash.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomic(path, data, perm)
+}
+
 // syncDir flushes a directory's metadata so a rename into it survives a crash.
 // Best-effort: any error is ignored, including the "not supported on a directory
 // handle" failure returned on platforms like Windows.
