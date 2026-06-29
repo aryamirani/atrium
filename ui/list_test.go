@@ -552,7 +552,7 @@ func TestRender_AccountBadge(t *testing.T) {
 	// Routed account -> badge present.
 	inst, err := session.NewInstance(session.InstanceOptions{Title: "t", Path: ".", Program: "echo"})
 	require.NoError(t, err)
-	inst.SetClaudeAccount("quantivly", "/home/x/.claude-quantivly", false)
+	inst.SetClaudeAccount("quantivly", "/home/x/.claude-quantivly", "", false)
 	require.Contains(t, ansi.Strip(r.Render(inst, 1, false, false)), "quantivly",
 		"routed account badge should render its name")
 

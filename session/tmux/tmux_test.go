@@ -1128,3 +1128,77 @@ func TestStartSessionConfigDirReachesPane(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(out), "CLAUDE_CONFIG_DIR="+dir)
 }
+
+func TestStartSessionInjectsGHConfigDir(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	created := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("output"), nil },
+	}
+
+	session := NewSessionWithDeps(context.Background(), "gh-session", "claude", ptyFactory, cmdExec)
+	session.SetGHConfigDir("/home/tester/.config/gh-quantivly")
+	require.NoError(t, session.Start(t.TempDir()))
+
+	newSessionCmd := cmd2.ToString(ptyFactory.cmds[0])
+	require.Contains(t, newSessionCmd, "-e GH_CONFIG_DIR=/home/tester/.config/gh-quantivly")
+	// The -e flag must precede the program word.
+	require.Less(t, strings.Index(newSessionCmd, "GH_CONFIG_DIR"),
+		strings.LastIndex(newSessionCmd, "claude"))
+}
+
+func TestStartSessionNoGHConfigDirNoEnvFlag(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	created := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("output"), nil },
+	}
+
+	session := NewSessionWithDeps(context.Background(), "plain-gh-session", "claude", ptyFactory, cmdExec)
+	require.NoError(t, session.Start(t.TempDir()))
+
+	require.NotContains(t, cmd2.ToString(ptyFactory.cmds[0]), "GH_CONFIG_DIR")
+}
+
+// TestStartSessionInjectsBothConfigDirs asserts CLAUDE_CONFIG_DIR and
+// GH_CONFIG_DIR coexist as independent -e flags, both ahead of the program word.
+func TestStartSessionInjectsBothConfigDirs(t *testing.T) {
+	ptyFactory := NewMockPtyFactory(t)
+	created := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			if strings.Contains(cmd.String(), "has-session") && !created {
+				created = true
+				return fmt.Errorf("session already exists")
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte("output"), nil },
+	}
+
+	session := NewSessionWithDeps(context.Background(), "both-session", "claude", ptyFactory, cmdExec)
+	session.SetClaudeConfigDir("/home/tester/.claude-quantivly")
+	session.SetGHConfigDir("/home/tester/.config/gh-quantivly")
+	require.NoError(t, session.Start(t.TempDir()))
+
+	newSessionCmd := cmd2.ToString(ptyFactory.cmds[0])
+	require.Contains(t, newSessionCmd, "-e CLAUDE_CONFIG_DIR=/home/tester/.claude-quantivly")
+	require.Contains(t, newSessionCmd, "-e GH_CONFIG_DIR=/home/tester/.config/gh-quantivly")
+	programIdx := strings.LastIndex(newSessionCmd, "claude")
+	require.Less(t, strings.Index(newSessionCmd, "CLAUDE_CONFIG_DIR"), programIdx)
+	require.Less(t, strings.Index(newSessionCmd, "GH_CONFIG_DIR"), programIdx)
+}

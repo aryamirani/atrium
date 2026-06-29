@@ -83,7 +83,7 @@ func TestComputeModel_DirectSession(t *testing.T) {
 	inst, err := NewInstance(InstanceOptions{Title: "d", Path: workDir, Program: "claude", Direct: true})
 	require.NoError(t, err)
 	inst.started = true
-	inst.SetClaudeAccount("work", root, false)
+	inst.SetClaudeAccount("work", root, "", false)
 
 	model, stamp, ok := inst.ComputeModel()
 	require.True(t, ok)

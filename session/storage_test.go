@@ -256,12 +256,14 @@ func TestInstanceDataAccountRoundTrip(t *testing.T) {
 func TestInstanceAccountGettersAndFromData(t *testing.T) {
 	inst, err := NewInstance(InstanceOptions{Title: "t", Path: ".", Program: "claude"})
 	require.NoError(t, err)
-	inst.SetClaudeAccount("quantivly", "/home/tester/.claude-quantivly", false)
+	inst.SetClaudeAccount("quantivly", "/home/tester/.claude-quantivly", "/home/tester/.config/gh-quantivly", false)
 	require.Equal(t, "quantivly", inst.ClaudeAccountName())
 	require.Equal(t, "/home/tester/.claude-quantivly", inst.ClaudeConfigDir())
+	require.Equal(t, "/home/tester/.config/gh-quantivly", inst.GHConfigDir())
 	require.False(t, inst.ClaudeAccountIsDefault())
 
 	require.Equal(t, "quantivly", inst.ToInstanceData().ClaudeAccount)
+	require.Equal(t, "/home/tester/.config/gh-quantivly", inst.ToInstanceData().GHConfigDir)
 
 	// FromInstanceData on a paused direct instance is hermetic (no live tmux:
 	// the paused branch constructs a Session without shelling out).
@@ -273,10 +275,12 @@ func TestInstanceAccountGettersAndFromData(t *testing.T) {
 		Status:          Paused,
 		ClaudeAccount:   "quantivly",
 		ClaudeConfigDir: "/home/tester/.claude-quantivly",
+		GHConfigDir:     "/home/tester/.config/gh-quantivly",
 	}, "session/")
 	require.NoError(t, err)
 	require.Equal(t, "quantivly", restored.ClaudeAccountName())
 	require.Equal(t, "/home/tester/.claude-quantivly", restored.ClaudeConfigDir())
+	require.Equal(t, "/home/tester/.config/gh-quantivly", restored.GHConfigDir())
 }
 
 // TestPermissionModeRoundTrip asserts the live permission mode survives a
