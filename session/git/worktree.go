@@ -67,6 +67,13 @@ type Worktree struct {
 	// When true, the branch will not be deleted on cleanup. Only set for sessions restored
 	// from storage that predate the branch-off model; new sessions are always branch-owners.
 	isExistingBranch bool
+	// ghConfigDir is the GH_CONFIG_DIR Atrium's own `gh` subprocesses (PR
+	// create/merge/view, open-in-browser) run under, selecting the GitHub account
+	// for this worktree's repo. Empty = inherit the ambient gh account. Set once
+	// before the worktree is published to background goroutines (SetGHConfigDir,
+	// from instance Start/restore), then read-only — creation-fixed like repoPath,
+	// so no mutex. Threaded to the gh helpers via the context (see ghContext).
+	ghConfigDir string
 	// updateBaseOnCreate, when true, makes setupNewWorktree fetch the base branch
 	// and start the session off the freshest remote tip. fastForwardLocalBase, when
 	// also true, additionally fast-forwards the local base branch (opt-in local
@@ -256,4 +263,20 @@ func (g *Worktree) baseContext() context.Context {
 		return g.baseCtx
 	}
 	return context.Background()
+}
+
+// SetGHConfigDir pins the GH_CONFIG_DIR Atrium's gh subprocesses for this worktree
+// run under. Call before the worktree is shared with background goroutines (from
+// instance Start/restore); it is creation-fixed thereafter.
+func (g *Worktree) SetGHConfigDir(dir string) {
+	g.ghConfigDir = dir
+}
+
+// ghContext returns ctx tagged with this worktree's GH_CONFIG_DIR so the gh
+// helpers (runGH, checkGHCLI) select the right account via cmd.Env. IMPORTANT:
+// every gh subprocess in this package must obtain its context through ghContext —
+// a gh call run on a bare context silently falls back to the global-active gh
+// account, which is the bug this routing fixes.
+func (g *Worktree) ghContext(ctx context.Context) context.Context {
+	return withGHConfigDir(ctx, g.ghConfigDir)
 }

@@ -149,6 +149,14 @@ type Instance struct {
 	claudeAccount        string
 	claudeConfigDir      string
 	claudeAccountDefault bool
+	// ghConfigDir is the GH_CONFIG_DIR for this session, resolved at creation from
+	// config.GHAccounts by the same remote/path routing as claudeConfigDir. It is
+	// injected into the tmux session (so the agent's own `gh` and any https
+	// credential-helper calls pick the right GitHub account) and onto the
+	// Worktree (so Atrium's own `gh` PR subprocesses do too). "" = inherit the
+	// ambient gh account. Creation-fixed and read without the lock, like the
+	// claude* fields above.
+	ghConfigDir string
 
 	// modelID is the session's model per its transcript (the newest assistant
 	// entry, e.g. "claude-opus-4-7"). Written only on the main thread
@@ -258,6 +266,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		ClaudeAccount:        i.claudeAccount,
 		ClaudeConfigDir:      i.claudeConfigDir,
 		ClaudeAccountDefault: i.claudeAccountDefault,
+		GHConfigDir:          i.ghConfigDir,
 		Model:                i.modelID,
 		PermissionMode:       i.runtimeMode,
 		TmuxName:             i.TmuxSessionName(),
@@ -323,6 +332,7 @@ func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix strin
 		claudeAccount:        data.ClaudeAccount,
 		claudeConfigDir:      data.ClaudeConfigDir,
 		claudeAccountDefault: data.ClaudeAccountDefault,
+		ghConfigDir:          data.GHConfigDir,
 		modelID:              data.Model,
 		runtimeMode:          data.PermissionMode,
 		Prompt:               data.Prompt,
@@ -350,6 +360,7 @@ func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix strin
 			data.Worktree.IsExistingBranch,
 			branchPrefix,
 		)
+		instance.gitWorktree.SetGHConfigDir(instance.ghConfigDir)
 		instance.diffStats = &git.DiffStats{
 			Added:        data.DiffStats.Added,
 			Removed:      data.DiffStats.Removed,
@@ -372,6 +383,7 @@ func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix strin
 		sess = tmux.NewSession(ctx, instance.Title, instance.Program)
 	}
 	sess.SetClaudeConfigDir(instance.claudeConfigDir)
+	sess.SetGHConfigDir(instance.ghConfigDir)
 	instance.tmuxName = sess.Name()
 
 	if instance.Paused() {
@@ -542,11 +554,21 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 }
 
 // SetClaudeAccount pins the Claude Code account for this session. Call before
-// Start: claudeConfigDir is injected at session birth and cannot change after.
+// Start: claudeConfigDir is injected at session birth (into the tmux env) and
+// cannot change after.
 func (i *Instance) SetClaudeAccount(name, configDir string, isDefault bool) {
 	i.claudeAccount = name
 	i.claudeConfigDir = configDir
 	i.claudeAccountDefault = isDefault
+}
+
+// SetGHConfigDir pins the GH_CONFIG_DIR for this session. Call before Start: it is
+// injected at session birth (into the tmux env, and onto the worktree for Atrium's
+// own gh calls) and cannot change after. It is resolved independently of the
+// Claude account, so it may be "" (inherit) while a Claude dir is set, or vice
+// versa — hence a setter separate from SetClaudeAccount.
+func (i *Instance) SetGHConfigDir(dir string) {
+	i.ghConfigDir = dir
 }
 
 // ClaudeAccountName is the resolved account's display name ("" = none/dormant).
@@ -554,6 +576,9 @@ func (i *Instance) ClaudeAccountName() string { return i.claudeAccount }
 
 // ClaudeConfigDir is the CLAUDE_CONFIG_DIR injected at launch ("" = inherit env).
 func (i *Instance) ClaudeConfigDir() string { return i.claudeConfigDir }
+
+// GHConfigDir is the GH_CONFIG_DIR injected at launch ("" = inherit env).
+func (i *Instance) GHConfigDir() string { return i.ghConfigDir }
 
 // ClaudeAccountIsDefault reports whether this session is on the default/fallback
 // account (the list renders that badge dim rather than accented).
@@ -820,6 +845,9 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to create git worktree: %w", err)
 		}
+		// Pin the gh account before publishing the worktree to other goroutines, so
+		// the write happens-before any poll-loop read behind i.mu.
+		gitWorktree.SetGHConfigDir(i.ghConfigDir)
 		i.mu.Lock()
 		i.gitWorktree = gitWorktree
 		i.mu.Unlock()
@@ -841,6 +869,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 		tmuxSession = tmux.NewSessionWithName(i.baseContext(), name, i.Title, i.Program)
 		tmuxSession.SetClaudeConfigDir(i.claudeConfigDir)
+		tmuxSession.SetGHConfigDir(i.ghConfigDir)
 	}
 	i.mu.Lock()
 	i.tmuxSession = tmuxSession

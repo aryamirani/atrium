@@ -119,8 +119,9 @@ func (g *Worktree) PRStatus(ctx context.Context, selected bool) PRStatus {
 	// Gate 2 passed: the branch is pushed. Every store below carries Pushed=true
 	// so create gating can distinguish "pushed, no PR" from "never pushed".
 
-	// Gate 3: the network call.
-	out, err := runGHPRView(ctx, wt, branch)
+	// Gate 3: the network call. Tag ctx with this worktree's gh account so the
+	// poll's `gh pr view` reads the right account (matching what create/merge use).
+	out, err := runGHPRView(g.ghContext(ctx), wt, branch)
 	if err != nil {
 		if isBenignGHError(err) {
 			// No PR / no remote / gh missing: a legitimate, cacheable "nothing".
@@ -251,6 +252,7 @@ func createArgv(branch string, draft bool) []string {
 func runGH(ctx context.Context, dir, opName string, argv ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", argv...)
 	cmd.Dir = dir
+	cmd.Env = ghEnv(ctx) // select the gh account from ctx (nil = inherit), see ghContext
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -273,10 +275,11 @@ var runGHMerge = func(ctx context.Context, dir, branch string) error {
 // origin repo (always present, even when the session is paused and its worktree
 // removed), which infers the same owner/repo as the worktree would.
 func (g *Worktree) MergePR() error {
-	if err := checkGHCLI(g.baseContext()); err != nil {
+	base := g.ghContext(g.baseContext())
+	if err := checkGHCLI(base); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	ctx, cancel := context.WithTimeout(base, gitNetworkTimeout)
 	defer cancel()
 	if err := runGHMerge(ctx, g.repoPath, g.GetBranchName()); err != nil {
 		return err
@@ -300,10 +303,11 @@ var runGHCreate = func(ctx context.Context, dir string, argv []string) ([]byte, 
 // worktree, where --fill reliably reads the branch's commits; creation requires
 // an active, pushed session, so the worktree is present.
 func (g *Worktree) CreatePR(draft bool) (int, error) {
-	if err := checkGHCLI(g.baseContext()); err != nil {
+	base := g.ghContext(g.baseContext())
+	if err := checkGHCLI(base); err != nil {
 		return 0, err
 	}
-	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	ctx, cancel := context.WithTimeout(base, gitNetworkTimeout)
 	defer cancel()
 	out, err := runGHCreate(ctx, g.worktreePath, createArgv(g.GetBranchName(), draft))
 	if err != nil {
@@ -343,10 +347,11 @@ var runGHPRWeb = func(ctx context.Context, dir, branch string) error {
 // branch exactly as the PR poll does — so if the poll saw a PR, this opens that
 // same one.
 func (g *Worktree) OpenPRURL() error {
-	if err := checkGHCLI(g.baseContext()); err != nil {
+	base := g.ghContext(g.baseContext())
+	if err := checkGHCLI(base); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	ctx, cancel := context.WithTimeout(base, gitNetworkTimeout)
 	defer cancel()
 	if err := runGHPRWeb(ctx, g.repoPath, g.GetBranchName()); err != nil {
 		return fmt.Errorf("failed to open PR for branch %s: %w", g.GetBranchName(), err)

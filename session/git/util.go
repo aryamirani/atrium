@@ -5,11 +5,44 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// ghConfigDirKey is the context key carrying a per-worktree GH_CONFIG_DIR to the
+// gh subprocess helpers (runGH, checkGHCLI). It rides the context — rather than a
+// parameter on every swap-for-tests seam — so adding account routing changes no
+// seam signature. Obtain a tagged context via Worktree.ghContext.
+type ghConfigDirKey struct{}
+
+// withGHConfigDir returns ctx tagged with dir, or ctx unchanged when dir is ""
+// (the "inherit the ambient gh account" case — inject nothing).
+func withGHConfigDir(ctx context.Context, dir string) context.Context {
+	if dir == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ghConfigDirKey{}, dir)
+}
+
+// ghConfigDirFromContext returns the GH_CONFIG_DIR carried by ctx, or "" if none.
+func ghConfigDirFromContext(ctx context.Context) string {
+	d, _ := ctx.Value(ghConfigDirKey{}).(string)
+	return d
+}
+
+// ghEnv returns the environment for a gh subprocess: the parent env plus a
+// GH_CONFIG_DIR override when ctx carries one, or nil to inherit os.Environ
+// unchanged. A nil result is intentional — exec.Cmd treats a nil Env as "inherit
+// the current process env", preserving the pre-routing behavior exactly.
+func ghEnv(ctx context.Context) []string {
+	if d := ghConfigDirFromContext(ctx); d != "" {
+		return append(os.Environ(), "GH_CONFIG_DIR="+d)
+	}
+	return nil
+}
 
 // sanitizeBranchName transforms an arbitrary string into a Git branch name friendly string.
 // Note: Git branch names have several rules, so this function uses a simple approach
@@ -49,6 +82,7 @@ var checkGHCLI = func(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "auth", "status")
+	cmd.Env = ghEnv(ctx) // validate the account the PR call will actually use
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("GitHub CLI is not configured. Please run 'gh auth login' first")
 	}

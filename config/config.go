@@ -121,6 +121,30 @@ func (a ClaudeAccount) IsCatchAll() bool {
 	return len(a.RemoteMatches) == 0 && len(a.PathMatches) == 0
 }
 
+// GHAccount maps a GitHub CLI config dir (injected as GH_CONFIG_DIR) to the same
+// kind of route rules as ClaudeAccount. It is a separate section from
+// ClaudeAccounts so gh-account routing can differ from Claude-login routing, but
+// it reuses the identical matching machinery (see ResolveGHConfigDir): per-account
+// in config order, remote substrings first then path substrings; the first
+// rule-less account is the catch-all. config_dir may use a leading ~.
+type GHAccount struct {
+	Name          string   `json:"name"`
+	ConfigDir     string   `json:"config_dir"`
+	RemoteMatches []string `json:"remote_matches,omitempty"`
+	PathMatches   []string `json:"path_matches,omitempty"`
+}
+
+// ResolvedConfigDir expands a leading ~ in ConfigDir to the user's home directory.
+func (a GHAccount) ResolvedConfigDir() string {
+	return expandHomePath(a.ConfigDir)
+}
+
+// IsCatchAll reports whether the account has no routing rules, making it the
+// inferred default used when no remote or path route matches.
+func (a GHAccount) IsCatchAll() bool {
+	return len(a.RemoteMatches) == 0 && len(a.PathMatches) == 0
+}
+
 // expandHomePath expands a leading "~" or "~/" in p to the user's home directory.
 // On any failure resolving home, p is returned unchanged.
 func expandHomePath(p string) string {
@@ -231,6 +255,15 @@ type Config struct {
 	// is injected and no account badge is shown, so configs predating this key
 	// behave exactly as before.
 	ClaudeAccounts []ClaudeAccount `json:"claude_accounts,omitempty"`
+	// GHAccounts routes sessions to a per-session GH_CONFIG_DIR (which GitHub CLI
+	// account `gh` runs under) by the same remote/path matching as ClaudeAccounts,
+	// in an independent section so gh routing can differ from Claude-login routing.
+	// The dir is injected into the agent's tmux session (so the agent's own `gh`
+	// and any https credential-helper calls pick the right account) and into
+	// Atrium's own `gh` subprocesses (PR create/merge/view). Empty (the default)
+	// disables the feature: no env is injected and gh inherits the ambient
+	// (global-active) account, exactly as before this key existed.
+	GHAccounts []GHAccount `json:"gh_accounts,omitempty"`
 	// AutoUpdate selects the update behavior at TUI startup: "notify" (default
 	// — check for a newer release and hint at `atrium update`), "auto"
 	// (download + verify + stage in the background; applied on next launch), or
@@ -534,28 +567,65 @@ func (c *Config) ResolveClaudeAccount(remoteURL, targetPath string) (name, confi
 	if len(c.ClaudeAccounts) == 0 {
 		return "", "", false
 	}
-	lowerRemote := strings.ToLower(remoteURL)
-	lowerPath := strings.ToLower(targetPath)
+	idx, isDefault := matchRouteIndex(len(c.ClaudeAccounts), strings.ToLower(remoteURL), strings.ToLower(targetPath),
+		func(i int) []string { return c.ClaudeAccounts[i].RemoteMatches },
+		func(i int) []string { return c.ClaudeAccounts[i].PathMatches })
+	if idx < 0 {
+		return "default", "", true
+	}
+	a := c.ClaudeAccounts[idx]
+	return a.Name, a.ResolvedConfigDir(), isDefault
+}
+
+// ResolveGHConfigDir picks the GH_CONFIG_DIR for a target by the same routing as
+// ResolveClaudeAccount (case-insensitive substring, per account in config order,
+// remote_matches then path_matches; first rule-less account is the fallback), but
+// over the independent GHAccounts section. It returns "" when gh routing is
+// unconfigured or nothing matches and there is no catch-all — "" always means
+// "inject nothing / inherit the ambient gh account", mirroring an empty
+// CLAUDE_CONFIG_DIR. Because it reads its own section, an account/context may set
+// a Claude dir but no gh dir (or vice versa) and each resolves independently.
+func (c *Config) ResolveGHConfigDir(remoteURL, targetPath string) string {
+	if len(c.GHAccounts) == 0 {
+		return ""
+	}
+	idx, _ := matchRouteIndex(len(c.GHAccounts), strings.ToLower(remoteURL), strings.ToLower(targetPath),
+		func(i int) []string { return c.GHAccounts[i].RemoteMatches },
+		func(i int) []string { return c.GHAccounts[i].PathMatches })
+	if idx < 0 {
+		return ""
+	}
+	return c.GHAccounts[idx].ResolvedConfigDir()
+}
+
+// matchRouteIndex runs the shared per-account routing for an account section of
+// length n: in config order it returns the first account whose remote_matches hit
+// lowerRemote (tried first) or whose path_matches hit lowerPath, with
+// isDefault=false. When none match it returns the first catch-all (rule-less)
+// account with isDefault=true, or (-1, false) when there is neither a match nor a
+// catch-all. lowerRemote/lowerPath must already be lowercased. The accessor
+// closures let both ResolveClaudeAccount and ResolveGHConfigDir share this loop
+// without a common interface; catch-all is derived from them (no rules of either
+// kind), matching XAccount.IsCatchAll, so callers pass only the two.
+func matchRouteIndex(n int, lowerRemote, lowerPath string, remotes, paths func(i int) []string) (idx int, isDefault bool) {
 	defaultIdx := -1
-	for i := range c.ClaudeAccounts {
-		a := &c.ClaudeAccounts[i]
-		if a.IsCatchAll() && defaultIdx == -1 {
+	for i := 0; i < n; i++ {
+		if len(remotes(i)) == 0 && len(paths(i)) == 0 && defaultIdx == -1 {
 			defaultIdx = i // first account with no route rules is the fallback
 		}
 		// Per account, in config order: try the origin remote first, then the
 		// target directory path (the only signal for non-git/direct sessions).
-		if lowerRemote != "" && containsAny(lowerRemote, a.RemoteMatches) {
-			return a.Name, a.ResolvedConfigDir(), false
+		if lowerRemote != "" && containsAny(lowerRemote, remotes(i)) {
+			return i, false
 		}
-		if lowerPath != "" && containsAny(lowerPath, a.PathMatches) {
-			return a.Name, a.ResolvedConfigDir(), false
+		if lowerPath != "" && containsAny(lowerPath, paths(i)) {
+			return i, false
 		}
 	}
 	if defaultIdx >= 0 {
-		d := c.ClaudeAccounts[defaultIdx]
-		return d.Name, d.ResolvedConfigDir(), true
+		return defaultIdx, true
 	}
-	return "default", "", true
+	return -1, false
 }
 
 // containsAny reports whether lower (already lowercased) contains any non-empty

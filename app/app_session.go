@@ -938,6 +938,10 @@ func (m *home) startNewSession(title, path string, direct bool, program, branch,
 		accName, accDir, accIsDefault = accountOverride.Name, accountOverride.ResolvedConfigDir(), accountOverride.IsCatchAll()
 	}
 	instance.SetClaudeAccount(accName, accDir, accIsDefault)
+	// The gh account routes from the origin remote (or path) independently of the
+	// Claude-account override: gh access is determined by the actual repo, not by
+	// which Claude login was picked. "" leaves gh on the ambient global account.
+	instance.SetGHConfigDir(m.appConfig.ResolveGHConfigDir(remoteURL, path))
 
 	// Create the list row only now, on submit. AddInstance may insert it mid-list under its
 	// repo group, so select it by identity.

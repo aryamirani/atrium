@@ -133,6 +133,11 @@ type Session struct {
 	// once before Start (SetClaudeConfigDir); like program it is fixed for the
 	// life of the tmux session, since the env can only be set at session birth.
 	configDir string
+	// ghConfigDir, when non-empty, is injected as GH_CONFIG_DIR via the same
+	// `new-session -e` mechanism, selecting which GitHub CLI account the agent's
+	// own `gh` (and any https git credential-helper) calls run under. Empty =
+	// inherit. Set once before Start (SetGHConfigDir); fixed for the session life.
+	ghConfigDir string
 	// adapter holds the per-agent heuristics resolved once from program at
 	// construction; never nil (unknown programs get agent.Generic).
 	adapter *agent.Adapter
@@ -294,6 +299,12 @@ func (t *Session) SetClaudeConfigDir(dir string) {
 	t.configDir = dir
 }
 
+// SetGHConfigDir sets the GH_CONFIG_DIR injected at session launch. It must be
+// called before Start; once the session exists the env is frozen.
+func (t *Session) SetGHConfigDir(dir string) {
+	t.ghConfigDir = dir
+}
+
 func newSession(ctx context.Context, sessionName, windowName, program string, ptyFactory PtyFactory, cmdExec cmd.Executor) *Session {
 	return &Session{
 		baseCtx:       ctx,
@@ -412,6 +423,12 @@ func (t *Session) start(workDir string, program string) error {
 		// env (which froze CLAUDE_CONFIG_DIR unset at server start). It must
 		// precede the program word.
 		args = append(args, "-e", "CLAUDE_CONFIG_DIR="+t.configDir)
+	}
+	if t.ghConfigDir != "" {
+		// Same mechanism for GH_CONFIG_DIR: pins the agent's `gh` (and https git
+		// credential-helper) to the right GitHub account, per-session, with no
+		// mutation of the global ~/.config/gh active account.
+		args = append(args, "-e", "GH_CONFIG_DIR="+t.ghConfigDir)
 	}
 	args = append(args, program)
 	cmd := tmuxCommand(t.baseContext(), args...)

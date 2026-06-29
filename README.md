@@ -252,14 +252,52 @@ list to your config file:
 - Omitting `claude_accounts` disables the feature entirely (no badge, no
   injection), so existing configs are unaffected.
 
-> **Git identity & SSH keys are handled outside Atrium.** This feature routes only
-> the *Claude Code account* (`CLAUDE_CONFIG_DIR`). Git commit identity
-> (`user.email` / `user.signingkey`) and the SSH key used to fetch/push are selected
-> by your machine's git config from the repo's remote org — e.g. a remote-based
-> `includeIf "hasconfig:remote.*.url:…"` (git ≥ 2.36) so a work repo's worktree
+#### GitHub CLI accounts
+
+`gh` keeps a single **global active account** per host, so in a multi-agent setup a
+session on a work repo and a session on a personal repo fight over it — and an agent
+running `gh auth switch` to fix its own auth silently breaks every other running
+session. Atrium avoids this by injecting a per-session `GH_CONFIG_DIR`, chosen by the
+same remote/path matching as `claude_accounts` but configured independently so gh
+routing can differ from Claude-login routing. Add a `gh_accounts` list:
+
+```json
+{
+  "gh_accounts": [
+    { "name": "personal", "config_dir": "~/.config/gh" },
+    {
+      "name": "quantivly",
+      "config_dir": "~/.config/gh-quantivly",
+      "remote_matches": ["quantivly/", "github-quantivly:"],
+      "path_matches": ["/quantivly/"]
+    }
+  ]
+}
+```
+
+- `config_dir` is a `gh` config directory (containing `hosts.yml`) whose **active
+  account** is the one you want for matching repos. Create one per account, e.g.
+  `GH_CONFIG_DIR=~/.config/gh-quantivly gh auth login`; when `gh` stores tokens in the
+  OS keyring, the separate dirs share those tokens and differ only in which account is
+  active. Verify with `GH_CONFIG_DIR=~/.config/gh-quantivly gh auth status`.
+- Matching rules (`remote_matches`, `path_matches`, list order, the optional rule-less
+  catch-all) work exactly as for `claude_accounts` above.
+- The resolved dir is injected into the agent's tmux session (so the agent's own `gh`
+  — and any HTTPS git credential-helper — pick the right account) **and** into
+  Atrium's own `gh` calls (PR create/merge/view). It is pinned at session creation;
+  editing `gh_accounts` affects only newly created sessions.
+- Omitting `gh_accounts` (or a non-matching session with no catch-all) leaves `gh` on
+  its ambient global account, exactly as before.
+
+> **Commit identity & SSH keys are still handled outside Atrium.** `gh_accounts`
+> routes the *GitHub CLI account* (`GH_CONFIG_DIR`) and `claude_accounts` routes the
+> *Claude Code account* (`CLAUDE_CONFIG_DIR`); neither sets git commit identity.
+> `user.email` / `user.signingkey` and the SSH key used to fetch/push are selected by
+> your machine's git config from the repo's remote org — e.g. a remote-based
+> `includeIf "hasconfig:remote.*.url:…"` (git ≥ 2.36), so a work repo's worktree
 > resolves to the work identity and key regardless of its path under
-> `~/.atrium/worktrees/`. Atrium deliberately carries no git-identity logic; it relies
-> on that system, which keys off the same remote signal as `remote_matches` above.
+> `~/.atrium/worktrees/`. Atrium carries no commit-identity logic; it relies on that
+> system, which keys off the same remote signal as `remote_matches` above.
 ### FAQs
 
 #### Failed to start new session

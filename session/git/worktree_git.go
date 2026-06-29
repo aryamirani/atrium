@@ -334,17 +334,21 @@ func (g *Worktree) DetachBranchInBaseRepo() error {
 var runGHBrowse = func(ctx context.Context, dir, branch string) error {
 	cmd := exec.CommandContext(ctx, "gh", "browse", "--branch", branch)
 	cmd.Dir = dir
+	cmd.Env = ghEnv(ctx) // select the gh account from ctx (nil = inherit), see ghContext
 	return cmd.Run()
 }
 
 // OpenBranchURL opens the branch URL in the default browser
 func (g *Worktree) OpenBranchURL() error {
-	// Check if GitHub CLI is available
-	if err := checkGHCLI(g.baseContext()); err != nil {
+	// Check if GitHub CLI is available. Tag the context with this worktree's gh
+	// account so both the gate and `gh browse` run under the right account, like
+	// the PR helpers — a bare context would silently use the global-active one.
+	base := g.ghContext(g.baseContext())
+	if err := checkGHCLI(base); err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(g.baseContext(), gitNetworkTimeout)
+	ctx, cancel := context.WithTimeout(base, gitNetworkTimeout)
 	defer cancel()
 	// Snapshot the rename-mutable fields under the lock so the browse subprocess
 	// can't read a torn branch/worktree against a concurrent Rename (see Diff).

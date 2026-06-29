@@ -731,6 +731,69 @@ func TestResolveClaudeAccount(t *testing.T) {
 	}
 }
 
+func TestResolveGHConfigDir(t *testing.T) {
+	t.Setenv("HOME", "/home/tester")
+
+	personal := GHAccount{Name: "personal", ConfigDir: "~/.config/gh"} // no rules → inferred default
+	work := GHAccount{Name: "quantivly", ConfigDir: "~/.config/gh-quantivly",
+		RemoteMatches: []string{"quantivly/", "github-quantivly:"},
+		PathMatches:   []string{"/quantivly/"}}
+
+	accounts := []GHAccount{personal, work}
+
+	cases := []struct {
+		name     string
+		accounts []GHAccount
+		remote   string
+		path     string
+		want     string
+	}{
+		{"unconfigured -> inherit", nil, "git@github.com:quantivly/x.git", "", ""},
+		{"https remote match", accounts, "https://github.com/quantivly/x.git", "", "/home/tester/.config/gh-quantivly"},
+		{"ssh alias remote match", accounts, "github-quantivly:quantivly/x.git", "", "/home/tester/.config/gh-quantivly"},
+		{"case-insensitive remote", accounts, "https://github.com/Quantivly/X.git", "", "/home/tester/.config/gh-quantivly"},
+		{"no match -> catch-all", accounts, "git@github.com:someoneelse/y.git", "", "/home/tester/.config/gh"},
+		{"empty remote and path -> catch-all", accounts, "", "", "/home/tester/.config/gh"},
+		{"direct path match", accounts, "", "/home/zvi/quantivly/qspace", "/home/tester/.config/gh-quantivly"},
+		{"path present but no match -> catch-all", accounts, "", "/home/zvi/personal/proj", "/home/tester/.config/gh"},
+		{"no match, every account has rules -> inherit", []GHAccount{work}, "git@github.com:other/z.git", "/tmp/other", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{GHAccounts: tc.accounts}
+			if got := c.ResolveGHConfigDir(tc.remote, tc.path); got != tc.want {
+				t.Fatalf("ResolveGHConfigDir(%q, %q) = %q, want %q", tc.remote, tc.path, got, tc.want)
+			}
+		})
+	}
+
+	// gh routing is independent of claude routing: a config whose gh_accounts and
+	// claude_accounts draw the boundary differently resolves each from its own
+	// section. Here gh routes quantivly by remote while claude has no gh-relevant
+	// entry at all, and vice versa for a personal target.
+	mixed := &Config{
+		ClaudeAccounts: []ClaudeAccount{{Name: "c-personal", ConfigDir: "~/.claude"}},
+		GHAccounts:     []GHAccount{work},
+	}
+	if got := mixed.ResolveGHConfigDir("https://github.com/quantivly/x.git", ""); got != "/home/tester/.config/gh-quantivly" {
+		t.Fatalf("decoupled gh match: got %q, want gh-quantivly", got)
+	}
+	if got := mixed.ResolveGHConfigDir("git@github.com:me/personal.git", ""); got != "" {
+		t.Fatalf("decoupled gh no-match (no catch-all) should inherit: got %q", got)
+	}
+	// The Claude resolver still sees its own (catch-all) account regardless.
+	if name, _, _ := mixed.ResolveClaudeAccount("https://github.com/quantivly/x.git", ""); name != "c-personal" {
+		t.Fatalf("claude resolver must read its own section: got %q", name)
+	}
+
+	// First matching account wins when two could match.
+	a := GHAccount{Name: "a", ConfigDir: "/a", RemoteMatches: []string{"acme"}}
+	b := GHAccount{Name: "b", ConfigDir: "/b", RemoteMatches: []string{"acme"}}
+	if got := (&Config{GHAccounts: []GHAccount{a, b}}).ResolveGHConfigDir("https://x/acme/r.git", ""); got != "/a" {
+		t.Fatalf("first-match-wins: got %q, want %q", got, "/a")
+	}
+}
+
 func TestGetProjectSearchRoots(t *testing.T) {
 	cases := []struct {
 		name  string
