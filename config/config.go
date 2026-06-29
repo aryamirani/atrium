@@ -569,8 +569,7 @@ func (c *Config) ResolveClaudeAccount(remoteURL, targetPath string) (name, confi
 	}
 	idx, isDefault := matchRouteIndex(len(c.ClaudeAccounts), strings.ToLower(remoteURL), strings.ToLower(targetPath),
 		func(i int) []string { return c.ClaudeAccounts[i].RemoteMatches },
-		func(i int) []string { return c.ClaudeAccounts[i].PathMatches },
-		func(i int) bool { return c.ClaudeAccounts[i].IsCatchAll() })
+		func(i int) []string { return c.ClaudeAccounts[i].PathMatches })
 	if idx < 0 {
 		return "default", "", true
 	}
@@ -592,8 +591,7 @@ func (c *Config) ResolveGHConfigDir(remoteURL, targetPath string) string {
 	}
 	idx, _ := matchRouteIndex(len(c.GHAccounts), strings.ToLower(remoteURL), strings.ToLower(targetPath),
 		func(i int) []string { return c.GHAccounts[i].RemoteMatches },
-		func(i int) []string { return c.GHAccounts[i].PathMatches },
-		func(i int) bool { return c.GHAccounts[i].IsCatchAll() })
+		func(i int) []string { return c.GHAccounts[i].PathMatches })
 	if idx < 0 {
 		return ""
 	}
@@ -607,11 +605,12 @@ func (c *Config) ResolveGHConfigDir(remoteURL, targetPath string) string {
 // account with isDefault=true, or (-1, false) when there is neither a match nor a
 // catch-all. lowerRemote/lowerPath must already be lowercased. The accessor
 // closures let both ResolveClaudeAccount and ResolveGHConfigDir share this loop
-// without a common interface.
-func matchRouteIndex(n int, lowerRemote, lowerPath string, remotes, paths func(i int) []string, isCatchAll func(i int) bool) (idx int, isDefault bool) {
+// without a common interface; catch-all is derived from them (no rules of either
+// kind), matching XAccount.IsCatchAll, so callers pass only the two.
+func matchRouteIndex(n int, lowerRemote, lowerPath string, remotes, paths func(i int) []string) (idx int, isDefault bool) {
 	defaultIdx := -1
 	for i := 0; i < n; i++ {
-		if isCatchAll(i) && defaultIdx == -1 {
+		if len(remotes(i)) == 0 && len(paths(i)) == 0 && defaultIdx == -1 {
 			defaultIdx = i // first account with no route rules is the fallback
 		}
 		// Per account, in config order: try the origin remote first, then the

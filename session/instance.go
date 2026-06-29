@@ -553,16 +553,22 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	}, nil
 }
 
-// SetClaudeAccount pins the Claude Code account and the gh config dir for this
-// session. Call before Start: both dirs are injected at session birth (into the
-// tmux env, and ghConfigDir also onto the worktree for Atrium's own gh calls) and
-// cannot change after. ghConfigDir is resolved independently from configDir, so
-// either may be "" (inherit) while the other is set.
-func (i *Instance) SetClaudeAccount(name, configDir, ghConfigDir string, isDefault bool) {
+// SetClaudeAccount pins the Claude Code account for this session. Call before
+// Start: claudeConfigDir is injected at session birth (into the tmux env) and
+// cannot change after.
+func (i *Instance) SetClaudeAccount(name, configDir string, isDefault bool) {
 	i.claudeAccount = name
 	i.claudeConfigDir = configDir
-	i.ghConfigDir = ghConfigDir
 	i.claudeAccountDefault = isDefault
+}
+
+// SetGHConfigDir pins the GH_CONFIG_DIR for this session. Call before Start: it is
+// injected at session birth (into the tmux env, and onto the worktree for Atrium's
+// own gh calls) and cannot change after. It is resolved independently of the
+// Claude account, so it may be "" (inherit) while a Claude dir is set, or vice
+// versa — hence a setter separate from SetClaudeAccount.
+func (i *Instance) SetGHConfigDir(dir string) {
+	i.ghConfigDir = dir
 }
 
 // ClaudeAccountName is the resolved account's display name ("" = none/dormant).

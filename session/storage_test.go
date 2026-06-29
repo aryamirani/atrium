@@ -256,7 +256,8 @@ func TestInstanceDataAccountRoundTrip(t *testing.T) {
 func TestInstanceAccountGettersAndFromData(t *testing.T) {
 	inst, err := NewInstance(InstanceOptions{Title: "t", Path: ".", Program: "claude"})
 	require.NoError(t, err)
-	inst.SetClaudeAccount("quantivly", "/home/tester/.claude-quantivly", "/home/tester/.config/gh-quantivly", false)
+	inst.SetClaudeAccount("quantivly", "/home/tester/.claude-quantivly", false)
+	inst.SetGHConfigDir("/home/tester/.config/gh-quantivly")
 	require.Equal(t, "quantivly", inst.ClaudeAccountName())
 	require.Equal(t, "/home/tester/.claude-quantivly", inst.ClaudeConfigDir())
 	require.Equal(t, "/home/tester/.config/gh-quantivly", inst.GHConfigDir())

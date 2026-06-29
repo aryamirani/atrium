@@ -127,6 +127,27 @@ func TestOpenPRURL_ThreadsGHConfigDir(t *testing.T) {
 	}
 }
 
+// TestOpenBranchURL_ThreadsGHConfigDir asserts OpenBranchURL tags both the gate
+// and the browse seam, so the push-time "open in browser" runs gh under the
+// worktree's account rather than the global-active one.
+func TestOpenBranchURL_ThreadsGHConfigDir(t *testing.T) {
+	const dir = "/home/tester/.config/gh-quantivly"
+	var gateCtx, seamCtx context.Context
+	defer captureGHCLI(&gateCtx)()
+	defer stubGHBrowse(func(ctx context.Context, _, _ string) error { seamCtx = ctx; return nil })()
+
+	wt := &Worktree{worktreePath: "/wt", branchName: "feat", ghConfigDir: dir}
+	if err := wt.OpenBranchURL(); err != nil {
+		t.Fatalf("OpenBranchURL: %v", err)
+	}
+	if got := ghConfigDirFromContext(gateCtx); got != dir {
+		t.Errorf("gate ctx dir = %q, want %q", got, dir)
+	}
+	if got := ghConfigDirFromContext(seamCtx); got != dir {
+		t.Errorf("browse seam ctx dir = %q, want %q", got, dir)
+	}
+}
+
 // TestPRStatus_ThreadsGHConfigDir asserts the PR poll's gh pr view seam receives
 // the worktree's GH_CONFIG_DIR (so the badge reflects the right account).
 func TestPRStatus_ThreadsGHConfigDir(t *testing.T) {
