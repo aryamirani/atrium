@@ -1257,16 +1257,108 @@ func TestInstancePolledMsgAppliesStatus(t *testing.T) {
 	})
 }
 
-// pollSelectedCmd is a no-op for anything that can't be polled, so the switch/detach
+// pollSelectedCmd is a no-op for anything that can't be polled, so the selection-change
 // refresh never spawns a doomed capture.
 func TestPollSelectedCmdGuards(t *testing.T) {
-	assert.Nil(t, pollSelectedCmd(nil, false), "nil selection yields no command")
-	assert.Nil(t, pollSelectedCmd(nil, true), "nil selection yields no command (fresh)")
+	assert.Nil(t, pollSelectedCmd(nil), "nil selection yields no command")
 
 	inst, err := session.NewInstance(session.InstanceOptions{
 		Title: "s", Path: t.TempDir(), Program: "claude",
 	})
 	require.NoError(t, err)
-	assert.Nil(t, pollSelectedCmd(inst, false), "an unstarted instance yields no command")
-	assert.Nil(t, pollSelectedCmd(inst, true), "an unstarted instance yields no command (fresh)")
+	assert.Nil(t, pollSelectedCmd(inst), "an unstarted instance yields no command")
+}
+
+// TestApplyMetadataResults covers the shared apply helper used by both the periodic tick
+// and the one-shot detach sweep: it applies the full metadata (pane state, diff, PR, model,
+// mode) to active rows and skips lost/paused ones.
+func TestApplyMetadataResults(t *testing.T) {
+	newHome := func() (*home, *ui.List) {
+		spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		list := ui.NewList(&spin)
+		return &home{
+			ctx:       context.Background(),
+			state:     stateDefault,
+			appConfig: config.DefaultConfig(),
+			list:      list,
+		}, list
+	}
+	newInst := func() *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "s", Path: t.TempDir(), Program: "claude",
+		})
+		require.NoError(t, err)
+		return inst
+	}
+
+	t.Run("applies the full metadata to an active instance", func(t *testing.T) {
+		h, list := newHome()
+		inst := newInst()
+		inst.SetStatus(session.Running)
+		_ = list.AddInstance(inst)
+		stats := &git.DiffStats{Added: 3, Removed: 1}
+		pr := &git.PRStatus{}
+
+		cmds := h.applyMetadataResults([]instanceMetaResult{
+			{
+				instance: inst, state: tmux.PaneIdle, diffStats: stats,
+				prStatus: pr,
+				model:    "claude-opus-4-8", modelOK: true,
+				mode: "plan", modeOK: true,
+			},
+		})
+
+		require.Empty(t, cmds, "no queued prompts means no delivery commands")
+		assert.Equal(t, session.Ready, inst.GetStatus(), "PaneIdle must apply as Ready")
+		assert.Same(t, stats, inst.GetDiffStats(), "the fresh diff stats must be stored")
+		assert.Same(t, pr, inst.GetPRStatus(), "the fresh PR status must be stored")
+		assert.Equal(t, "claude-opus-4-8", inst.ModelInfo(), "the fresh model must be applied")
+		assert.Equal(t, "plan", inst.PermissionModeInfo(), "the fresh permission mode must be applied")
+	})
+
+	t.Run("skips a lost or paused instance", func(t *testing.T) {
+		h, _ := newHome()
+		lost := newInst()
+		lost.SetStatus(session.Running)
+		paused := newInst()
+		paused.SetStatus(session.Paused)
+
+		h.applyMetadataResults([]instanceMetaResult{
+			{instance: lost, state: tmux.PaneIdle, sessionLost: true},
+			{instance: paused, state: tmux.PaneIdle},
+		})
+
+		assert.Equal(t, session.Running, lost.GetStatus(), "a lost session must not be applied (it awaits recovery)")
+		assert.Equal(t, session.Paused, paused.GetStatus(), "a paused session must not be resurrected")
+	})
+}
+
+// TestMetadataSweepDoneMsgDoesNotRescheduleTick pins the load-bearing invariant of the
+// one-shot detach sweep: it applies its results but must NOT advance the full-sweep phase
+// counter or re-arm the periodic tick — otherwise a second tick loop would run forever.
+func TestMetadataSweepDoneMsgDoesNotRescheduleTick(t *testing.T) {
+	spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&spin)
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title: "s", Path: t.TempDir(), Program: "claude",
+	})
+	require.NoError(t, err)
+	inst.SetStatus(session.Running)
+	_ = list.AddInstance(inst)
+
+	h := &home{
+		ctx:          context.Background(),
+		state:        stateDefault,
+		appConfig:    config.DefaultConfig(),
+		list:         list,
+		metadataTick: 7,
+	}
+
+	_, cmd := h.Update(metadataSweepDoneMsg{results: []instanceMetaResult{
+		{instance: inst, state: tmux.PaneIdle},
+	}})
+
+	assert.Equal(t, session.Ready, inst.GetStatus(), "the sweep must apply the fresh pane state")
+	assert.Equal(t, uint64(7), h.metadataTick, "a one-shot sweep must not advance the periodic full-sweep phase")
+	assert.Nil(t, cmd, "the sweep must not reschedule the metadata tick (no second loop)")
 }

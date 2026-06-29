@@ -41,3 +41,24 @@ func TestPollTargets(t *testing.T) {
 		require.Equal(t, []*session.Instance{queued}, pollTargets(active, nil, false))
 	})
 }
+
+// TestSweepMetadataNowCmdGuards pins the cheap exit: the one-shot detach sweep is skipped
+// only when there is no active session to refresh. The sweep now covers the selected row
+// too (polled face-value), so a lone selected session still yields a sweep.
+func TestSweepMetadataNowCmdGuards(t *testing.T) {
+	newInst := func() *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "s", Path: t.TempDir(), Program: "claude",
+		})
+		require.NoError(t, err)
+		return inst
+	}
+	selected, other := newInst(), newInst()
+
+	require.Nil(t, sweepMetadataNowCmd(nil, selected),
+		"no active sessions yields no sweep")
+	require.NotNil(t, sweepMetadataNowCmd([]*session.Instance{selected}, selected),
+		"the selected row alone still yields a sweep (it is refreshed face-value)")
+	require.NotNil(t, sweepMetadataNowCmd([]*session.Instance{selected, other}, selected),
+		"active rows present yield a sweep")
+}
