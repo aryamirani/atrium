@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
@@ -26,6 +27,35 @@ var (
 	gracefulStopPoll    = 25 * time.Millisecond
 )
 
+// daemonLockFilename is the advisory-lock file the running daemon holds for its
+// entire lifetime, sitting next to daemon.pid in the data dir. The kernel
+// releases an flock when its owning process dies (cleanly or by crash), so the
+// lock is a liveness+ownership signal that survives reboots — unlike the PID
+// file, whose number the OS may have recycled onto an unrelated process.
+const daemonLockFilename = "daemon.lock"
+
+// errDaemonAlreadyRunning is returned by acquireDaemonLock when another daemon
+// already holds the lock, so RunDaemon can decline to start a second one.
+var errDaemonAlreadyRunning = errors.New("another atrium daemon is already running")
+
+// errDaemonLockAbsent is returned by isDaemonLockHeld when no lock file exists.
+// This is deliberately distinct from a present-but-free lock: an absent file is
+// NOT proof the daemon is dead, because a daemon from a build predating the lock
+// never created one. Callers must treat it as "can't confirm dead" and fall back
+// to a direct signal/probe rather than assuming the recorded PID is stale —
+// otherwise upgrading from a pre-lock binary would orphan a live legacy daemon.
+var errDaemonLockAbsent = errors.New("daemon lock file does not exist")
+
+// daemonLockPath returns the path to the daemon's advisory lock file in the data
+// dir. Shared by RunDaemon (which holds the lock) and StopDaemon (which checks it).
+func daemonLockPath() (string, error) {
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, daemonLockFilename), nil
+}
+
 // effectivePollInterval converts a configured poll interval in milliseconds into
 // a positive ticker duration. A non-positive value — the field absent from a
 // legacy or hand-edited config.json, or explicitly set <= 0 — would panic
@@ -44,6 +74,26 @@ func effectivePollInterval(ms int) time.Duration {
 // SIGINT/SIGTERM); cancelling it stops the poll loop and kills in-flight subprocesses.
 func RunDaemon(ctx context.Context, cfg *config.Config) error {
 	log.InfoLog.Printf("starting daemon")
+
+	// Hold an exclusive advisory lock for the daemon's whole lifetime. It serves
+	// two purposes: a single-instance guard (a second daemon declines to start so
+	// two never double-tap the same prompts) and the liveness signal StopDaemon
+	// checks before signaling a PID — the kernel frees the lock on this process's
+	// death, so a recycled PID can never masquerade as a live daemon. Failure to
+	// resolve or open the lock is non-fatal: log and run unlocked, matching the
+	// pre-lock behavior.
+	if lockPath, err := daemonLockPath(); err != nil {
+		log.WarningLog.Printf("could not resolve daemon lock path: %v; running without single-instance lock", err)
+	} else if release, err := acquireDaemonLock(lockPath); err != nil {
+		if errors.Is(err, errDaemonAlreadyRunning) {
+			log.InfoLog.Printf("another daemon already holds %s; exiting", lockPath)
+			return nil
+		}
+		log.WarningLog.Printf("could not acquire daemon lock %s: %v; running without it", lockPath, err)
+	} else {
+		defer release()
+	}
+
 	state := config.LoadState()
 	storage, err := session.NewStorage(state)
 	if err != nil {
@@ -205,6 +255,34 @@ func StopDaemon() error {
 		return fmt.Errorf("invalid PID file format: %w", err)
 	}
 
+	// Verify a daemon is actually alive before signaling. The kernel holds the
+	// daemon's flock only while the real process lives, so a present-but-free lock
+	// proves the PID is stale — the daemon crashed, was killed, or the machine
+	// rebooted and recycled the number onto an unrelated process — and signaling it
+	// would hit an innocent victim. In that case drop the stale PID file and return
+	// without signaling.
+	//
+	// An ABSENT lock file is treated differently: it is not proof of death (a daemon
+	// from a pre-lock build never created one, so the file's absence can mean a live
+	// legacy daemon), so we fall through to terminate rather than orphan it. A
+	// lock-check error is handled the same way — both preserve the "ensure stopped"
+	// guarantee. Once any post-lock daemon has run, the file persists on disk, so a
+	// genuinely dead daemon is detected below as present-but-free, never absent.
+	lockPath := filepath.Join(pidDir, daemonLockFilename)
+	held, lockErr := isDaemonLockHeld(lockPath)
+	switch {
+	case errors.Is(lockErr, errDaemonLockAbsent):
+		log.InfoLog.Printf("no daemon lock file at %s; stopping PID %d directly (possible pre-lock daemon)", lockPath, pid)
+	case lockErr != nil:
+		log.WarningLog.Printf("could not verify daemon liveness via lock: %v; proceeding to stop PID %d", lockErr, pid)
+	case !held:
+		log.InfoLog.Printf("daemon PID %d is stale (lock present but unheld); skipping signal", pid)
+		if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove stale PID file: %w", err)
+		}
+		return nil
+	}
+
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("failed to find daemon process: %w", err)
@@ -214,7 +292,7 @@ func StopDaemon() error {
 	// autoyes progress it made while the TUI was closed instead of having it
 	// thrown away by an immediate kill. terminateProcess blocks until the daemon
 	// is gone, so the caller can safely load state afterward (see main.go).
-	if err := terminateProcess(proc); err != nil {
+	if err := terminateProcess(proc, lockPath); err != nil {
 		return fmt.Errorf("failed to stop daemon process: %w", err)
 	}
 
