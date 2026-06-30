@@ -77,6 +77,11 @@ const (
 	DetachNext
 	// DetachPrev requests cycling to the previous sibling session in the repo group.
 	DetachPrev
+	// DetachExternal means the tmux client exited on its own — the user pressed tmux's
+	// native prefix-d, sent Ctrl-D, or the agent process exited — rather than via an
+	// in-app key. The stdout pump observes the resulting EOF and tears the attach down
+	// so Run() returns and the TUI resumes instead of hanging; see detachOnClientExit.
+	DetachExternal
 )
 
 // navReason maps a raw stdin chunk to a sibling-navigation detach reason. The keys
@@ -170,6 +175,13 @@ type Session struct {
 	// Initialized by Attach
 	// Deinitilaized by Detach
 	//
+	// detachMu serializes the teardown paths so they can't race each other on attachCh.
+	// Before #236 the stdin reader was the only mid-attach detacher, so no lock was
+	// needed; now the stdout pump also tears the attach down when the tmux client exits
+	// on its own (detachOnClientExit), which can run concurrently with a keypress detach.
+	// Whichever caller wins sets detachReason and closes attachCh under this lock; the
+	// loser observes attachCh == nil and becomes a no-op instead of double-closing.
+	detachMu sync.Mutex
 	// Channel to be closed at the very end of detaching. Used to signal callers.
 	attachCh chan struct{}
 	// detachReason records why the current attach ended (normal Ctrl+Q vs a
@@ -1135,22 +1147,13 @@ func (t *Session) Attach(allowKill bool) (chan struct{}, error) {
 	// froze the whole UI (the wg.Wait in detachCleanup). Instead, detach disables the
 	// gated writer — so this goroutine can no longer touch the terminal Bubble Tea has
 	// reclaimed — and lets it drain in the background. ctx and ptmx are captured locally
-	// because detachCleanup nils both without waiting for this goroutine.
+	// because detachCleanup nils both without waiting for this goroutine. The pump's
+	// captures are taken here; the goroutine itself is spawned last (see the end of Attach).
 	out := &gatedWriter{w: os.Stdout}
 	t.attachOut = out
 	pumpPtmx := t.ptmx
 	pumpCtx := t.ctx
-	go func() {
-		_, _ = io.Copy(out, pumpPtmx)
-		// When io.Copy returns, the connection closed — a normal detach (ctx done) or an
-		// abnormal Ctrl-D / agent exit (ctx still live), which warns the user.
-		select {
-		case <-pumpCtx.Done():
-			// Normal detach, do nothing
-		default:
-			fmt.Fprintf(os.Stderr, "\n\033[31mError: Session terminated without detaching. Use Ctrl-Q to properly detach from tmux sessions.\033[0m\n")
-		}
-	}()
+	pumpCh := t.attachCh
 
 	// Snapshot ptmx before the loop so the goroutine writes through a local copy instead
 	// of re-reading the shared t.ptmx field on every keypress. DetachSafely (called by
@@ -1204,22 +1207,18 @@ func (t *Session) Attach(allowKill bool) (chan struct{}, error) {
 
 			switch classifyAttachInput(buf[:nr], allowKill) {
 			case attachDetach:
-				t.detachReason = DetachQuit
-				t.Detach()
+				t.keyDetach(DetachQuit, false)
 				return
 			case attachKill:
 				// Detach and request a kill; the caller reads KillRequested after
 				// the attach returns and runs the teardown confirmation.
-				t.killRequested = true
-				t.Detach()
+				t.keyDetach(DetachQuit, true)
 				return
 			case attachNext:
-				t.detachReason = DetachNext
-				t.Detach()
+				t.keyDetach(DetachNext, false)
 				return
 			case attachPrev:
-				t.detachReason = DetachPrev
-				t.Detach()
+				t.keyDetach(DetachPrev, false)
 				return
 			default:
 				// Forward other input to tmux. If DetachSafely closed the pty, this
@@ -1236,7 +1235,33 @@ func (t *Session) Attach(allowKill bool) (chan struct{}, error) {
 	// live. From here the metadata tick skips this session until teardown clears
 	// the flag (after Restore reinstalls the detached ptmx/monitor).
 	t.attached.Store(true)
-	return t.attachCh, nil
+
+	// Spawn the stdout pump LAST — only now are wg (monitorWindowSize's Adds) and the
+	// attached flag fully established. The pump is the one teardown trigger with no
+	// startup delay (the stdin reader is gated by stdinNukeWindow), so if it fired
+	// detachOnClientExit mid-setup it could nil t.wg under monitorWindowSize's Add or
+	// have its attached.Store(false) clobbered by the Store(true) above. Starting it here
+	// closes that window; the pty buffers output until the copy begins microseconds later.
+	// Return a captured channel so a near-instant client exit (pump nils t.attachCh) still
+	// hands Run the now-closed channel instead of a nil one.
+	ret := t.attachCh
+	go func() {
+		_, _ = io.Copy(out, pumpPtmx)
+		// io.Copy returned: the pty closed. If our own detach cancelled ctx, the teardown
+		// already owns this — do nothing. Otherwise the tmux client exited on its own
+		// (prefix-d, Ctrl-D, or the agent process exited); tear the attach down here so
+		// attachCh closes and Run() returns, instead of leaving the TUI hung (#236). The
+		// old code only printed a red banner here, which both failed to unblock Run and —
+		// now that we hand the terminal back — would corrupt the reclaimed TUI screen.
+		select {
+		case <-pumpCtx.Done():
+			// Normal detach, do nothing
+		default:
+			t.detachOnClientExit(pumpCh)
+		}
+	}()
+
+	return ret, nil
 }
 
 // KillRequested reports whether the most recent attach ended with the user
@@ -1271,10 +1296,11 @@ func (t *Session) detachCleanup() []error {
 
 	var errs []error
 
-	// Cancel BEFORE closing the pty so the stdout pump observes ctx.Done as a normal
-	// detach (it captured ctx locally) rather than printing the spurious red
-	// "terminated without detaching" error (that message is for the genuine Ctrl-D /
-	// agent-exit case, where the client dies without us cancelling first).
+	// Cancel BEFORE closing the pty so the stdout pump, when our ptmx.Close below
+	// unblocks its read, observes ctx.Done and treats this as our own teardown (it
+	// captured ctx locally) rather than mistaking it for a client-initiated exit and
+	// calling detachOnClientExit. That path is reserved for the genuine prefix-d /
+	// Ctrl-D / agent-exit case, where the client dies without us cancelling first.
 	if t.cancel != nil {
 		t.cancel()
 		t.cancel = nil
@@ -1316,6 +1342,15 @@ func (t *Session) detachCleanup() []error {
 // not re-establish the attach pty; the next Attach self-heals a nil ptmx. Used by
 // the programmatic lifecycle paths (pause, lost-session recovery).
 func (t *Session) DetachSafely() error {
+	t.detachMu.Lock()
+	defer t.detachMu.Unlock()
+	return t.detachSafelyLocked()
+}
+
+// detachSafelyLocked is DetachSafely's body; detachMu must be held. It tears the
+// attach down without re-Restoring the pty (the next Attach self-heals a nil ptmx),
+// and is shared by the programmatic pause/recovery path and the client-exit path.
+func (t *Session) detachSafelyLocked() error {
 	if t.attachCh == nil {
 		return nil // Already detached
 	}
@@ -1344,6 +1379,53 @@ func (t *Session) DetachSafely() error {
 // the session recoverable — polling tolerates a nil ptmx, and the next Attach
 // re-Restores it. The caller has already set detachReason / killRequested.
 func (t *Session) Detach() {
+	t.detachMu.Lock()
+	defer t.detachMu.Unlock()
+	t.detachLocked()
+}
+
+// keyDetach is the in-session-keypress teardown (a normal Ctrl+Q, a Ctrl+X kill, or a
+// sibling-cycle key). It records the reason/kill and runs the full Detach (Restore
+// included) under detachMu so it can't race the stdout pump's client-exit detach:
+// whichever caller wins closes attachCh; the loser sees attachCh == nil and returns
+// without touching the per-detach state the app reads after the channel closes.
+func (t *Session) keyDetach(reason DetachReason, kill bool) {
+	t.detachMu.Lock()
+	defer t.detachMu.Unlock()
+	if t.attachCh == nil {
+		return // the client-exit pump already tore this attach down
+	}
+	t.detachReason = reason
+	t.killRequested = kill
+	t.detachLocked()
+}
+
+// detachOnClientExit tears the attach down when the tmux client exits on its own —
+// tmux's native prefix-d, a Ctrl-D, or the agent process exiting — which the stdout
+// pump observes as an EOF while our ctx is still live. Before #236 nothing closed
+// attachCh on this path, so Run() (and thus the whole TUI) hung; the pump only printed
+// a red banner. ch is the attach channel the pump captured at Attach time: a stale
+// pump left over from a prior attach must never tear down a newer one, so we act only
+// while attachCh is still that channel. It mirrors DetachSafely (no Restore — the next
+// Attach self-heals a nil ptmx, and a dead session would fail Restore anyway) and runs
+// under detachMu so it can't double-close against a simultaneous keypress detach.
+func (t *Session) detachOnClientExit(ch chan struct{}) {
+	t.detachMu.Lock()
+	defer t.detachMu.Unlock()
+	if t.attachCh == nil || t.attachCh != ch {
+		return // a keypress detach already won, or a newer attach owns the session
+	}
+	log.WarningLog.Printf("tmux client for %q exited without an in-app detach "+
+		"(prefix-d, Ctrl-D, or the agent exited); returning to the TUI", t.sanitizedName)
+	t.detachReason = DetachExternal
+	if err := t.detachSafelyLocked(); err != nil {
+		log.ErrorLog.Printf("client-exit detach cleanup for %q: %v", t.sanitizedName, err)
+	}
+}
+
+// detachLocked is Detach's body; detachMu must be held. It re-establishes the attach
+// pty for the next Attach and records any teardown error in detachErr.
+func (t *Session) detachLocked() {
 	if t.attachCh == nil {
 		return // already detached / never attached
 	}

@@ -191,3 +191,60 @@ func TestDetachDoesNotWaitOnStdoutPump(t *testing.T) {
 	<-pumpReturned
 	require.Empty(t, buf.String(), "post-detach output must be discarded, not written")
 }
+
+// T9: when the tmux client exits on its own (prefix-d / Ctrl-D / agent exit), the stdout
+// pump's detachOnClientExit must close attachCh — so Run() returns and the TUI resumes
+// instead of hanging — and report DetachExternal without re-Restoring the pty or recording
+// an AttachExitError. Before #236 nothing closed attachCh on this path and the attach hung.
+func TestDetachOnClientExitClosesWithExternalReason(t *testing.T) {
+	s, _ := attachedSession(t)
+	ch := s.attachCh
+
+	s.detachOnClientExit(ch)
+
+	assertClosed(t, ch)
+	require.Nil(t, s.attachCh)
+	require.Equal(t, DetachExternal, s.AttachExitReason())
+	require.NoError(t, s.AttachExitError(), "a client exit is not a teardown error")
+	require.Nil(t, s.ptmx, "client-exit detach must not re-Restore (it mirrors DetachSafely)")
+	require.False(t, s.attached.Load(), "the poll guard must clear so the session is polled again")
+}
+
+// T10: a stale pump left over from a prior attach must never tear down a newer one.
+// detachOnClientExit is a no-op unless attachCh is still the exact channel the pump
+// captured at Attach time.
+func TestDetachOnClientExitIgnoresStaleChannel(t *testing.T) {
+	s, _ := attachedSession(t)
+	live := s.attachCh
+	stale := make(chan struct{})
+
+	s.detachOnClientExit(stale)
+
+	require.Equal(t, live, s.attachCh, "a stale channel must leave the live attach untouched")
+	select {
+	case <-live:
+		t.Fatal("the live attachCh must not be closed by a stale client-exit")
+	default:
+	}
+}
+
+// T11: a keypress detach and a client-exit detach can fire at the same instant (the user
+// hits Ctrl+Q just as the client exits). Whichever wins closes attachCh exactly once; the
+// loser sees attachCh == nil and is a no-op. Run under -race to catch a data race; a
+// double-close would panic in one of the goroutines and fail the test.
+func TestKeyDetachRacesClientExitNoDoubleClose(t *testing.T) {
+	for i := 0; i < 64; i++ {
+		s, _ := attachedSession(t)
+		ch := s.attachCh
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); s.keyDetach(DetachQuit, false) }()
+		go func() { defer wg.Done(); s.detachOnClientExit(ch) }()
+		wg.Wait()
+
+		require.Nil(t, s.attachCh, "exactly one detach must tear the attach down")
+		assertClosed(t, ch)
+		require.Contains(t, []DetachReason{DetachQuit, DetachExternal}, s.AttachExitReason())
+	}
+}
