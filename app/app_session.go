@@ -849,6 +849,31 @@ func (m *home) resetTitleCheck() {
 	m.titleBranchName = ""
 }
 
+// composeProgramFlags folds the optional Claude model and permission-mode overrides
+// into program, returning the augmented command. Each is applied only when non-empty
+// and the program resolves to claude — the sole agent whose --model / --permission-mode
+// flags these compose — and is re-validated as a backstop: the create form already
+// filters the model field to agent.ValidModelName's charset (see ui/overlay/modelField.go)
+// and offers a closed set of valid mode chips, so an invalid value reaching here means
+// drift between the UI and the agent enums, caught before a dead launch rather than
+// after. The mode check sees the model-augmented program, matching the form's submit
+// order; since --model leaves the base command claude, Resolve is unaffected.
+func composeProgramFlags(program, model, mode string) (string, error) {
+	if model != "" && agent.Resolve(program).Key == agent.KeyClaude {
+		if !agent.ValidModelName(model) {
+			return "", fmt.Errorf("invalid model name %q (letters, digits, . _ : / - only)", model)
+		}
+		program = agent.WithModelFlag(program, model)
+	}
+	if mode != "" && agent.Resolve(program).Key == agent.KeyClaude {
+		if !agent.ValidPermissionMode(mode) {
+			return "", fmt.Errorf("invalid permission mode %q", mode)
+		}
+		program = agent.WithPermissionModeFlag(program, mode)
+	}
+	return program, nil
+}
+
 // createSessionFromForm validates the submitted new-session form, creates the session,
 // adds it to the list, and starts it in the background with the entered prompt. On a
 // validation error it leaves the overlay open (clearing the submitted flag) and surfaces
@@ -903,29 +928,15 @@ func (m *home) createSessionFromForm(prompt string) tea.Cmd {
 	if p := ov.GetSelectedProgram(); p != "" {
 		program = p
 	}
-	// Compose the model override into the persisted program string, so launch,
-	// pause/resume, and the daemon all see it with no extra plumbing. The Resolve
-	// check is a belt-and-braces guard behind the form's own gating (the field is
-	// inert for non-claude programs), and the validation is a backstop behind its
-	// keystroke filtering.
-	if model := ov.GetModel(); model != "" && agent.Resolve(program).Key == agent.KeyClaude {
-		if !agent.ValidModelName(model) {
-			ov.Submitted = false
-			return m.handleError(fmt.Errorf("invalid model name %q (letters, digits, . _ : / - only)", model))
-		}
-		program = agent.WithModelFlag(program, model)
-	}
-	// Compose the permission-mode override the same way (behavioral details —
-	// resume semantics, autoyes safety — live on ModeField's doc comment). The
-	// chips are a closed set today, so the validation backstop exists for drift:
-	// claude rejects an unknown mode at argv parse time, and a pre-launch error
-	// beats a dead session if the chip list and the enum ever diverge.
-	if mode := ov.GetPermissionMode(); mode != "" && agent.Resolve(program).Key == agent.KeyClaude {
-		if !agent.ValidPermissionMode(mode) {
-			ov.Submitted = false
-			return m.handleError(fmt.Errorf("invalid permission mode %q", mode))
-		}
-		program = agent.WithPermissionModeFlag(program, mode)
+	// Fold the model and permission-mode overrides into the persisted program
+	// string, so launch, pause/resume, and the daemon all see them with no extra
+	// plumbing. composeProgramFlags re-validates each as a backstop behind the
+	// form's own gating (the fields are inert for non-claude programs, and the
+	// model field filters keystrokes to the valid charset).
+	program, err := composeProgramFlags(program, ov.GetModel(), ov.GetPermissionMode())
+	if err != nil {
+		ov.Submitted = false
+		return m.handleError(err)
 	}
 
 	var accountOverride *config.ClaudeAccount

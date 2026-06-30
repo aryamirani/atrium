@@ -6,7 +6,9 @@ import (
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/session/git"
 	"github.com/ZviBaratz/atrium/ui"
+	"github.com/ZviBaratz/atrium/ui/overlay"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -462,4 +464,131 @@ func TestCreateSessionFromForm_ModelAndModeCompose(t *testing.T) {
 	inst := h.list.GetSelectedInstance()
 	require.NotNil(t, inst)
 	assert.Equal(t, "claude --model opus --permission-mode plan", inst.Program)
+}
+
+// emptyTargetForm builds a create-form home whose overlay has no directory candidates
+// (so GetSelectedPath() == ""), with the given title pre-filled and Submitted set. This
+// drives the path-resolution branches of createSessionFromForm via the m.newSessionPath
+// fallback without fighting the picker's selection.
+func emptyTargetForm(t *testing.T, title string) *home {
+	t.Helper()
+	h := newCreateFormHome(t)
+	h.state = statePrompt
+	ov := overlay.NewSessionCreateOverlay(h.appConfig.GetProfiles(), h.appConfig.ClaudeAccounts, nil, h.program)
+	ov.SetTitleValue(title)
+	ov.Submitted = true
+	h.textInputOverlay = ov
+	return h
+}
+
+// gitInitRepo creates a throwaway git repository with one commit and returns its path.
+// Mirrors the session package's newTestWorktree setup; hermetic under the sandboxed HOME.
+func gitInitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test User")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0644))
+	runGit("add", ".")
+	runGit("commit", "-m", "initial")
+	return repo
+}
+
+// A submit with no picker selection and no contextual default surfaces "no directory
+// selected", keeps the form open with the submitted flag cleared, and creates nothing.
+func TestCreateSessionFromForm_NoDirectorySelected(t *testing.T) {
+	h := emptyTargetForm(t, "feature")
+	h.newSessionPath = "" // no contextual default either
+
+	before := h.list.NumInstances()
+	cmd := h.createSessionFromForm("")
+
+	require.NotNil(t, cmd, "a missing target must surface an error")
+	assert.True(t, h.errBox.HasError(), "the error must be shown")
+	assert.Equal(t, before, h.list.NumInstances(), "no session should be created")
+	require.NotNil(t, h.textInputOverlay, "form stays open on validation error")
+	assert.False(t, h.textInputOverlay.IsSubmitted(), "submitted flag cleared so the user can retry")
+}
+
+// A submit whose only target is a non-existent path surfaces the "is not a directory"
+// error (targetValidity rejects it), keeps the form open, and creates nothing.
+func TestCreateSessionFromForm_InvalidPath(t *testing.T) {
+	h := emptyTargetForm(t, "feature")
+	h.newSessionPath = filepath.Join(t.TempDir(), "does-not-exist")
+
+	before := h.list.NumInstances()
+	cmd := h.createSessionFromForm("")
+
+	require.NotNil(t, cmd, "an invalid target must surface an error")
+	assert.True(t, h.errBox.HasError(), "the error must be shown")
+	assert.Equal(t, before, h.list.NumInstances(), "no session should be created")
+	require.NotNil(t, h.textInputOverlay, "form stays open on validation error")
+	assert.False(t, h.textInputOverlay.IsSubmitted(), "submitted flag cleared so the user can retry")
+}
+
+// The synchronous branch-existence gate (git.LocalBranchExists) blocks a submit whose
+// title would mint a branch that already exists in the target repo — distinct from the
+// async in-memory verdict. The conflict path sets an inline title error and returns nil
+// (no toast), leaving the form open with the submitted flag cleared.
+func TestCreateSessionFromForm_SyncBranchExistsBlocksSubmit(t *testing.T) {
+	repo := gitInitRepo(t)
+	h := emptyTargetForm(t, "feature")
+	h.appConfig.BranchPrefix = "tester/" // pin for a deterministic slug
+	h.newSessionPath = repo
+
+	// Pre-create the exact branch this title would mint so the sync check trips.
+	slug := git.BranchNameForSession(h.appConfig.BranchPrefix, "feature")
+	cmd := exec.CommandContext(context.Background(), "git", "branch", slug)
+	cmd.Dir = repo
+	require.NoError(t, cmd.Run(), "creating the colliding branch must succeed")
+
+	before := h.list.NumInstances()
+	got := h.createSessionFromForm("")
+
+	assert.Nil(t, got, "the conflict path sets an inline title error and returns nil (no toast)")
+	assert.Equal(t, before, h.list.NumInstances(), "a colliding branch must not create a session")
+	require.NotNil(t, h.textInputOverlay, "form stays open on conflict")
+	assert.False(t, h.textInputOverlay.IsSubmitted(), "submitted flag cleared")
+	assert.Contains(t, h.textInputOverlay.TitleError(), "exists in", "inline title error names the existing branch")
+}
+
+// composeProgramFlags is the submit-time backstop the form's field gating makes
+// otherwise unreachable: the model field reverts charset-invalid input and the mode
+// chips are a closed valid set, so these rejections only fire on UI/enum drift. Test
+// them directly, plus the compose and pass-through cases.
+func TestComposeProgramFlags(t *testing.T) {
+	t.Run("invalid model name is rejected", func(t *testing.T) {
+		_, err := composeProgramFlags("claude", "bad model!", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid model name")
+	})
+	t.Run("invalid permission mode is rejected", func(t *testing.T) {
+		_, err := composeProgramFlags("claude", "", "bogusmode")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid permission mode")
+	})
+	t.Run("valid model and mode compose onto a claude program", func(t *testing.T) {
+		got, err := composeProgramFlags("claude", "opus", "plan")
+		require.NoError(t, err)
+		assert.Equal(t, "claude --model opus --permission-mode plan", got)
+	})
+	t.Run("a non-claude program is left untouched", func(t *testing.T) {
+		got, err := composeProgramFlags("echo", "opus", "plan")
+		require.NoError(t, err)
+		assert.Equal(t, "echo", got)
+	})
+	t.Run("empty overrides leave the program untouched", func(t *testing.T) {
+		got, err := composeProgramFlags("claude", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "claude", got)
+	})
 }

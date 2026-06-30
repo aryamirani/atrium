@@ -490,6 +490,12 @@ func (i *Instance) recoverInPlace() {
 	i.ArmReadySuppression()
 }
 
+// worktreeCleanup is the seam recreateSession tears the worktree down through on a
+// failed (re)launch. A package-level var — matching the git package's own test-seam
+// idiom (checkGHCLI/runGitPush/runGHBrowse) — so a test can inject a failing teardown
+// and assert the error is wrapped; production always uses (*git.Worktree).Cleanup.
+var worktreeCleanup = (*git.Worktree).Cleanup
+
 // recreateSession starts a fresh tmux session for an already-set-up worktree,
 // resuming the agent's prior conversation when one exists (startResuming; a fresh
 // start otherwise). On failure it tears down the worktree and returns a wrapped
@@ -503,7 +509,7 @@ func (i *Instance) recreateSession() error {
 		// Cleanup git worktree if tmux session creation fails. A direct session has no
 		// worktree (wt == nil) and nothing to clean up.
 		if wt != nil {
-			if cleanupErr := wt.Cleanup(); cleanupErr != nil {
+			if cleanupErr := worktreeCleanup(wt); cleanupErr != nil {
 				err = fmt.Errorf("%w (cleanup error: %w)", err, cleanupErr)
 				log.ErrorLog.Print(err)
 			}
