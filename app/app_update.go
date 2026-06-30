@@ -548,6 +548,22 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.attachExec(next.Attach, next)
 			}
 		}
+		if msg.rawModeFailed {
+			// Raw mode couldn't be set, so the attach ran cooked: IXON swallowed Ctrl+Q
+			// (and keystrokes were line-buffered), so detach didn't work and the attach
+			// may have looked stuck. Explain it via the persistent modal, give the working
+			// escape (tmux's own prefix), and suggest the IXON/TTY check. The session
+			// itself is fine, so still run the normal post-detach refresh below. (Safe to
+			// land here: the kill/cycle branches above need single-byte control reads that
+			// cooked mode can't deliver, so they're unreachable when rawModeFailed.)
+			m.showInfo("Raw mode couldn't be set for this attach, so Ctrl+Q detach (and " +
+				"other in-session keys) didn't work — the attach may have looked stuck. " +
+				"Detach instead with tmux's own keys: press the prefix (Ctrl-B by default), " +
+				"then d — then Enter, since cooked mode buffers input until a newline, so the " +
+				"prefix may not register on its own. If this keeps happening, check that the " +
+				"terminal/SSH/Docker session provides a real TTY; `stty -ixon` can also stop " +
+				"Ctrl+Q being swallowed.")
+		}
 		// Polling stalled for the whole list while attached, so every row is stale on
 		// return. Sweep every active session immediately instead of waiting up to a full
 		// ~2s sweep cycle: the selected row is polled face-value (PollNow) so a stale

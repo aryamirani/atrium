@@ -13,6 +13,15 @@ import (
 	"golang.org/x/term"
 )
 
+// isTerminal and makeRaw seam term's tty calls so Run's raw-mode-failure branch is
+// testable: CI has no controlling TTY, so the real term.IsTerminal returns false and
+// the branch is otherwise unreachable. term.Restore needs no seam — it is only
+// reached on the success path, which the failure tests don't exercise.
+var (
+	isTerminal = term.IsTerminal
+	makeRaw    = term.MakeRaw
+)
+
 // attachCommand adapts a blocking tmux attach into a tea.ExecCommand so Bubble
 // Tea releases the terminal before the attach and restores+repaints it after —
 // on the event loop, via execMsg, which is the framework's supported path for a
@@ -23,18 +32,28 @@ import (
 // is swallowed by IXON flow control and never reaches the detach reader. The
 // Set* methods are no-ops because the attach copies os.Stdin/os.Stdout directly
 // rather than through the streams Bubble Tea would inject.
+//
+// Methods take a pointer receiver so Run's rawModeFailed write survives: tea.Exec
+// holds the value as an interface and invokes Run on it after releasing the
+// terminal, then evaluates our callback on the same goroutine — attachExec passes a
+// *attachCommand and reads the flag back there (see attachExec).
 type attachCommand struct {
 	attach func() (chan struct{}, error)
+	// rawModeFailed records that raw mode couldn't be set, so the attach ran cooked
+	// and Ctrl+Q detach was disabled. Read by attachExec's callback after Run returns.
+	rawModeFailed bool
 }
 
-func (a attachCommand) Run() error {
-	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
-		if oldState, err := term.MakeRaw(fd); err == nil {
+func (a *attachCommand) Run() error {
+	if fd := int(os.Stdin.Fd()); isTerminal(fd) {
+		if oldState, err := makeRaw(fd); err == nil {
 			defer func() { _ = term.Restore(fd, oldState) }()
 		} else {
 			// Stay in cooked mode where IXON swallows Ctrl+Q, so detach won't work and
-			// the attach looks like a hang. Log a breadcrumb (to the file, not the
-			// tmux-owned terminal) instead of failing silently.
+			// the attach looks like a hang. Record it so attachFinishedMsg can surface a
+			// modal on return, and log a breadcrumb (to the file, not the tmux-owned
+			// terminal) for the case where the user kills Atrium instead of detaching.
+			a.rawModeFailed = true
 			log.WarningLog.Printf("failed to set raw mode for attach; Ctrl+Q detach may not work: %v", err)
 		}
 	}
@@ -46,11 +65,11 @@ func (a attachCommand) Run() error {
 	return nil
 }
 
-func (a attachCommand) SetStdin(io.Reader) {}
+func (a *attachCommand) SetStdin(io.Reader) {}
 
-func (a attachCommand) SetStdout(io.Writer) {}
+func (a *attachCommand) SetStdout(io.Writer) {}
 
-func (a attachCommand) SetStderr(io.Writer) {}
+func (a *attachCommand) SetStderr(io.Writer) {}
 
 // attachExec hands the terminal to a tmux attach via tea.Exec and reports the
 // outcome as an attachFinishedMsg once the user detaches. killTarget is the
@@ -63,8 +82,12 @@ func (m *home) attachExec(attach func() (chan struct{}, error), killTarget *sess
 	if killTarget != nil {
 		killTarget.MarkSeen()
 	}
-	return tea.Exec(attachCommand{attach: attach}, func(err error) tea.Msg {
-		return attachFinishedMsg{err: err, killTarget: killTarget}
+	// Pass a pointer so Run's rawModeFailed write is visible here: tea.Exec runs Run
+	// and then evaluates this callback on the same goroutine, so the read is ordered
+	// after the write (no race).
+	cmd := &attachCommand{attach: attach}
+	return tea.Exec(cmd, func(err error) tea.Msg {
+		return attachFinishedMsg{err: err, killTarget: killTarget, rawModeFailed: cmd.rawModeFailed}
 	})
 }
 
@@ -72,8 +95,10 @@ func (m *home) attachExec(attach func() (chan struct{}, error), killTarget *sess
 // user detached or the attach errored). It carries the attach error, if any, and
 // the attached instance so the post-detach handler can surface an error and honor
 // an in-session Ctrl+X kill request. killTarget is nil for the terminal tab, which
-// has no kill key.
+// has no kill key. rawModeFailed reports that raw mode couldn't be set, so the
+// attach ran cooked and Ctrl+Q detach was disabled — the handler surfaces a modal.
 type attachFinishedMsg struct {
-	err        error
-	killTarget *session.Instance
+	err           error
+	killTarget    *session.Instance
+	rawModeFailed bool
 }
