@@ -401,59 +401,96 @@ func (c *Config) GetProjectSearchDepth() int {
 	return d
 }
 
+// boolOr returns the value *p points to, or def when p is nil — the "optional
+// bool absent from an older config file" fallback every Get* bool accessor below
+// shares. Each accessor pairs it with a nil-receiver guard so a nil *Config also
+// resolves to the documented default instead of panicking; several accessors
+// previously omitted that guard and would panic on a nil receiver.
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
 // GetSessionContextBar reports whether attached sessions should render the
 // in-session context status line. A nil SessionContextBar (e.g. an older config
-// file with no such key) defaults to on, mirroring GetAutoAttach.
+// file with no such key) — or a nil Config — defaults to on, mirroring GetAutoAttach.
 func (c *Config) GetSessionContextBar() bool {
-	return c.SessionContextBar == nil || *c.SessionContextBar
+	if c == nil {
+		return true
+	}
+	return boolOr(c.SessionContextBar, true)
 }
 
 // GetNerdFont reports whether vendor Nerd-Font icons should be used. A nil
 // NerdFont (an older config, or a fresh install) — or a nil Config — defaults to
 // off, so the UI never renders tofu boxes without an explicit opt-in.
 func (c *Config) GetNerdFont() bool {
-	return c != nil && c.NerdFont != nil && *c.NerdFont
+	if c == nil {
+		return false
+	}
+	return boolOr(c.NerdFont, false)
 }
 
 // GetHintBar reports whether the always-on bottom hint bar is enabled. A nil
 // HintBar (e.g. an older config file with no such key) — or a nil Config —
 // defaults to on.
 func (c *Config) GetHintBar() bool {
-	return c == nil || c.HintBar == nil || *c.HintBar
+	if c == nil {
+		return true
+	}
+	return boolOr(c.HintBar, true)
 }
 
 // GetAutoAttach reports whether new sessions should auto-attach on creation.
-// A nil AutoAttach (e.g. an older config file with no such key) defaults to on.
+// A nil AutoAttach (e.g. an older config file with no such key) — or a nil
+// Config — defaults to on.
 func (c *Config) GetAutoAttach() bool {
-	return c.AutoAttach == nil || *c.AutoAttach
+	if c == nil {
+		return true
+	}
+	return boolOr(c.AutoAttach, true)
 }
 
 // GetShowReleaseNotesAfterUpdate reports whether the post-update "what's new"
 // overlay should be shown. A nil field (an older config file with no such key)
 // — or a nil Config — defaults to on.
 func (c *Config) GetShowReleaseNotesAfterUpdate() bool {
-	return c == nil || c.ShowReleaseNotesAfterUpdate == nil || *c.ShowReleaseNotesAfterUpdate
+	if c == nil {
+		return true
+	}
+	return boolOr(c.ShowReleaseNotesAfterUpdate, true)
 }
 
 // GetPRCreateDraft reports whether PRs opened with the create key (c) start as
 // drafts. A nil PRCreateDraft (e.g. an older config file with no such key) — or a
 // nil Config — defaults to draft.
 func (c *Config) GetPRCreateDraft() bool {
-	return c == nil || c.PRCreateDraft == nil || *c.PRCreateDraft
+	if c == nil {
+		return true
+	}
+	return boolOr(c.PRCreateDraft, true)
 }
 
 // GetUpdateBaseOnCreate reports whether new sessions branch off the freshest
 // remote tip of their base. A nil field (an older config file with no such key)
 // — or a nil Config — defaults to on.
 func (c *Config) GetUpdateBaseOnCreate() bool {
-	return c == nil || c.UpdateBaseOnCreate == nil || *c.UpdateBaseOnCreate
+	if c == nil {
+		return true
+	}
+	return boolOr(c.UpdateBaseOnCreate, true)
 }
 
 // GetFastForwardLocalBase reports whether session creation also fast-forwards the
 // local base branch to origin. Defaults to off (opt-in): a nil field or nil
 // Config makes no local changes.
 func (c *Config) GetFastForwardLocalBase() bool {
-	return c != nil && c.FastForwardLocalBase != nil && *c.FastForwardLocalBase
+	if c == nil {
+		return false
+	}
+	return boolOr(c.FastForwardLocalBase, false)
 }
 
 // GetAutoUpdateMode returns the normalized auto-update mode: AutoUpdateAuto,
@@ -500,22 +537,32 @@ func (c *Config) GetBranchPrefix() string {
 
 // GetKillDoubleTapConfirm reports whether a second press of the kill key confirms
 // the kill dialog. A nil KillDoubleTapConfirm (e.g. an older config file with no
-// such key) defaults to on.
+// such key) — or a nil Config — defaults to on.
 func (c *Config) GetKillDoubleTapConfirm() bool {
-	return c.KillDoubleTapConfirm == nil || *c.KillDoubleTapConfirm
+	if c == nil {
+		return true
+	}
+	return boolOr(c.KillDoubleTapConfirm, true)
 }
 
 // GetSmartDispatchAuto reports whether a confident deterministic smart-dispatch match
-// may create a session without the confirmation form. Off by default (nil → false).
+// may create a session without the confirmation form. Off by default (a nil field
+// or a nil Config → false).
 func (c *Config) GetSmartDispatchAuto() bool {
-	return c.SmartDispatchAuto != nil && *c.SmartDispatchAuto
+	if c == nil {
+		return false
+	}
+	return boolOr(c.SmartDispatchAuto, false)
 }
 
 // GetTrustWorktreesRoot reports whether Atrium should pre-accept Claude Code's
-// workspace trust for the worktrees root. Defaults OFF for a nil field: this
-// writes to another tool's config file, so it is strictly opt-in.
+// workspace trust for the worktrees root. Defaults OFF for a nil field or a nil
+// Config: this writes to another tool's config file, so it is strictly opt-in.
 func (c *Config) GetTrustWorktreesRoot() bool {
-	return c.TrustWorktreesRoot != nil && *c.TrustWorktreesRoot
+	if c == nil {
+		return false
+	}
+	return boolOr(c.TrustWorktreesRoot, false)
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and
