@@ -291,6 +291,30 @@ func TestRecreateSession_StartsBlankWhenNoConversation(t *testing.T) {
 		"with no conversation, the fallback must start the agent blank")
 }
 
+// TestRecreateSession_PropagatesCleanupFailure asserts that when the launch fails AND
+// the worktree teardown also fails, recreateSession wraps the cleanup error into the
+// returned error rather than dropping it — so a doubly-failed Resume surfaces both
+// causes. The worktreeCleanup seam is overridden to fail deterministically, since git
+// teardown does not route through the injectable cmd.Executor that fails the launch.
+func TestRecreateSession_PropagatesCleanupFailure(t *testing.T) {
+	wt := newTestWorktree(t)
+	cfgDir := t.TempDir()
+	pty := newRecordingPtyFactory(t, fmt.Errorf("pty boom"))
+	ts := tmux.NewSessionWithDeps(context.Background(), "sess", "claude", pty, deadExec())
+	inst := &Instance{Title: "sess", started: true, Program: "claude", claudeConfigDir: cfgDir, gitWorktree: wt, tmuxSession: ts}
+
+	boom := fmt.Errorf("cleanup boom")
+	defer func(orig func(*git.Worktree) error) { worktreeCleanup = orig }(worktreeCleanup)
+	worktreeCleanup = func(*git.Worktree) error { return boom }
+
+	err := inst.recreateSession()
+
+	require.Error(t, err, "a failed launch must surface an error")
+	require.ErrorIs(t, err, boom, "the cleanup failure must be wrapped into the returned error")
+	require.Contains(t, err.Error(), "cleanup error", "the wrap must label the cleanup cause")
+	require.Contains(t, err.Error(), "failed to start new session", "the launch failure must remain the outer cause")
+}
+
 // TestKill_CleansUpWorktreeWhenNotStarted is the regression guard for the resource
 // leak where a failed Start() left its worktree (and branch) behind. Start() only
 // sets started=true on success, so its deferred Kill() ran while started==false; the

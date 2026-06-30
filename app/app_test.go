@@ -1331,6 +1331,108 @@ func TestApplyMetadataResults(t *testing.T) {
 		assert.Equal(t, session.Running, lost.GetStatus(), "a lost session must not be applied (it awaits recovery)")
 		assert.Equal(t, session.Paused, paused.GetStatus(), "a paused session must not be resurrected")
 	})
+
+	t.Run("retains prior model and mode when compute reports not-OK", func(t *testing.T) {
+		h, list := newHome()
+		inst := newInst()
+		inst.SetStatus(session.Running)
+		_ = list.AddInstance(inst)
+
+		// A first sweep establishes the model and permission mode.
+		h.applyMetadataResults([]instanceMetaResult{
+			{instance: inst, state: tmux.PaneIdle, model: "claude-opus-4-8", modelOK: true, mode: "plan", modeOK: true},
+		})
+		require.Equal(t, "claude-opus-4-8", inst.ModelInfo())
+		require.Equal(t, "plan", inst.PermissionModeInfo())
+
+		// A later sweep whose compute could not produce fresh values (OK=false, e.g.
+		// non-claude/unavailable/unchanged) must not clobber the established meta.
+		h.applyMetadataResults([]instanceMetaResult{
+			{instance: inst, state: tmux.PaneIdle, modelOK: false, modeOK: false},
+		})
+		assert.Equal(t, "claude-opus-4-8", inst.ModelInfo(), "a not-OK model compute must retain the prior model")
+		assert.Equal(t, "plan", inst.PermissionModeInfo(), "a not-OK mode compute must retain the prior mode")
+	})
+}
+
+// TestApplyDiffStats covers the diff-compute-failure branch: a DiffStats carrying an
+// Error must drop any stale numbers (store nil) rather than display them — including the
+// expected pre-baseline "base commit SHA not set" case, which is silent but still clears.
+func TestApplyDiffStats(t *testing.T) {
+	newInst := func() *session.Instance {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "s", Path: t.TempDir(), Program: "claude",
+		})
+		require.NoError(t, err)
+		return inst
+	}
+
+	t.Run("a generic compute error clears stale stats", func(t *testing.T) {
+		inst := newInst()
+		inst.SetDiffStats(&git.DiffStats{Added: 9})
+		applyDiffStats(inst, &git.DiffStats{Error: fmt.Errorf("boom")})
+		assert.Nil(t, inst.GetDiffStats(), "a diff error must drop stale numbers")
+	})
+
+	t.Run("the expected pre-baseline error also clears stats", func(t *testing.T) {
+		inst := newInst()
+		inst.SetDiffStats(&git.DiffStats{Added: 9})
+		applyDiffStats(inst, &git.DiffStats{Error: fmt.Errorf("base commit SHA not set")})
+		assert.Nil(t, inst.GetDiffStats(), "the expected pre-baseline error is silent but still clears stats")
+	})
+
+	t.Run("clean stats are stored", func(t *testing.T) {
+		inst := newInst()
+		stats := &git.DiffStats{Added: 3, Removed: 1}
+		applyDiffStats(inst, stats)
+		assert.Same(t, stats, inst.GetDiffStats(), "valid stats must be stored as-is")
+	})
+}
+
+// TestMetadataUpdateDoneMsg pins the periodic handler's tick lifecycle (the inverse of
+// the one-shot sweep in TestMetadataSweepDoneMsgDoesNotRescheduleTick): it advances the
+// full-sweep phase counter and re-arms the metadata tick — but only while the app
+// context is live. On a cancelled context (shutdown) the counter still advances but the
+// tick is NOT re-armed, ending the self-chaining loop.
+func TestMetadataUpdateDoneMsg(t *testing.T) {
+	newHome := func(ctx context.Context) (*home, *session.Instance) {
+		spin := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		list := ui.NewList(&spin)
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "s", Path: t.TempDir(), Program: "claude",
+		})
+		require.NoError(t, err)
+		inst.SetStatus(session.Running)
+		_ = list.AddInstance(inst)
+		return &home{
+			ctx:          ctx,
+			state:        stateDefault,
+			appConfig:    config.DefaultConfig(),
+			list:         list,
+			metadataTick: 7,
+			lostStrikes:  map[*session.Instance]int{},
+		}, inst
+	}
+
+	t.Run("a live context advances the phase counter and re-arms the tick", func(t *testing.T) {
+		h, inst := newHome(context.Background())
+		_, cmd := h.Update(metadataUpdateDoneMsg{results: []instanceMetaResult{
+			{instance: inst, state: tmux.PaneIdle},
+		}})
+		assert.Equal(t, uint64(8), h.metadataTick, "the periodic handler must advance the full-sweep phase")
+		assert.NotNil(t, cmd, "a live context must re-arm the metadata tick")
+	})
+
+	t.Run("a cancelled context advances the counter but stops the loop", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		h, inst := newHome(ctx)
+		_, cmd := h.Update(metadataUpdateDoneMsg{results: []instanceMetaResult{
+			{instance: inst, state: tmux.PaneIdle},
+		}})
+		assert.Equal(t, uint64(8), h.metadataTick, "the counter still advances before the ctx check")
+		assert.Nil(t, cmd, "a cancelled context must not re-arm the tick (no second loop after shutdown)")
+	})
 }
 
 // TestMetadataSweepDoneMsgDoesNotRescheduleTick pins the load-bearing invariant of the
