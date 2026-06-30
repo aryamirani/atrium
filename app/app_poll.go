@@ -392,7 +392,9 @@ func collectMetadata(ctx context.Context, poll []*session.Instance, selected *se
 			// Bail before firing any subprocess once the app context is cancelled
 			// (shutdown): each probe below would only fail fast against a torn-down
 			// instance. r.instance is already set, so applyMetadataResults — which
-			// leaves a zero PaneUnknown state untouched — never derefs a nil here.
+			// leaves a zero PaneUnknown state untouched — never derefs a nil here. The
+			// zero diff/PR stats it does apply are harmless: this fires only on the
+			// shutdown tick, and a cancelled probe would have nilled them anyway.
 			if ctx.Err() != nil {
 				return
 			}
