@@ -1,6 +1,9 @@
 package config
 
-import "os/exec"
+import (
+	"os/exec"
+	"strings"
+)
 
 // Agent auto-detection: probe the machine for known agent CLIs so profiles
 // exist without hand-editing config.json. Two triggers: DefaultConfig seeds
@@ -63,4 +66,30 @@ func (c *Config) MergeDetectedProfiles(detected []Profile) (added []string) {
 		}
 	}
 	return added
+}
+
+// ProgramCommand returns program's command — its first whitespace-separated
+// token (the binary name of a string like "aider --model x") — or "" when the
+// string is empty or blank. It is the one place command-name extraction lives,
+// shared by ProgramInstalled and the app's missing-program warning.
+func ProgramCommand(program string) string {
+	if fields := strings.Fields(program); len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
+}
+
+// ProgramInstalled reports whether program's command — its first
+// whitespace-separated token — resolves to something runnable. It reuses
+// detectAgentCommand so the resolution matches agent detection exactly: the
+// "claude" token goes through the shell-profile-aware probe (an aliased or
+// shell-function claude is not falsely reported missing), every other token is
+// a plain PATH lookup. An empty program (no token) is never installed.
+func ProgramInstalled(program string) bool {
+	cmd := ProgramCommand(program)
+	if cmd == "" {
+		return false
+	}
+	_, err := detectAgentCommand(cmd)
+	return err == nil
 }

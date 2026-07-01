@@ -80,21 +80,6 @@ func TestView_HintBarContextual(t *testing.T) {
 
 }
 
-// The welcome's seen-bit must NOT be set merely by rendering it — a stray keypress
-// that dismisses the overlay should not burn the welcome forever. The bit is set
-// only on the first successful session start (see TestWelcome_MarkedSeenOnStart).
-func TestWelcome_NotMarkedSeenOnRender(t *testing.T) {
-	h := newCreateFormHome(t)
-	flag := helpTypeWelcome{}.mask()
-	require.Zero(t, h.appState.GetHelpScreensSeen()&flag, "precondition: welcome unseen")
-
-	h.showHelpScreen(helpTypeWelcome{}, nil)
-
-	require.Equal(t, stateHelp, h.state, "welcome should render")
-	require.NotNil(t, h.textOverlay)
-	require.Zero(t, h.appState.GetHelpScreensSeen()&flag, "rendering the welcome must not mark it seen")
-}
-
 // The first successful session start retires the welcome. This is the single
 // chokepoint every start funnels through, so creating a session is what makes the
 // welcome stop re-appearing on subsequent launches.

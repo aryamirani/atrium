@@ -340,11 +340,7 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 	// chokepoint every start (inline `n` and the `N` form) funnels through, so the
 	// welcome re-shows on every launch until the user has actually created a session —
 	// a dismissal alone no longer burns it (see showHelpScreen). Best-effort persist.
-	if seen := m.appState.GetHelpScreensSeen(); seen&(helpTypeWelcome{}.mask()) == 0 {
-		if err := m.appState.SetHelpScreensSeen(seen | helpTypeWelcome{}.mask()); err != nil {
-			log.WarningLog.Printf("failed to persist welcome-seen state: %v", err)
-		}
-	}
+	m.markWelcomeSeen()
 	if m.autoYes {
 		msg.instance.AutoYes = true
 	}
