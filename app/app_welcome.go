@@ -42,9 +42,10 @@ func (m *home) handleWelcomeState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	program := m.welcomeOverlay.SelectedProgram()
 	m.state = stateDefault
 	m.welcomeOverlay = nil
+	m.recomputeLayout() // menuVisible flipped; the hint bar may reclaim its row
 
 	if !confirmed {
-		return m, nil
+		return m, tea.WindowSize()
 	}
 	// Confirm: adopt the detected agents as profiles and persist the pick.
 	m.appConfig.MergeDetectedProfiles(detected)
@@ -60,7 +61,7 @@ func (m *home) handleWelcomeState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			log.WarningLog.Printf("failed to persist welcome-seen state: %v", err)
 		}
 	}
-	return m, nil
+	return m, tea.WindowSize()
 }
 
 // maybeWarnMissingProgram surfaces a one-shot, non-blocking warning when the

@@ -1,12 +1,12 @@
 package app
 
 import (
-	"context"
 	"testing"
 
 	"github.com/ZviBaratz/atrium/config"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,7 +66,52 @@ func TestWelcome_SkipLeavesSeenBitUnset(t *testing.T) {
 	require.Zero(t, h.appState.GetHelpScreensSeen()&(helpTypeWelcome{}.mask()), "skip must not set the seen-bit")
 }
 
-var _ = context.Background // keep import if unused after edits
+// While the welcome is up, menuVisible() is false and the panes are sized
+// full-height by maybeShowWelcome's recomputeLayout(). Closing the welcome
+// flips menuVisible back on (the hint bar is on by default), so unless the
+// close path also recomputes, the hint bar's row lands on top of still
+// full-height panes and the frame is one row taller than the terminal — on
+// first-ever launch, before any other resize fixes it. TestViewFitsTerminalBounds
+// (view_bounds_test.go) enforces the general "frame never exceeds the terminal"
+// invariant across the app; these two mirror that same fit check specifically
+// across a welcome close, on both the confirm and skip paths.
+func TestWelcome_ConfirmFrameFitsAfterClose(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "claude"}})
+	h := newCreateFormHome(t)
+
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h = model.(*home)
+	require.Equal(t, stateWelcome, h.state, "first launch enters stateWelcome")
+
+	model, _ = h.Update(cmd().(agentsDetectedMsg))
+	h = model.(*home)
+
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h = model.(*home)
+
+	require.Equal(t, stateDefault, h.state, "confirm closes the welcome")
+	require.Equal(t, 40, lipgloss.Height(h.View()),
+		"frame must be exactly the terminal height after the welcome closes via confirm")
+}
+
+func TestWelcome_SkipFrameFitsAfterClose(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "claude"}})
+	h := newCreateFormHome(t)
+
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h = model.(*home)
+	require.Equal(t, stateWelcome, h.state, "first launch enters stateWelcome")
+
+	model, _ = h.Update(cmd().(agentsDetectedMsg))
+	h = model.(*home)
+
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	h = model.(*home)
+
+	require.Equal(t, stateDefault, h.state, "esc closes the welcome")
+	require.Equal(t, 40, lipgloss.Height(h.View()),
+		"frame must be exactly the terminal height after the welcome closes via skip")
+}
 
 // markWelcomeSeen flips the welcome seen-bit so maybeShowWelcome takes the
 // returning-user branch instead of showing the welcome.
