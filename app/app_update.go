@@ -215,8 +215,16 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.handleProjectScanDone(msg)
 	case agentsDetectedMsg:
 		if m.state == stateWelcome && m.welcomeOverlay != nil {
+			// The overlay is already sized by updateHandleWindowSizeEvent; just
+			// install the detected agents (SetDetected sizes the picker to fit).
 			m.welcomeOverlay.SetDetected(msg.profiles)
-			m.welcomeOverlay.SetWidth(54)
+		}
+		return m, nil
+	case programCheckedMsg:
+		// The returning-user program check finished off the main loop; warn if the
+		// effective program isn't installed (one-shot, guarded by pathWarned).
+		if !msg.installed {
+			return m, m.warnMissingProgram(msg.program)
 		}
 		return m, nil
 	case branchFetchDoneMsg:

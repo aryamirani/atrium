@@ -50,9 +50,11 @@ func (w *WelcomeOverlay) SetWidth(width int) {
 }
 
 // HandleKeyPress returns true when the overlay should close. Enter confirms
-// (Confirmed() == true), Esc skips; while detecting, only Esc (skip) closes.
+// (Confirmed() == true); Esc and ctrl+c skip (ctrl+c mirrors the app's
+// overlay-cancel idiom, so a first-run quit reflex is not swallowed). While
+// detecting, only the skip keys close.
 func (w *WelcomeOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
-	if msg.Type == tea.KeyEsc {
+	if msg.Type == tea.KeyEsc || msg.Type == tea.KeyCtrlC {
 		return true
 	}
 	if w.detecting {
@@ -71,13 +73,14 @@ func (w *WelcomeOverlay) HandleKeyPress(msg tea.KeyMsg) bool {
 // Confirmed reports whether the overlay was closed by confirming (Enter).
 func (w *WelcomeOverlay) Confirmed() bool { return w.confirmed }
 
-// SelectedProgram is the chosen profile's Program, or "" when there was no
-// picker (empty detection).
-func (w *WelcomeOverlay) SelectedProgram() string {
+// SelectedProfile is the chosen profile (Name + Program), or the zero Profile
+// when there was no picker (empty detection). The caller persists its Name as
+// the default program so resolution keeps flowing through the profile list.
+func (w *WelcomeOverlay) SelectedProfile() config.Profile {
 	if w.picker == nil {
-		return ""
+		return config.Profile{}
 	}
-	return w.picker.GetSelectedProfile().Program
+	return w.picker.GetSelectedProfile()
 }
 
 // Detected returns the profiles detection found (for the caller to merge on confirm).

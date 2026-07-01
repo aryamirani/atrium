@@ -110,24 +110,13 @@ func (h helpTypeGeneral) toContent() string {
 	)
 }
 
-func (h helpTypeWelcome) toContent() string {
-	return lipgloss.JoinVertical(lipgloss.Left,
-		helpTitleStyle().Render("Welcome to Atrium"),
-		"",
-		helpDescStyle().Render("Run multiple coding agents in parallel — each in its own"),
-		helpDescStyle().Render("git worktree and tmux session, managed from one place."),
-		"",
-		helpRow("n", "start your first session"),
-		helpRow("?", "show all keys, any time"),
-	)
-}
-
 func (h helpTypeGeneral) hint() string { return "press any key to close" }
-func (h helpTypeWelcome) hint() string { return "press any key to begin" }
 
 func (h helpTypeGeneral) mask() uint32 { return 1 }
 
-// helpTypeWelcome uses bit 4; bits 1-3 belonged to retired teaching modals.
+// helpTypeWelcome is no longer a rendered help screen (the interactive
+// overlay.WelcomeOverlay replaced it); only its seen-bit survives, so the type
+// carries just mask(). Bit 4; bits 1-3 belonged to retired teaching modals.
 func (h helpTypeWelcome) mask() uint32 { return 1 << 4 }
 
 // showHelpScreen displays a help overlay. The cheatsheet (helpTypeGeneral) always
@@ -175,8 +164,10 @@ func (m *home) maybeShowWelcome() tea.Cmd {
 
 	if m.appState.GetHelpScreensSeen()&(helpTypeWelcome{}.mask()) != 0 {
 		// Welcome already retired — protect returning users whose default
-		// program is no longer installed.
-		return m.maybeWarnMissingProgram()
+		// program is no longer installed. The check runs off the main loop
+		// (checkProgramInstalledCmd) so the claude shell-profile probe never
+		// blocks the first frame.
+		return m.checkProgramInstalledCmd()
 	}
 
 	m.welcomeOverlay = overlay.NewWelcomeOverlay()

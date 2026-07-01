@@ -68,6 +68,17 @@ func (c *Config) MergeDetectedProfiles(detected []Profile) (added []string) {
 	return added
 }
 
+// ProgramCommand returns program's command — its first whitespace-separated
+// token (the binary name of a string like "aider --model x") — or "" when the
+// string is empty or blank. It is the one place command-name extraction lives,
+// shared by ProgramInstalled and the app's missing-program warning.
+func ProgramCommand(program string) string {
+	if fields := strings.Fields(program); len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
+}
+
 // ProgramInstalled reports whether program's command — its first
 // whitespace-separated token — resolves to something runnable. It reuses
 // detectAgentCommand so the resolution matches agent detection exactly: the
@@ -75,10 +86,10 @@ func (c *Config) MergeDetectedProfiles(detected []Profile) (added []string) {
 // shell-function claude is not falsely reported missing), every other token is
 // a plain PATH lookup. An empty program (no token) is never installed.
 func ProgramInstalled(program string) bool {
-	fields := strings.Fields(program)
-	if len(fields) == 0 {
+	cmd := ProgramCommand(program)
+	if cmd == "" {
 		return false
 	}
-	_, err := detectAgentCommand(fields[0])
+	_, err := detectAgentCommand(cmd)
 	return err == nil
 }

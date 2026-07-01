@@ -32,12 +32,12 @@ func TestWelcomeOverlay_DetectingThenPick(t *testing.T) {
 	w.SetDetected(detectedFixture())
 
 	// First profile (registry order → claude) is selected by default.
-	if got := w.SelectedProgram(); got != "claude" {
+	if got := w.SelectedProfile().Name; got != "claude" {
 		t.Errorf("default selection = %q, want \"claude\"", got)
 	}
 	// Down moves selection to codex.
 	w.HandleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
-	if got := w.SelectedProgram(); got != "codex" {
+	if got := w.SelectedProfile().Name; got != "codex" {
 		t.Errorf("after Down, selection = %q, want \"codex\"", got)
 	}
 	// Enter confirms and closes.
@@ -63,13 +63,26 @@ func TestWelcomeOverlay_SkipDoesNotConfirm(t *testing.T) {
 	}
 }
 
+// ctrl+c closes the welcome as a skip (not a confirm), matching the app's
+// overlay-cancel idiom, so a first-run user's reflexive quit is not swallowed.
+func TestWelcomeOverlay_CtrlCSkips(t *testing.T) {
+	w := NewWelcomeOverlay()
+	w.SetDetected(detectedFixture())
+	if !w.HandleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlC}) {
+		t.Fatal("ctrl+c should close the overlay")
+	}
+	if w.Confirmed() {
+		t.Error("ctrl+c must not confirm (it skips)")
+	}
+}
+
 func TestWelcomeOverlay_EmptyDetection(t *testing.T) {
 	w := NewWelcomeOverlay()
 	w.SetWidth(54)
 	w.SetDetected(nil)
 
-	if got := w.SelectedProgram(); got != "" {
-		t.Errorf("empty detection SelectedProgram = %q, want \"\"", got)
+	if got := w.SelectedProfile().Program; got != "" {
+		t.Errorf("empty detection SelectedProfile().Program = %q, want \"\"", got)
 	}
 	out := w.Render()
 	if !strings.Contains(out, "No supported agent") {

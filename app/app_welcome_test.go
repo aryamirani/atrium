@@ -1,14 +1,36 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ZviBaratz/atrium/config"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/ansi"
 	"github.com/stretchr/testify/require"
 )
+
+// TestWelcome_FitsNarrowTerminal guards that the first-run welcome, whose box is
+// authored at a fixed 54 columns, is clamped to the terminal so it never spills
+// off a narrow one (TestViewFitsTerminalBounds does not exercise stateWelcome).
+func TestWelcome_FitsNarrowTerminal(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "claude"}})
+	h := newCreateFormHome(t)
+
+	const w = 40
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: w, Height: 30})
+	h = model.(*home)
+	require.Equal(t, stateWelcome, h.state, "first launch enters stateWelcome")
+	model, _ = h.Update(cmd().(agentsDetectedMsg))
+	h = model.(*home)
+
+	for i, line := range strings.Split(h.View(), "\n") {
+		require.LessOrEqualf(t, ansi.PrintableRuneWidth(line), w,
+			"line %d exceeds terminal width %d in the welcome on a narrow terminal", i, w)
+	}
+}
 
 // stubDetect swaps the package detection seam for the test's duration.
 func stubDetect(t *testing.T, profiles []config.Profile) {
@@ -113,9 +135,48 @@ func TestWelcome_SkipFrameFitsAfterClose(t *testing.T) {
 		"frame must be exactly the terminal height after the welcome closes via skip")
 }
 
-// markWelcomeSeen flips the welcome seen-bit so maybeShowWelcome takes the
+// Confirming persists the picked profile's NAME as default_program (matching
+// seededDefaultConfig), not its resolved Program, so GetProgram keeps resolving
+// the default through the profile list on later launches.
+func TestWelcome_ConfirmStoresProfileName(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "/opt/bin/claude"}})
+	h := newCreateFormHome(t)
+
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h = model.(*home)
+	model, _ = h.Update(cmd().(agentsDetectedMsg))
+	h = model.(*home)
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h = model.(*home)
+
+	require.Equal(t, "claude", h.appConfig.DefaultProgram, "confirm persists the profile name")
+	require.Equal(t, "/opt/bin/claude", h.program, "confirm runs the resolved program")
+}
+
+// A user who customized a same-named profile but never started a session keeps
+// their command on confirm: MergeDetectedProfiles leaves the custom profile
+// intact, and persisting the NAME resolves the default through it rather than
+// overwriting it with the detected program.
+func TestWelcome_ConfirmPreservesCustomProfile(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "/opt/bin/claude"}})
+	h := newCreateFormHome(t)
+	h.appConfig.Profiles = []config.Profile{{Name: "claude", Program: "claude --model opus"}}
+
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h = model.(*home)
+	model, _ = h.Update(cmd().(agentsDetectedMsg))
+	h = model.(*home)
+	model, _ = h.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h = model.(*home)
+
+	require.Equal(t, "claude", h.appConfig.DefaultProgram)
+	require.Equal(t, "claude --model opus", h.program,
+		"the user's customized same-named profile is preserved, not overwritten by detection")
+}
+
+// seedWelcomeSeen flips the welcome seen-bit so maybeShowWelcome takes the
 // returning-user branch instead of showing the welcome.
-func markWelcomeSeen(t *testing.T, h *home) {
+func seedWelcomeSeen(t *testing.T, h *home) {
 	t.Helper()
 	seen := h.appState.GetHelpScreensSeen()
 	require.NoError(t, h.appState.SetHelpScreensSeen(seen|(helpTypeWelcome{}.mask())))
@@ -123,23 +184,39 @@ func markWelcomeSeen(t *testing.T, h *home) {
 
 func TestWarn_ReturningUserMissingProgram(t *testing.T) {
 	h := newCreateFormHome(t)
-	markWelcomeSeen(t, h)
+	seedWelcomeSeen(t, h)
 	h.program = "definitely-not-a-real-binary-xyzzy"
 
-	// Size the app so the menu/errBox are laid out, then trigger the startup path.
-	h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-
+	// The startup path only schedules the check; the probe itself runs off the
+	// main loop (checkProgramInstalledCmd), so nothing warns synchronously.
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h = model.(*home)
 	require.Equal(t, stateDefault, h.state, "no welcome for a returning user")
+	require.False(t, h.pathWarned, "the check is async — nothing warned synchronously")
+	require.NotNil(t, cmd, "a returning user schedules the program check")
+
+	// Deliver the check result: a missing program triggers the one-shot warning.
+	msg, ok := cmd().(programCheckedMsg)
+	require.True(t, ok, "cmd should yield programCheckedMsg")
+	require.False(t, msg.installed)
+	model, _ = h.Update(msg)
+	h = model.(*home)
 	require.True(t, h.pathWarned, "a missing program must trigger the one-shot warning")
 }
 
 func TestWarn_ReturningUserInstalledProgram(t *testing.T) {
 	h := newCreateFormHome(t)
-	markWelcomeSeen(t, h)
+	seedWelcomeSeen(t, h)
 	h.program = "sh" // present on PATH
 
-	h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	model, cmd := h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	h = model.(*home)
+	require.NotNil(t, cmd, "a returning user schedules the program check")
 
+	msg := cmd().(programCheckedMsg)
+	require.True(t, msg.installed, "sh is on PATH")
+	model, _ = h.Update(msg)
+	h = model.(*home)
 	require.False(t, h.pathWarned, "an installed program must not warn")
 }
 

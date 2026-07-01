@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestProgramCommand(t *testing.T) {
+	cases := map[string]string{
+		"claude":                "claude",
+		"aider --model opus":    "aider",
+		"  spaced   --flag  ":   "spaced",
+		"/usr/local/bin/claude": "/usr/local/bin/claude",
+		"":                      "",
+		"   ":                   "",
+	}
+	for in, want := range cases {
+		if got := ProgramCommand(in); got != want {
+			t.Errorf("ProgramCommand(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestProgramInstalled(t *testing.T) {
 	// Stub detectAgentCommand to use real exec.LookPath for non-"claude" tokens,
 	// so the test verifies actual PATH resolution: "sh" exists, bogus binary doesn't.
