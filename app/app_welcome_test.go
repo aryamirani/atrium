@@ -26,6 +26,14 @@ func TestWelcome_FitsNarrowTerminal(t *testing.T) {
 	model, _ = h.Update(cmd().(agentsDetectedMsg))
 	h = model.(*home)
 
+	// The overlay must be width-clamped at creation, not merely truncated by
+	// PlaceOverlay on render: assert its own rendered box fits, which only holds
+	// if maybeShowWelcome sized it from the cached terminal width up front (the
+	// first WindowSizeMsg creates the overlay after the resize handler runs, so a
+	// resize-only clamp would leave this first frame over-wide).
+	require.LessOrEqual(t, lipgloss.Width(h.welcomeOverlay.Render()), w,
+		"welcome overlay must be width-clamped at creation, not just truncated on render")
+
 	for i, line := range strings.Split(h.View(), "\n") {
 		require.LessOrEqualf(t, ansi.PrintableRuneWidth(line), w,
 			"line %d exceeds terminal width %d in the welcome on a narrow terminal", i, w)
