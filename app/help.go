@@ -163,13 +163,26 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 	return m, nil
 }
 
-// maybeShowWelcome shows the one-time welcome overlay on first launch ever.
-func (m *home) maybeShowWelcome() {
+// maybeShowWelcome opens the interactive first-launch setup on first run (until
+// the welcome seen-bit is set), returning the async agent-detection command. On
+// later launches it instead runs the always-on missing-program check. Guarded by
+// welcomeChecked so it acts once per process.
+func (m *home) maybeShowWelcome() tea.Cmd {
 	if m.welcomeChecked {
-		return
+		return nil
 	}
 	m.welcomeChecked = true
-	m.showHelpScreen(helpTypeWelcome{}, nil)
+
+	if m.appState.GetHelpScreensSeen()&(helpTypeWelcome{}.mask()) != 0 {
+		// Welcome already retired — protect returning users whose default
+		// program is no longer installed.
+		return m.maybeWarnMissingProgram()
+	}
+
+	m.welcomeOverlay = overlay.NewWelcomeOverlay()
+	m.state = stateWelcome
+	m.recomputeLayout()
+	return m.detectAgentsCmd()
 }
 
 // handleHelpState handles key events when in help state

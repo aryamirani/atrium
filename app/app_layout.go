@@ -89,7 +89,7 @@ func (m *home) menuVisible() bool {
 		// Both inline interactions teach their gestures on the bar, so it stays
 		// even when the always-on hint bar is turned off.
 		return true
-	case statePrompt, stateRename, stateConfirm, stateHelp, stateInfo, stateSettings:
+	case statePrompt, stateRename, stateConfirm, stateHelp, stateInfo, stateSettings, stateWelcome:
 		return false
 	default: // stateDefault (and the empty list)
 		return m.generatingName || m.appConfig.GetHintBar()

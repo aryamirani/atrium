@@ -125,6 +125,9 @@ const (
 	// highlighted session and a lifecycle action (pause/resume/kill) applies to
 	// the marked set; esc clears the marks and exits.
 	stateVisual
+	// stateWelcome is the interactive first-launch setup modal: pick a default
+	// agent from the ones detected on PATH, then start the first session.
+	stateWelcome
 )
 
 type home struct {
@@ -256,6 +259,11 @@ type home struct {
 	// settingsOverlay is the in-TUI configuration panel. It edits appConfig in
 	// place; applySettingChange persists and live-applies each change.
 	settingsOverlay *overlay.SettingsOverlay
+	// welcomeOverlay is the interactive first-run setup modal (stateWelcome).
+	welcomeOverlay *overlay.WelcomeOverlay
+	// pathWarned guards the one-shot startup warning that the effective program
+	// is not installed, so it fires at most once per launch.
+	pathWarned bool
 	// renameTarget is the instance the rename overlay was opened for. It is captured
 	// when the overlay opens so the new label lands on the right session even if the
 	// list selection moves while the overlay is open (e.g. during async auto-naming).
@@ -399,6 +407,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("settings overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.settingsOverlay.Render(), mainView, true)
+	} else if m.state == stateWelcome {
+		if m.welcomeOverlay == nil {
+			log.ErrorLog.Printf("welcome overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.welcomeOverlay.Render(), mainView, true)
 	}
 
 	return mainView

@@ -213,6 +213,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A background repo scan finished: persist it and refresh an open create
 		// form's candidates in place (filter and cursor preserved).
 		return m, m.handleProjectScanDone(msg)
+	case agentsDetectedMsg:
+		if m.state == stateWelcome && m.welcomeOverlay != nil {
+			m.welcomeOverlay.SetDetected(msg.profiles)
+			m.welcomeOverlay.SetWidth(54)
+		}
+		return m, nil
 	case branchFetchDoneMsg:
 		// A background fetch finished. If its path is still the current target, re-run
 		// the branch search so newly-fetched refs appear without retyping the filter; a
@@ -231,9 +237,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.exitHintMode()
 		}
 		m.updateHandleWindowSizeEvent(msg)
-		// First launch ever: show the one-time welcome once the size is known.
-		m.maybeShowWelcome()
-		return m, nil
+		// First launch ever: show the interactive welcome once the size is known
+		// (its async detection cmd is returned); returning users get the
+		// always-on missing-program check instead.
+		return m, m.maybeShowWelcome()
 	case error:
 		// Handle errors from confirmation actions
 		return m, m.handleError(msg)
@@ -341,6 +348,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	if m.state == stateHelp {
 		return m.handleHelpState(msg)
+	}
+
+	if m.state == stateWelcome {
+		return m.handleWelcomeState(msg)
 	}
 
 	if m.state == stateInfo {
