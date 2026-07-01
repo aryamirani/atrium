@@ -94,9 +94,10 @@ overwriting the persisted order:
   anchor (first) session's account; sessions in a repo agree, so the rare
   mixed-account repo (routing rules changed mid-life) falls back to the anchor's
   account and is otherwise untouched.
-- **Cluster order:** by first appearance of each account in the manual order
-  (stable, predictable); the catch-all/default account cluster (`account == ""`
-  or `ClaudeAccountIsDefault`) sorts last.
+- **Cluster order:** configured accounts appear by first appearance in the manual
+  order (stable, predictable); the **no-account (`""`) bucket sorts last**. A
+  catch-all/default account (`ClaudeAccountIsDefault`) is a normal named cluster,
+  rendered dim (§4) rather than reordered.
 - `distinctAccountCount()` mirrors `distinctRepoCount()` (`ui/list.go:63`) and
   gates the divider, the header tint, and the badge suppression — so `account`
   mode with 0–1 accounts is a true no-op.
@@ -121,20 +122,30 @@ overwriting the persisted order:
 
 ### 5. Toggle + settings surface
 
-- A key cycles `GroupMode` (`repo` ↔ `account`), persisting on change — the same
-  shape as the sort-mode key in `app/app_update.go`. Choose a free binding at
-  implementation time; document it in help.
+`GroupMode` is a persisted preference, changed the same way `SessionSort` is —
+there is **no dedicated sort-mode keybinding today**; the mode lives in the
+settings overlay and is applied to the list at construction/layout.
+
 - A `group_mode` enum row in the settings overlay (`ui/overlay/settings.go`),
-  alongside the existing `default_program` / `session_sort` rows.
+  alongside the existing `default_program` / `session_sort` rows (`settings.go:291`).
+- Applied via `list.SetGroupMode(GetGroupMode())` next to the existing
+  `SetSortMode` call in `app/app_construct.go:81` and `app/app_layout.go:142`.
 
-### 6. Interaction with manual group reordering
+A dedicated quick-toggle key is a natural later addition but is **out of scope for
+v1** — it would be new keyspace + help/discoverability surface for a preference
+that behaves like the settings-only `session_sort`.
 
-While `account` mode is visually active, whole-group `{ }` moves are confined to
-within the current account cluster, so a move cannot break account contiguity —
-the analog of J/K within-group reordering going no-op under status-sort
-(`ManualReorderEnabled`, `ui/list_sort.go:22`). If confinement proves fiddly for
-v1, fall back to making cross-account group moves a no-op hint. Within-group J/K
-and the `session_sort` mode are unaffected and compose unchanged.
+### 6. Interaction with manual reordering
+
+While `account` mode is active, **manual reordering is disabled** — both
+within-group J/K and whole-group `{ }` moves — exactly as status-sort already
+disables J/K today. This is the single clean rule that keeps clustering a pure
+view over `manual`: with no user reordering, `manual` stays canonical and the
+clustered order never leaks into the persisted order. Concretely
+`ManualReorderEnabled()` becomes `!viewActive()` (was `!sortActive()`), and
+`MoveGroupUp`/`MoveGroupDown` short-circuit to a no-op (→ hint) when
+`accountGrouped()`. The `session_sort` mode itself is unaffected: `{ }` group
+moves still work in a pure status-sort (non-account) view as they do today.
 
 ## Testing
 
