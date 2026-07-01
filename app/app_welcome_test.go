@@ -67,3 +67,44 @@ func TestWelcome_SkipLeavesSeenBitUnset(t *testing.T) {
 }
 
 var _ = context.Background // keep import if unused after edits
+
+// markWelcomeSeen flips the welcome seen-bit so maybeShowWelcome takes the
+// returning-user branch instead of showing the welcome.
+func markWelcomeSeen(t *testing.T, h *home) {
+	t.Helper()
+	seen := h.appState.GetHelpScreensSeen()
+	require.NoError(t, h.appState.SetHelpScreensSeen(seen|(helpTypeWelcome{}.mask())))
+}
+
+func TestWarn_ReturningUserMissingProgram(t *testing.T) {
+	h := newCreateFormHome(t)
+	markWelcomeSeen(t, h)
+	h.program = "definitely-not-a-real-binary-xyzzy"
+
+	// Size the app so the menu/errBox are laid out, then trigger the startup path.
+	h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	require.Equal(t, stateDefault, h.state, "no welcome for a returning user")
+	require.True(t, h.pathWarned, "a missing program must trigger the one-shot warning")
+}
+
+func TestWarn_ReturningUserInstalledProgram(t *testing.T) {
+	h := newCreateFormHome(t)
+	markWelcomeSeen(t, h)
+	h.program = "sh" // present on PATH
+
+	h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	require.False(t, h.pathWarned, "an installed program must not warn")
+}
+
+func TestWarn_SuppressedWhenWelcomeShows(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "claude"}})
+	h := newCreateFormHome(t)
+	h.program = "definitely-not-a-real-binary-xyzzy" // would warn, but welcome shows
+
+	h.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	require.Equal(t, stateWelcome, h.state, "first run shows the welcome")
+	require.False(t, h.pathWarned, "the standalone warning is suppressed while the welcome shows")
+}
