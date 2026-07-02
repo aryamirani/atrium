@@ -68,6 +68,8 @@ func parseTerm(tok string) term {
 		return behindTerm(behindPredicate(strings.TrimPrefix(tok, "behind:")))
 	case strings.HasPrefix(tok, "pr:"):
 		return prTerm(strings.TrimPrefix(tok, "pr:"))
+	case strings.HasPrefix(tok, "account:"):
+		return accountTerm(strings.TrimPrefix(tok, "account:"))
 	default:
 		return substringTerm(tok)
 	}
@@ -154,6 +156,21 @@ func prTerm(value string) term {
 			return wantClosed
 		}
 		return false
+	}
+}
+
+// accountTerm matches the session's Claude account name by case-insensitive
+// prefix, mirroring statusTerm. An empty value is a no-op (matches every session)
+// so a mid-typed "account:" never blinks the list empty. The literal value "none"
+// matches sessions with no resolved account (ClaudeAccountName == ""), mirroring
+// pr:none.
+func accountTerm(value string) term {
+	return func(i *Instance) bool {
+		name := strings.ToLower(i.ClaudeAccountName())
+		if value == "none" {
+			return name == ""
+		}
+		return strings.HasPrefix(name, value)
 	}
 }
 
