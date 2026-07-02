@@ -246,7 +246,7 @@ func (m *Menu) String() string {
 			sepStyle().Render(separator) +
 			keyStyle().Render("esc") + " " + descStyle().Render("clear") +
 			sepStyle().Render(separator) +
-			descStyle().Render("filter: status: dirty behind pr:")
+			descStyle().Render("filter: status: dirty behind pr: account:")
 	case StateHints:
 		line = keyStyle().Render("a–z") + " " + descStyle().Render("copy") +
 			sepStyle().Render(separator) +

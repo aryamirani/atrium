@@ -175,6 +175,22 @@ func TestFilter_PR(t *testing.T) {
 	require.False(t, ParseFilter("pr:xyz").Matches(open))
 }
 
+func TestFilter_Account(t *testing.T) {
+	work := newFilterInstance(t, "deploy", "b")
+	work.SetClaudeAccount("work", "", false)
+	personal := newFilterInstance(t, "sideproj", "b")
+	personal.SetClaudeAccount("personal", "", false)
+	none := newFilterInstance(t, "legacy", "b") // no account resolved
+
+	require.True(t, ParseFilter("account:work").Matches(work))
+	require.False(t, ParseFilter("account:work").Matches(personal))
+	require.True(t, ParseFilter("account:wo").Matches(work), "prefix match")
+	require.True(t, ParseFilter("ACCOUNT:WORK").Matches(work), "case-insensitive")
+	require.True(t, ParseFilter("account:none").Matches(none), "none matches the empty account")
+	require.False(t, ParseFilter("account:none").Matches(work))
+	require.True(t, ParseFilter("account:").Matches(personal), "empty value is a no-op")
+}
+
 func TestFilter_MixedPredicateAndSubstringANDed(t *testing.T) {
 	inst := newFilterInstance(t, "feat login", "feat/login")
 	inst.SetStatus(Ready)

@@ -79,6 +79,9 @@ func assembleHome(
 	// Apply the persisted within-group sort mode once the full (creation-order) list
 	// is in place, so its canonical-order snapshot is the real creation order.
 	h.list.SetSortMode(appConfig.GetSessionSort())
+	// Apply the persisted top-level grouping after the full list is in place, so its
+	// canonical-order snapshot is the real creation order.
+	h.list.SetGroupMode(appConfig.GetGroupMode())
 
 	return h
 }

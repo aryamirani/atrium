@@ -300,6 +300,18 @@ func newSettingRows(cfg *config.Config) []settingRow {
 			},
 		},
 		{
+			key: "group_mode", section: "Behavior", label: "Group by", kind: kindEnum,
+			description: "Top-level list grouping: repo keeps repo groups in manual order; account clusters repo groups by their Claude account (personal/work) with a divider and tinted headers, and (like status sort) disables manual reordering while selected. The clustering itself is a no-op unless two or more accounts are present.",
+			get:         func(c *config.Config) string { return c.GetGroupMode() },
+			set: func(c *config.Config, v string) error {
+				c.GroupMode = v
+				return nil
+			},
+			options: func(c *config.Config) []string {
+				return []string{config.GroupModeRepo, config.GroupModeAccount}
+			},
+		},
+		{
 			key: "auto_update", section: "Behavior", label: "Auto-update", kind: kindEnum,
 			description: "Update check at startup: notify shows a hint, auto installs in the background, off disables.",
 			applyNote:   "applies on restart",
