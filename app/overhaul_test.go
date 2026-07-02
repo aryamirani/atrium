@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/session"
 	"strings"
 	"testing"
@@ -14,19 +15,22 @@ import (
 // TestWelcomeShowsOnce verifies the first-launch welcome appears once and then
 // never again within a process (the seen-bit handles persistence across runs).
 func TestWelcomeShowsOnce(t *testing.T) {
+	stubDetect(t, []config.Profile{{Name: "claude", Program: "claude"}})
 	h := newCreateFormHome(t)
 
-	h.maybeShowWelcome()
-	require.Equal(t, stateHelp, h.state, "welcome should appear on first check")
-	require.NotNil(t, h.textOverlay)
+	cmd := h.maybeShowWelcome()
+	require.Equal(t, stateWelcome, h.state, "welcome should appear on first check")
+	require.NotNil(t, h.welcomeOverlay)
 	require.True(t, h.welcomeChecked)
+	require.NotNil(t, cmd, "detection cmd should be returned")
 
-	// Simulate dismissing it, then check again: it must not reappear.
+	// Simulate dismissing it, then check again: it must not reappear this process.
 	h.state = stateDefault
-	h.textOverlay = nil
-	h.maybeShowWelcome()
+	h.welcomeOverlay = nil
+	cmd = h.maybeShowWelcome()
 	require.Equal(t, stateDefault, h.state, "welcome must not reappear")
-	require.Nil(t, h.textOverlay)
+	require.Nil(t, h.welcomeOverlay)
+	require.Nil(t, cmd)
 }
 
 // TestViewFitsTerminalBounds_ManyInstances guards the no-overflow invariant when

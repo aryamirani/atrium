@@ -68,6 +68,11 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		// narrow ones; it was the one overlay excluded from resize handling.
 		m.confirmationOverlay.SetWidth(confirmWidth(msg.Width))
 	}
+	if m.welcomeOverlay != nil {
+		// Same idiom as the confirmation dialog: keep the authored width on normal
+		// terminals, shrink so the box never spills off a narrow one.
+		m.welcomeOverlay.SetWidth(welcomeWidth(msg.Width))
+	}
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
@@ -89,11 +94,22 @@ func (m *home) menuVisible() bool {
 		// Both inline interactions teach their gestures on the bar, so it stays
 		// even when the always-on hint bar is turned off.
 		return true
-	case statePrompt, stateRename, stateConfirm, stateHelp, stateInfo, stateSettings:
+	case statePrompt, stateRename, stateConfirm, stateHelp, stateInfo, stateSettings, stateWelcome:
 		return false
 	default: // stateDefault (and the empty list)
 		return m.generatingName || m.appConfig.GetHintBar()
 	}
+}
+
+// welcomeWidth clamps the first-run welcome modal's box width so it never spills
+// off a narrow terminal, keeping its authored width on normal ones. Mirrors
+// confirmWidth; the welcome's copy is written a little wider than the dialog.
+func welcomeWidth(termWidth int) int {
+	const preferred = 54
+	if termWidth <= 0 {
+		return preferred
+	}
+	return max(20, min(preferred, termWidth-4))
 }
 
 // recomputeLayout re-runs the size calculation off the cached terminal size. Use
