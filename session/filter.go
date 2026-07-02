@@ -163,7 +163,10 @@ func prTerm(value string) term {
 // prefix, mirroring statusTerm. An empty value is a no-op (matches every session)
 // so a mid-typed "account:" never blinks the list empty. The literal value "none"
 // matches sessions with no resolved account (ClaudeAccountName == ""), mirroring
-// pr:none.
+// pr:none. Unlike pr:none this is an exact match, not a prefix match, and that is
+// intentional: account names are an open, user-defined namespace (unlike the
+// fixed pr: states), so "account:no" must prefix-match a real account (e.g.
+// "nova"), not silently be swallowed as meaning no-account.
 func accountTerm(value string) term {
 	return func(i *Instance) bool {
 		name := strings.ToLower(i.ClaudeAccountName())
