@@ -102,7 +102,7 @@ func (l *List) distinctAccountCount() int {
 // per-row state glyphs — are hidden) the non-zero counts are appended as badges ("◆N" in the
 // attention color, "●N" in the success color) so the group still signals what wants the user
 // without being expanded.
-func (l *List) renderRepoHeader(key string, collapsed bool, count, needsInput, unread int, selected, foldable bool) string {
+func (l *List) renderRepoHeader(key string, collapsed bool, count, needsInput, unread int, selected, foldable bool, accent lipgloss.TerminalColor) string {
 	th := theme.Current()
 	g := th.Glyphs
 	name := strings.ToUpper(key)
@@ -133,7 +133,11 @@ func (l *List) renderRepoHeader(key string, collapsed bool, count, needsInput, u
 			appendBadge(fmt.Sprintf("%s%d", g.Ready, unread), th.SuccessStyle())
 		}
 	}
-	header := repoHeaderStyle().Render(name)
+	headerStyle := repoHeaderStyle()
+	if accent != nil {
+		headerStyle = headerStyle.Foreground(accent)
+	}
+	header := headerStyle.Render(name)
 	// repoHeaderStyle pads the name with one space on each side; a selected header also gains
 	// a one-cell left accent bar, so reserve for both when sizing the trailing rule (hence -2,
 	// and an extra -1 when selected). The badge cluster sits in the padding's right space and
@@ -158,6 +162,25 @@ func (l *List) renderRepoHeader(key string, collapsed bool, count, needsInput, u
 		return selectedItemStyle().Render(line)
 	}
 	return line
+}
+
+// renderAccountDivider renders a labelled dim rule marking the start of an account
+// cluster in account-grouping mode. It is a non-selectable line, like the repo-header
+// rule. The label is the account name, or "no account" for the trailing empty bucket.
+func (l *List) renderAccountDivider(acct string) string {
+	label := acct
+	if label == "" {
+		label = "no account"
+	}
+	th := theme.Current()
+	// "── " + label + " " is the fixed prefix; the rule fills the remaining width.
+	ruleLen := l.renderer.width - runewidth.StringWidth("── "+label+" ")
+	if ruleLen < 0 {
+		ruleLen = 0
+	}
+	return th.FaintStyle().Render("── ") +
+		th.DimStyle().Render(label) +
+		th.FaintStyle().Render(" "+strings.Repeat("─", ruleLen))
 }
 
 // countInRange returns how many indices in the half-open range [start, end) satisfy

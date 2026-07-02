@@ -2,10 +2,12 @@ package ui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -110,4 +112,31 @@ func TestGroupMode_GroupMovesAreNoOpInAccountMode(t *testing.T) {
 	l.SetGroupMode("account")
 	l.SelectInstance(l.items[0])
 	require.False(t, l.MoveGroupDown(), "group moves are disabled while account-grouped")
+}
+
+func TestGroupMode_RendersAccountDividers(t *testing.T) {
+	l := acctList(t, "api|work", "sideproj|personal")
+	l.SetGroupMode("account")
+	out := ansi.Strip(l.String())
+	require.Contains(t, out, "── work", "work divider present")
+	require.Contains(t, out, "── personal", "personal divider present")
+}
+
+func TestGroupMode_SuppressesRowAccountBadgeWhenGrouped(t *testing.T) {
+	// Two work sessions in one repo + a personal repo → grouping active (2 accounts).
+	// No name here contains the substring "work" except the account name itself, so
+	// counting "work" cleanly separates row badges (repo mode) from the divider.
+	l := acctList(t, "api|work", "api|work", "sideproj|personal")
+	require.Equal(t, 2, strings.Count(ansi.Strip(l.String()), "work"), "two row badges in repo mode")
+	l.SetGroupMode("account")
+	// Badges suppressed; "work" now survives only in the single work divider.
+	require.Equal(t, 1, strings.Count(ansi.Strip(l.String()), "work"), "badges gone, one divider remains")
+}
+
+func TestGroupMode_NoDividerWithSingleAccount(t *testing.T) {
+	l := acctList(t, "api|work", "infra|work")
+	l.SetGroupMode("account")
+	out := ansi.Strip(l.String())
+	require.NotContains(t, out, "── work", "no divider when only one account")
+	require.Equal(t, 2, strings.Count(out, "work"), "row badges kept when grouping is a no-op")
 }
