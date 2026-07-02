@@ -1,8 +1,10 @@
 package overlay
 
 import (
+	"os"
 	"strings"
 
+	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -80,8 +82,23 @@ func (f *accountForm) applyFocus() {
 }
 
 // HandleKeyPress edits the focused field; returns true when the form is done
-// (submitted or canceled). The picker branch is added in Task 3.
+// (submitted or canceled). While the directory picker is open (f.picker != nil),
+// key presses are routed to it instead and the form itself never finishes.
 func (f *accountForm) HandleKeyPress(msg tea.KeyMsg) (done bool) {
+	if f.picker != nil {
+		switch msg.String() {
+		case "enter":
+			f.inputs[fldConfigDir].SetValue(f.picker.GetSelectedPath())
+			f.picker = nil
+		case "esc", "ctrl+c":
+			f.picker = nil
+		case "tab":
+			f.picker.CompletePrefix()
+		default:
+			f.picker.HandleKeyPress(msg)
+		}
+		return false
+	}
 	switch msg.String() {
 	case "enter":
 		f.submitted = true
@@ -89,6 +106,11 @@ func (f *accountForm) HandleKeyPress(msg tea.KeyMsg) (done bool) {
 	case "esc", "ctrl+c":
 		f.canceled = true
 		return true
+	case "ctrl+o":
+		if f.focus == fldConfigDir {
+			f.openPicker()
+		}
+		return false
 	case "tab":
 		f.focus = (f.focus + 1) % len(f.inputs)
 		f.applyFocus()
@@ -101,6 +123,38 @@ func (f *accountForm) HandleKeyPress(msg tea.KeyMsg) (done bool) {
 		f.inputs[f.focus], _ = f.inputs[f.focus].Update(msg)
 		return false
 	}
+}
+
+// openPicker opens the directory picker seeded with the current config-dir value
+// (resolved, so a "~"-prefixed value starts browsing from the real path) and the
+// home directory as a fallback candidate.
+func (f *accountForm) openPicker() {
+	cur := config.ClaudeAccount{ConfigDir: f.ConfigDir()}.ResolvedConfigDir()
+	p := NewDirectoryPicker([]string{cur, "~"})
+	p.SetLabel("Config dir")
+	p.SetVisibleRows(5)
+	p.Focus()
+	f.picker = p
+}
+
+// configDirHint reports whether the resolved config dir exists, cached by path so
+// the os.Stat runs only when the value changes (not on every render/keystroke).
+func (f *accountForm) configDirHint() string {
+	v := f.ConfigDir()
+	if v == "" {
+		return ""
+	}
+	resolved := config.ClaudeAccount{ConfigDir: v}.ResolvedConfigDir()
+	if !f.statDone || resolved != f.statPath {
+		info, err := os.Stat(resolved)
+		f.statOK = err == nil && info.IsDir()
+		f.statPath = resolved
+		f.statDone = true
+	}
+	if f.statOK {
+		return theme.Current().DimStyle().Render("  (exists)")
+	}
+	return theme.Current().DangerStyle().Render("  (not found)")
 }
 
 func (f *accountForm) Name() string            { return strings.TrimSpace(f.inputs[fldName].Value()) }
@@ -131,9 +185,13 @@ func parseList(s string) []string {
 	return out
 }
 
-// Render draws the field list. The picker sub-view + exists hint arrive in Task 3.
+// Render draws the field list, or the directory picker sub-view when it is open.
 func (f *accountForm) Render(inner int) string {
 	t := theme.Current()
+	if f.picker != nil {
+		f.picker.SetWidth(inner)
+		return t.DimStyle().Render("Browse config dir") + "\n\n" + f.picker.Render()
+	}
 	labels := []string{"Name", "Config dir", "Remote match", "Path match", "Token env"}
 	var b strings.Builder
 	for i := range f.inputs {
@@ -141,7 +199,11 @@ func (f *accountForm) Render(inner int) string {
 		if i == f.focus {
 			label = t.AccentStyle().Render(labels[i])
 		}
-		b.WriteString(label + "\n" + f.inputs[i].View() + "\n")
+		hint := ""
+		if i == fldConfigDir {
+			hint = f.configDirHint()
+		}
+		b.WriteString(label + hint + "\n" + f.inputs[i].View() + "\n")
 	}
 	return b.String()
 }
