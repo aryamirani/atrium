@@ -245,6 +245,7 @@ Create `ui/list_group_account_test.go`:
 package ui
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/ZviBaratz/atrium/session"
@@ -287,18 +288,9 @@ func splitSpec(s string) (repo, acct string) {
 func orderKeys(l *List) []string {
 	out := make([]string, 0, len(l.items))
 	for _, it := range l.items {
-		out = append(out, filepathBase(it.Path)+"|"+it.ClaudeAccountName())
+		out = append(out, filepath.Base(it.Path)+"|"+it.ClaudeAccountName())
 	}
 	return out
-}
-
-func filepathBase(p string) string {
-	for i := len(p) - 1; i >= 0; i-- {
-		if p[i] == '/' {
-			return p[i+1:]
-		}
-	}
-	return p
 }
 
 func TestGroupMode_ClustersByAccount(t *testing.T) {
@@ -328,7 +320,7 @@ func TestGroupMode_DoesNotOverwritePersistedOrder(t *testing.T) {
 	l.SetGroupMode("account")
 	persist := make([]string, 0, 3)
 	for _, it := range l.InstancesForPersist() {
-		persist = append(persist, filepathBase(it.Path)+"|"+it.ClaudeAccountName())
+		persist = append(persist, filepath.Base(it.Path)+"|"+it.ClaudeAccountName())
 	}
 	// Persisted (canonical/manual) order stays the interleaved input order.
 	require.Equal(t, []string{"api|work", "sideproj|personal", "infra|work"}, persist)
@@ -691,37 +683,38 @@ Now make account mode visible: an account divider at each cluster boundary, a ti
 
 - [ ] **Step 1: Write the failing render tests**
 
-Append to `ui/list_group_account_test.go`:
+First extend the file's import block (from Task 3) with `"strings"` and `"github.com/charmbracelet/x/ansi"`. Styled output carries ANSI escape codes between segments, so assert against `ansi.Strip(...)` (the plain text) — the pattern `ui/list_sanitize_test.go` already uses. Append:
 
 ```go
 func TestGroupMode_RendersAccountDividers(t *testing.T) {
 	l := acctList(t, "api|work", "sideproj|personal")
 	l.SetGroupMode("account")
-	out := l.String()
-	require.Contains(t, out, "work", "work divider label present")
-	require.Contains(t, out, "personal", "personal divider label present")
+	out := ansi.Strip(l.String())
+	require.Contains(t, out, "── work", "work divider present")
+	require.Contains(t, out, "── personal", "personal divider present")
 }
 
 func TestGroupMode_SuppressesRowAccountBadgeWhenGrouped(t *testing.T) {
-	l := acctList(t, "api|work", "sideproj|personal")
-	// In repo mode the per-row badge shows the account name.
-	require.Contains(t, l.String(), " work ", "row badge present in repo mode")
+	// Two work sessions in one repo + a personal repo → grouping active (2 accounts).
+	// No name here contains the substring "work" except the account name itself, so
+	// counting "work" cleanly separates row badges (repo mode) from the divider.
+	l := acctList(t, "api|work", "api|work", "sideproj|personal")
+	require.Equal(t, 2, strings.Count(ansi.Strip(l.String()), "work"), "two row badges in repo mode")
 	l.SetGroupMode("account")
-	out := l.String()
-	// The divider carries "work"; the per-row badge form " work " (padded chip) is gone.
-	require.NotContains(t, out, " work ", "row account badge suppressed when grouped")
+	// Badges suppressed; "work" now survives only in the single work divider.
+	require.Equal(t, 1, strings.Count(ansi.Strip(l.String()), "work"), "badges gone, one divider remains")
 }
 
 func TestGroupMode_NoDividerWithSingleAccount(t *testing.T) {
 	l := acctList(t, "api|work", "infra|work")
 	l.SetGroupMode("account")
-	out := l.String()
+	out := ansi.Strip(l.String())
 	require.NotContains(t, out, "── work", "no divider when only one account")
-	require.Contains(t, out, " work ", "row badge kept when grouping is a no-op")
+	require.Equal(t, 2, strings.Count(out, "work"), "row badges kept when grouping is a no-op")
 }
 ```
 
-Note on the badge assertion: the per-row badge is rendered as `" "+acct+" "` (a padded chip, `list_render.go:141`), so `" work "` matches the badge but not the divider label `── work ` (which has no leading space before `work`). Keep the divider label unpadded-left as specified in Step 4 so these assertions stay unambiguous.
+These discriminate badge from divider by count rather than by a spaced substring: the per-row badge (`" "+acct+" "`, `list_render.go:141`) contributes one `work` per row, the divider contributes exactly one `work` per cluster, and no repo/account name in these fixtures contains `work` as a substring.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
