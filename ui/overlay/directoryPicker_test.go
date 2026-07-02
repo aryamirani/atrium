@@ -273,3 +273,13 @@ func TestDirectoryPicker_FilterWeighsBasenameMatches(t *testing.T) {
 	assert.Equal(t, []string{exact, mid}, dp.visibleItems(),
 		"a candidate whose name matches the query outranks one matching mid-path")
 }
+
+func TestDirectoryPicker_SetLabel(t *testing.T) {
+	dp := NewDirectoryPicker(nil)
+	assert.Contains(t, dp.Render(), "Project:", "defaults to the Project label")
+
+	dp.SetLabel("Config dir")
+	out := dp.Render()
+	assert.Contains(t, out, "Config dir:", "label is configurable")
+	assert.NotContains(t, out, "Project", "old label is gone once overridden")
+}

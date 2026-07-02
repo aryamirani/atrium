@@ -45,13 +45,17 @@ type DirectoryPicker struct {
 	cachedDir   string
 	cachedNames []string
 	cacheValid  bool
+
+	// label names the field in the header; defaults to "Project" (session creation),
+	// overridable via SetLabel (e.g. "Config dir" for account editing).
+	label string
 }
 
 // NewDirectoryPicker creates a directory picker over the given candidate paths.
 // The caller should pass the default/contextual target first; the list is deduped
 // while preserving order and the cursor starts on the first entry.
 func NewDirectoryPicker(candidates []string) *DirectoryPicker {
-	return &DirectoryPicker{candidates: dedupePaths(candidates), visibleRows: defaultPickerRows}
+	return &DirectoryPicker{candidates: dedupePaths(candidates), visibleRows: defaultPickerRows, label: "Project"}
 }
 
 // dedupePaths drops empty and duplicate entries, preserving first-seen order.
@@ -103,6 +107,9 @@ func (dp *DirectoryPicker) SetVisibleRows(n int) {
 	}
 	dp.visibleRows = n
 }
+
+// SetLabel overrides the field label shown in the header (default "Project").
+func (dp *DirectoryPicker) SetLabel(label string) { dp.label = label }
 
 // Focus gives the directory picker focus.
 func (dp *DirectoryPicker) Focus() {
@@ -429,7 +436,7 @@ func (dp *DirectoryPicker) Render() string {
 	var s strings.Builder
 
 	if !dp.focused {
-		s.WriteString(dpLabelStyle().Render("Project: "))
+		s.WriteString(dpLabelStyle().Render(dp.label + ": "))
 		if sel := dp.GetSelectedPath(); sel != "" {
 			s.WriteString(dp.displayPath(sel))
 		} else {
@@ -441,7 +448,7 @@ func (dp *DirectoryPicker) Render() string {
 		return s.String()
 	}
 
-	s.WriteString(dpLabelStyle().Render("Project"))
+	s.WriteString(dpLabelStyle().Render(dp.label))
 	s.WriteString(dpFilterStyle().Render(" (filter/path: " + dp.filter + theme.Current().Glyphs.TextCursor + ")"))
 	s.WriteString(dp.selectionHint())
 	s.WriteString("\n\n")
