@@ -929,3 +929,23 @@ func TestGetProjectSearchDepth(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_AccountsRoundTrip(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ClaudeAccounts = []ClaudeAccount{
+		{Name: "work", ConfigDir: "~/.claude-work", RemoteMatches: []string{"github.com/acme"}, PathMatches: []string{"~/work/"}},
+		{Name: "personal", ConfigDir: ""}, // catch-all, empty dir
+	}
+	cfg.GHAccounts = []GHAccount{
+		{Name: "gh-work", ConfigDir: "~/.config/gh-work", RemoteMatches: []string{"github.com/acme"}, TokenEnv: []string{"GH_TOKEN", "GITHUB_TOKEN"}},
+	}
+	require.NoError(t, SaveConfig(cfg))
+
+	got := LoadConfig()
+	require.Len(t, got.ClaudeAccounts, 2)
+	assert.Equal(t, []string{"github.com/acme"}, got.ClaudeAccounts[0].RemoteMatches)
+	assert.Equal(t, "", got.ClaudeAccounts[1].ConfigDir)
+	assert.True(t, got.ClaudeAccounts[1].IsCatchAll())
+	require.Len(t, got.GHAccounts, 1)
+	assert.Equal(t, []string{"GH_TOKEN", "GITHUB_TOKEN"}, got.GHAccounts[0].TokenEnv)
+}

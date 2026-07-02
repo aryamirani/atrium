@@ -38,7 +38,10 @@ type AccountsOverlay struct {
 	width, height int
 
 	lastErr string
-	// form/editIndex (Task 5) and preview inputs (Task 6) are added later.
+
+	form      *accountForm
+	editIndex int // -1 = new (append); >=0 = replace at index
+	// preview inputs (Task 6) are added later.
 }
 
 func NewAccountsOverlay(cfg *config.Config) *AccountsOverlay {
@@ -87,8 +90,14 @@ func (o *AccountsOverlay) clampCursor() {
 }
 
 func (o *AccountsOverlay) HandleKeyPress(msg tea.KeyMsg) (closed bool, dirty bool) {
-	// Task 5 adds modeEdit/modeConfirmDelete; Task 6 adds modePreview.
-	return o.handleListKey(msg)
+	switch o.mode {
+	case modeEdit:
+		return o.handleEditKey(msg)
+	case modeConfirmDelete:
+		return o.handleConfirmKey(msg)
+	default:
+		return o.handleListKey(msg)
+	}
 }
 
 func (o *AccountsOverlay) handleListKey(msg tea.KeyMsg) (closed bool, dirty bool) {
@@ -111,6 +120,114 @@ func (o *AccountsOverlay) handleListKey(msg tea.KeyMsg) (closed bool, dirty bool
 		}
 		o.clampCursor()
 		o.lastErr = ""
+	case "n":
+		o.openForm(-1)
+	case "e", "enter":
+		if o.activeLen() > 0 {
+			o.openForm(o.cursor)
+		}
+	case "d":
+		if o.activeLen() > 0 {
+			o.mode = modeConfirmDelete
+		}
+	}
+	return false, false
+}
+
+func (o *AccountsOverlay) showToken() bool { return o.tab == tabGH }
+
+func (o *AccountsOverlay) openForm(index int) {
+	o.editIndex = index
+	o.lastErr = ""
+	if index < 0 {
+		o.form = newAccountForm(o.showToken(), "", "", "", "", "")
+	} else if o.tab == tabClaude {
+		a := o.cfg.ClaudeAccounts[index]
+		o.form = newAccountForm(false, a.Name, a.ConfigDir,
+			strings.Join(a.RemoteMatches, ", "), strings.Join(a.PathMatches, ", "), "")
+	} else {
+		a := o.cfg.GHAccounts[index]
+		o.form = newAccountForm(true, a.Name, a.ConfigDir,
+			strings.Join(a.RemoteMatches, ", "), strings.Join(a.PathMatches, ", "),
+			strings.Join(a.TokenEnv, ", "))
+	}
+	o.mode = modeEdit
+}
+
+func (o *AccountsOverlay) handleEditKey(msg tea.KeyMsg) (closed bool, dirty bool) {
+	if !o.form.HandleKeyPress(msg) {
+		return false, false
+	}
+	if o.form.Canceled() {
+		o.form = nil
+		o.mode = modeList
+		return false, false
+	}
+	// submitted → validate then commit
+	if err := o.validate(); err != "" {
+		o.lastErr = err
+		o.form.submitted = false // stay in edit
+		return false, false
+	}
+	o.commit()
+	o.form = nil
+	o.mode = modeList
+	o.lastErr = ""
+	return false, true
+}
+
+// validate rejects an empty or duplicate (within the active tab) name.
+func (o *AccountsOverlay) validate() string {
+	name := o.form.Name()
+	if name == "" {
+		return "name is required"
+	}
+	for i, r := range o.rows() {
+		if i != o.editIndex && r.name == name {
+			return "an account named '" + name + "' already exists"
+		}
+	}
+	return ""
+}
+
+func (o *AccountsOverlay) commit() {
+	if o.tab == tabClaude {
+		a := config.ClaudeAccount{
+			Name: o.form.Name(), ConfigDir: o.form.ConfigDir(),
+			RemoteMatches: o.form.RemoteMatches(), PathMatches: o.form.PathMatches(),
+		}
+		if o.editIndex < 0 {
+			o.cfg.ClaudeAccounts = append(o.cfg.ClaudeAccounts, a)
+		} else {
+			o.cfg.ClaudeAccounts[o.editIndex] = a
+		}
+		return
+	}
+	a := config.GHAccount{
+		Name: o.form.Name(), ConfigDir: o.form.ConfigDir(),
+		RemoteMatches: o.form.RemoteMatches(), PathMatches: o.form.PathMatches(),
+		TokenEnv: o.form.TokenEnv(),
+	}
+	if o.editIndex < 0 {
+		o.cfg.GHAccounts = append(o.cfg.GHAccounts, a)
+	} else {
+		o.cfg.GHAccounts[o.editIndex] = a
+	}
+}
+
+func (o *AccountsOverlay) handleConfirmKey(msg tea.KeyMsg) (closed bool, dirty bool) {
+	switch msg.String() {
+	case "y", "enter":
+		if o.tab == tabClaude {
+			o.cfg.ClaudeAccounts = append(o.cfg.ClaudeAccounts[:o.cursor], o.cfg.ClaudeAccounts[o.cursor+1:]...)
+		} else {
+			o.cfg.GHAccounts = append(o.cfg.GHAccounts[:o.cursor], o.cfg.GHAccounts[o.cursor+1:]...)
+		}
+		o.clampCursor()
+		o.mode = modeList
+		return false, true
+	case "n", "esc", "ctrl+c":
+		o.mode = modeList
 	}
 	return false, false
 }
@@ -135,8 +252,35 @@ func (o *AccountsOverlay) Render() string {
 		BorderForeground(t.Palette.Accent).
 		Padding(1, 2).
 		Width(o.boxWidth())
+	var body string
+	switch o.mode {
+	case modeEdit:
+		body = o.renderEdit()
+	default:
+		body = o.renderList()
+	}
 	title := t.OverlayTitleStyle().Render("Accounts")
-	return style.Render(title + "\n\n" + o.renderList())
+	return style.Render(title + "\n\n" + body)
+}
+
+func (o *AccountsOverlay) renderEdit() string {
+	t := theme.Current()
+	kind := "Claude"
+	if o.tab == tabGH {
+		kind = "GitHub"
+	}
+	verb := "New"
+	if o.editIndex >= 0 {
+		verb = "Edit"
+	}
+	var b strings.Builder
+	b.WriteString(t.AccentStyle().Render(verb+" "+kind+" account") + "\n\n")
+	b.WriteString(o.form.Render(o.inner()) + "\n")
+	if o.lastErr != "" {
+		b.WriteString(t.DangerStyle().Render(o.lastErr) + "\n")
+	}
+	b.WriteString(t.OverlayHintStyle().Render("tab/⇧tab field · ⌃o browse dir · ↵ save · esc cancel"))
+	return b.String()
 }
 
 func (o *AccountsOverlay) renderTabs() string {
@@ -184,8 +328,12 @@ func (o *AccountsOverlay) renderList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(t.OverlayHintStyle().Render("↑/↓ move · tab switch · n new · e edit · d delete") + "\n")
-	b.WriteString(t.OverlayHintStyle().Render("t test routing · esc close"))
+	if o.mode == modeConfirmDelete {
+		b.WriteString(theme.Current().DangerStyle().Render("Delete '" + o.rows()[o.cursor].name + "'?  y / n"))
+	} else {
+		b.WriteString(t.OverlayHintStyle().Render("↑/↓ move · tab switch · n new · e edit · d delete") + "\n")
+		b.WriteString(t.OverlayHintStyle().Render("t test routing · esc close"))
+	}
 	return b.String()
 }
 
