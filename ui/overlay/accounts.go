@@ -320,12 +320,28 @@ func (o *AccountsOverlay) renderPreview() string {
 	remote := strings.TrimSpace(o.previewInputs[0].Value())
 	path := strings.TrimSpace(o.previewInputs[1].Value())
 
-	name, cdir, _ := o.cfg.ResolveClaudeAccount(remote, path)
+	name, cdir, isDefault := o.cfg.ResolveClaudeAccount(remote, path)
 	claude := "inherit ambient env"
-	if name != "" && cdir != "" {
+	switch {
+	case name == "":
+		// 0 accounts configured.
+	case cdir != "":
 		claude = name + " (" + cdir + ")"
-	} else if name != "" && name != "default" {
+	case !isDefault:
+		// A rule matched a named account that has no config dir.
 		claude = name + " (inherit ambient env)"
+	case name != "default":
+		// A real catch-all with an empty dir (non-sentinel name) — show its name.
+		claude = name + " (inherit ambient env)"
+	default:
+		// Either the synthetic sentinel ("default", "", true) that
+		// ResolveClaudeAccount returns when nothing matches and there's no
+		// catch-all, or a real catch-all account literally named "default"
+		// with an empty config dir — the two are byte-identical in this
+		// return value and genuinely indistinguishable here, an inherent
+		// limitation of ResolveClaudeAccount's (name, dir, isDefault) shape.
+		// Rendering them the same is cosmetic only: both mean no
+		// CLAUDE_CONFIG_DIR is injected. claude keeps its initial value.
 	}
 
 	ghDir, ghTok := o.cfg.ResolveGHAccount(remote, path)

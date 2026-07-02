@@ -198,5 +198,73 @@ func TestAccountsOverlay_PreviewEmptyAndRuleOnlyInheritAmbient(t *testing.T) {
 	o2.SetSize(80, 24)
 	o2.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	typeInto(o2, "github.com/other")
-	assert.Contains(t, o2.renderPreview(), "inherit", "no-match with no catch-all inherits ambient")
+	out2 := o2.renderPreview()
+	assert.Contains(t, out2, "inherit", "no-match with no catch-all inherits ambient")
+	// The synthetic sentinel must render as the bare "inherit ambient env"
+	// line, never as if "default" were a real account name — a broken guard
+	// that dropped this distinction would still pass the Contains check above.
+	assert.NotContains(t, out2, "default (", "synthetic sentinel must not render as a named account")
+}
+
+// TestAccountsOverlay_PreviewCatchAllNamedShowsName protects the
+// show-the-name direction of the isDefault-aware guard: a real catch-all
+// account (no rules) with an empty config dir must still render its own
+// name, not collapse into the bare "inherit ambient env" sentinel line
+// (which renderPreview reserves for the synthetic no-catch-all case).
+func TestAccountsOverlay_PreviewCatchAllNamedShowsName(t *testing.T) {
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "personal"}, // catch-all: no rules, empty ConfigDir
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	typeInto(o, "github.com/unmatched")
+	assert.Contains(t, o.renderPreview(), "personal (inherit ambient env)")
+}
+
+// TestAccountsOverlay_PreviewRuleMatchedNamedDefaultShowsName is the case
+// Fix 1 corrects: a rule (not catch-all) matched an account that happens to
+// be named "default" with an empty config dir. ResolveClaudeAccount returns
+// isDefault=false here, distinguishing it from the synthetic sentinel, so
+// renderPreview must show the account's name rather than collapsing to the
+// bare "inherit ambient env" line.
+func TestAccountsOverlay_PreviewRuleMatchedNamedDefaultShowsName(t *testing.T) {
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "default", RemoteMatches: []string{"github.com/acme"}},
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	typeInto(o, "github.com/acme/x")
+	assert.Contains(t, o.renderPreview(), "default (inherit ambient env)")
+}
+
+// TestAccountsOverlay_PreviewPathFieldRoutes confirms tab-switch and the
+// Path input are wired into resolution, not just the Remote field.
+func TestAccountsOverlay_PreviewPathFieldRoutes(t *testing.T) {
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "pathacct", ConfigDir: "~/.claude-path", PathMatches: []string{"~/work/"}},
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyTab}) // focus: remote → path
+	typeInto(o, "~/work/x")
+	assert.Contains(t, o.renderPreview(), "pathacct", "typing into Path drives resolution")
+}
+
+// TestAccountsOverlay_PreviewGHMatchShowsDirAndToken covers the GH
+// real-match render branch (previously exercised only by the "no accounts"
+// and "0 accounts" paths, never an actual match).
+func TestAccountsOverlay_PreviewGHMatchShowsDirAndToken(t *testing.T) {
+	cfg := &config.Config{GHAccounts: []config.GHAccount{
+		{Name: "gh", ConfigDir: "~/.config/gh-work", RemoteMatches: []string{"github.com/acme"}, TokenEnv: []string{"GH_TOKEN"}},
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	typeInto(o, "github.com/acme")
+	out := o.renderPreview()
+	assert.Contains(t, out, "gh-work", "GitHub line shows the resolved config dir")
+	assert.Contains(t, out, "[GH_TOKEN]", "GitHub line shows the token env")
 }
