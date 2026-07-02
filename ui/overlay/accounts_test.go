@@ -129,6 +129,71 @@ func TestAccountsOverlay_CancelDiscardsEdits(t *testing.T) {
 	assert.Equal(t, []string{"github.com/acme"}, cfg.ClaudeAccounts[0].RemoteMatches)
 }
 
+// TestAccountsOverlay_EditInPlaceUnrenamedCommits covers the gap left by every
+// other committing test using 'n' (new, editIndex == -1): editing an EXISTING
+// account without renaming it must (a) let validate's self-exclusion
+// (`i != o.editIndex`) accept the unrenamed name instead of flagging it as a
+// dup of itself, and (b) commit via the replace-at-index branch
+// (`o.cfg.ClaudeAccounts[o.editIndex] = a`), not append.
+func TestAccountsOverlay_EditInPlaceUnrenamedCommits(t *testing.T) {
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "work", ConfigDir: "~/.claude-work"},
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}) // edit row 0
+	require.Equal(t, modeEdit, o.mode)
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyTab}) // Name → Config dir (cursor lands at end)
+	typeInto(o, "-2")                              // appends: "~/.claude-work" + "-2"
+
+	// Capture the commit keypress's dirty return directly (typeInto only sends
+	// rune keys, not Enter).
+	_, dirty := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+
+	assert.True(t, dirty)
+	require.Len(t, cfg.ClaudeAccounts, 1, "replaced in place, not appended")
+	assert.Equal(t, "work", cfg.ClaudeAccounts[0].Name, "unrenamed edit accepted by validate's self-exclusion")
+	assert.Equal(t, "~/.claude-work-2", cfg.ClaudeAccounts[0].ConfigDir)
+	assert.Equal(t, modeList, o.mode)
+}
+
+// TestAccountsOverlay_EditRenameToDuplicateRejected covers the other half of
+// validate's self-exclusion: renaming the account being edited TO a different
+// existing account's name must still be rejected (self-exclusion only forgives
+// the row's OWN prior name, not other rows). The Name field starts focused
+// with the seeded value ("work") and the cursor at the end; ctrl+u
+// (bubbles' DeleteBeforeCursor) clears everything before the cursor, i.e. the
+// whole field, so retyping doesn't concatenate into "workpersonal". Each step
+// asserts the in-progress form value directly (o.form.Name(), reachable since
+// this test lives in package overlay) so the test can't pass by accident if
+// clearing silently no-ops and the two names concatenate into something novel.
+func TestAccountsOverlay_EditRenameToDuplicateRejected(t *testing.T) {
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "work"}, {Name: "personal"},
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}) // edit row 0 ("work")
+	require.Equal(t, modeEdit, o.mode)
+	require.Equal(t, "work", o.form.Name(), "seeded from row 0")
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlU})
+	require.Equal(t, "", o.form.Name(), "field genuinely cleared, not a no-op")
+
+	typeInto(o, "personal")
+	require.Equal(t, "personal", o.form.Name(), "renamed to the OTHER account's name, not concatenated")
+
+	_, dirty := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+
+	assert.False(t, dirty)
+	assert.Equal(t, modeEdit, o.mode, "stays in edit on validation error")
+	assert.NotEmpty(t, o.lastErr)
+	assert.Equal(t, "work", cfg.ClaudeAccounts[0].Name, "rename to a duplicate rejected; original row untouched")
+}
+
 func TestAccountsOverlay_DeleteWithConfirm(t *testing.T) {
 	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{{Name: "a"}, {Name: "b"}}}
 	o := NewAccountsOverlay(cfg)
