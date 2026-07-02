@@ -6,6 +6,7 @@ import (
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -41,7 +42,9 @@ type AccountsOverlay struct {
 
 	form      *accountForm
 	editIndex int // -1 = new (append); >=0 = replace at index
-	// preview inputs (Task 6) are added later.
+
+	previewInputs []textinput.Model // [remote, path]
+	previewFocus  int
 }
 
 func NewAccountsOverlay(cfg *config.Config) *AccountsOverlay {
@@ -95,6 +98,8 @@ func (o *AccountsOverlay) HandleKeyPress(msg tea.KeyMsg) (closed bool, dirty boo
 		return o.handleEditKey(msg)
 	case modeConfirmDelete:
 		return o.handleConfirmKey(msg)
+	case modePreview:
+		return o.handlePreviewKey(msg)
 	default:
 		return o.handleListKey(msg)
 	}
@@ -130,6 +135,11 @@ func (o *AccountsOverlay) handleListKey(msg tea.KeyMsg) (closed bool, dirty bool
 		if o.activeLen() > 0 {
 			o.mode = modeConfirmDelete
 		}
+	case "t":
+		o.previewInputs = []textinput.Model{newFieldInput("remote URL (optional)"), newFieldInput("path (optional)")}
+		o.previewInputs[0].Focus()
+		o.previewFocus = 0
+		o.mode = modePreview
 	}
 	return false, false
 }
@@ -232,6 +242,26 @@ func (o *AccountsOverlay) handleConfirmKey(msg tea.KeyMsg) (closed bool, dirty b
 	return false, false
 }
 
+func (o *AccountsOverlay) handlePreviewKey(msg tea.KeyMsg) (closed bool, dirty bool) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		o.previewInputs = nil
+		o.mode = modeList
+	case "tab", "shift+tab":
+		o.previewFocus = (o.previewFocus + 1) % 2
+		for i := range o.previewInputs {
+			if i == o.previewFocus {
+				o.previewInputs[i].Focus()
+			} else {
+				o.previewInputs[i].Blur()
+			}
+		}
+	default:
+		o.previewInputs[o.previewFocus], _ = o.previewInputs[o.previewFocus].Update(msg)
+	}
+	return false, false
+}
+
 func (o *AccountsOverlay) boxWidth() int {
 	w := o.width - 2
 	if w > 64 {
@@ -256,6 +286,8 @@ func (o *AccountsOverlay) Render() string {
 	switch o.mode {
 	case modeEdit:
 		body = o.renderEdit()
+	case modePreview:
+		body = o.renderPreview()
 	default:
 		body = o.renderList()
 	}
@@ -280,6 +312,38 @@ func (o *AccountsOverlay) renderEdit() string {
 		b.WriteString(t.DangerStyle().Render(o.lastErr) + "\n")
 	}
 	b.WriteString(t.OverlayHintStyle().Render("tab/⇧tab field · ⌃o browse dir · ↵ save · esc cancel"))
+	return b.String()
+}
+
+func (o *AccountsOverlay) renderPreview() string {
+	t := theme.Current()
+	remote := strings.TrimSpace(o.previewInputs[0].Value())
+	path := strings.TrimSpace(o.previewInputs[1].Value())
+
+	name, cdir, _ := o.cfg.ResolveClaudeAccount(remote, path)
+	claude := "inherit ambient env"
+	if name != "" && cdir != "" {
+		claude = name + " (" + cdir + ")"
+	} else if name != "" && name != "default" {
+		claude = name + " (inherit ambient env)"
+	}
+
+	ghDir, ghTok := o.cfg.ResolveGHAccount(remote, path)
+	gh := "inherit ambient env"
+	if ghDir != "" {
+		gh = ghDir
+		if len(ghTok) > 0 {
+			gh += " [" + strings.Join(ghTok, ", ") + "]"
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(t.AccentStyle().Render("Test routing") + "\n\n")
+	b.WriteString(t.DimStyle().Render("Remote URL") + "\n" + o.previewInputs[0].View() + "\n")
+	b.WriteString(t.DimStyle().Render("Path") + "\n" + o.previewInputs[1].View() + "\n\n")
+	b.WriteString(t.DimStyle().Render("Claude → ") + claude + "\n")
+	b.WriteString(t.DimStyle().Render("GitHub → ") + gh + "\n\n")
+	b.WriteString(t.OverlayHintStyle().Render("tab switch field · esc back"))
 	return b.String()
 }
 

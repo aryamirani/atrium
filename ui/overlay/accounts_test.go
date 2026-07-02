@@ -162,3 +162,41 @@ func TestAccountsOverlay_GHCommitIncludesTokenEnv(t *testing.T) {
 	require.Len(t, cfg.GHAccounts, 1)
 	assert.Equal(t, []string{"GH_TOKEN"}, cfg.GHAccounts[0].TokenEnv)
 }
+
+func TestAccountsOverlay_PreviewResolves(t *testing.T) {
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "work", ConfigDir: "~/.claude-work", RemoteMatches: []string{"github.com/acme"}},
+		{Name: "personal", ConfigDir: "~/.claude"}, // catch-all
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	require.Equal(t, modePreview, o.mode)
+	typeInto(o, "github.com/acme/widgets")
+	assert.Contains(t, o.renderPreview(), "work", "remote matches the work account")
+
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+	assert.Equal(t, modeList, o.mode)
+}
+
+func TestAccountsOverlay_PreviewEmptyAndRuleOnlyInheritAmbient(t *testing.T) {
+	// 0 accounts
+	o := NewAccountsOverlay(&config.Config{})
+	o.SetSize(80, 24)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	typeInto(o, "github.com/acme")
+	out := o.renderPreview()
+	assert.Contains(t, out, "inherit")
+	assert.NotContains(t, out, "Claude → \n", "no blank name")
+
+	// rule-only (no catch-all), unmatched input
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "work", RemoteMatches: []string{"github.com/acme"}},
+	}}
+	o2 := NewAccountsOverlay(cfg)
+	o2.SetSize(80, 24)
+	o2.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	typeInto(o2, "github.com/other")
+	assert.Contains(t, o2.renderPreview(), "inherit", "no-match with no catch-all inherits ambient")
+}
