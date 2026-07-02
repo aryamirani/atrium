@@ -72,6 +72,9 @@ func TestStateMachine_BackgroundMessagesNeverPanic(t *testing.T) {
 		{"settings", stateSettings, func(h *home, _ *session.Instance) {
 			h.settingsOverlay = overlay.NewSettingsOverlay(h.appConfig)
 		}},
+		{"accounts", stateAccounts, func(h *home, _ *session.Instance) {
+			h.accountsOverlay = overlay.NewAccountsOverlay(h.appConfig)
+		}},
 		{"filter", stateFilter, nil},
 		{"hints", stateHints, nil},
 		{"visual", stateVisual, nil},

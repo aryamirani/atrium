@@ -386,6 +386,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.handleSettingsState(msg)
 	}
 
+	// Accounts, like the other overlay states, must run before the global quit
+	// handling so q/esc and printable keys reach the panel.
+	if m.state == stateAccounts {
+		return m.handleAccountsState(msg)
+	}
+
 	// Filter must run before the global quit handling so that printable keys and Esc
 	// update the filter instead of quitting.
 	if m.state == stateFilter {
@@ -449,6 +455,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeySettings:
 		m.state = stateSettings
 		m.settingsOverlay = overlay.NewSettingsOverlay(m.appConfig)
+		m.recomputeLayout() // the hint bar hides behind the modal; panes reclaim its row
+		return m, tea.WindowSize()
+	case keys.KeyAccounts:
+		m.state = stateAccounts
+		m.accountsOverlay = overlay.NewAccountsOverlay(m.appConfig)
 		m.recomputeLayout() // the hint bar hides behind the modal; panes reclaim its row
 		return m, tea.WindowSize()
 	case keys.KeyPrompt:

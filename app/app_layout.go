@@ -63,6 +63,11 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		// its rows to fit short terminals.
 		m.settingsOverlay.SetSize(msg.Width, msg.Height)
 	}
+	if m.accountsOverlay != nil {
+		// Pass the full terminal size: the panel caps its own width and windows
+		// its rows to fit short terminals.
+		m.accountsOverlay.SetSize(msg.Width, msg.Height)
+	}
 	if m.confirmationOverlay != nil {
 		// The dialog keeps its classic width on normal terminals and shrinks with
 		// narrow ones; it was the one overlay excluded from resize handling.
@@ -94,7 +99,7 @@ func (m *home) menuVisible() bool {
 		// Both inline interactions teach their gestures on the bar, so it stays
 		// even when the always-on hint bar is turned off.
 		return true
-	case statePrompt, stateRename, stateConfirm, stateHelp, stateInfo, stateSettings, stateWelcome:
+	case statePrompt, stateRename, stateConfirm, stateHelp, stateInfo, stateSettings, stateWelcome, stateAccounts:
 		return false
 	default: // stateDefault (and the empty list)
 		return m.generatingName || m.appConfig.GetHintBar()
