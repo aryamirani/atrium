@@ -128,6 +128,8 @@ const (
 	// stateWelcome is the interactive first-launch setup modal: pick a default
 	// agent from the ones detected on PATH, then start the first session.
 	stateWelcome
+	// stateAccounts is the Claude/GitHub account manager modal.
+	stateAccounts
 )
 
 type home struct {
@@ -259,6 +261,9 @@ type home struct {
 	// settingsOverlay is the in-TUI configuration panel. It edits appConfig in
 	// place; applySettingChange persists and live-applies each change.
 	settingsOverlay *overlay.SettingsOverlay
+	// accountsOverlay is the in-TUI Claude/GitHub account manager (stateAccounts).
+	// It edits appConfig in place; handleAccountsState persists each change.
+	accountsOverlay *overlay.AccountsOverlay
 	// welcomeOverlay is the interactive first-run setup modal (stateWelcome).
 	welcomeOverlay *overlay.WelcomeOverlay
 	// pathWarned guards the one-shot startup warning that the effective program
@@ -412,6 +417,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("welcome overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.welcomeOverlay.Render(), mainView, true)
+	} else if m.state == stateAccounts {
+		if m.accountsOverlay == nil {
+			log.ErrorLog.Printf("accounts overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.accountsOverlay.Render(), mainView, true)
 	}
 
 	return mainView

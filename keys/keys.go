@@ -85,6 +85,8 @@ const (
 
 	KeySettings // Open the settings panel to view and edit the configuration
 
+	KeyAccounts // Open the accounts panel to manage Claude/GitHub accounts
+
 	// KeyAttachToggle mirrors the in-session detach key: on the list it attaches
 	// the selected session, making ctrl+q a symmetric attach/detach toggle.
 	KeyAttachToggle
@@ -164,6 +166,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"2":          KeyTabDiff,
 	"3":          KeyTabTerminal,
 	",":          KeySettings,
+	"@":          KeyAccounts,
 	"ctrl+q":     KeyAttachToggle,
 	"f":          KeyHints,
 	"a":          KeyApprove,
@@ -346,6 +349,10 @@ var GlobalKeyBindings = map[KeyName]key.Binding{
 	KeySettings: key.NewBinding(
 		key.WithKeys(","),
 		key.WithHelp(",", "settings"),
+	),
+	KeyAccounts: key.NewBinding(
+		key.WithKeys("@"),
+		key.WithHelp("@", "accounts"),
 	),
 	KeyAttachToggle: key.NewBinding(
 		key.WithKeys("ctrl+q"),
