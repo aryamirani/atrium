@@ -375,3 +375,43 @@ func TestAccountsOverlay_ListWindowsRowsOnShortTerminal(t *testing.T) {
 	assert.Contains(t, out, "acct25", "the selected row stays visible")
 	assert.NotContains(t, out, "acct00", "rows above the window scroll off")
 }
+
+// Catch-all badges are order-dependent (first rule-less account = "default",
+// later ones = "unreachable"). When the list is windowed and the first rule-less
+// account has scrolled off the top, a later rule-less account still in view must
+// keep reading "catch-all (unreachable)" — never "default". This guards the
+// pre-scan that carries badge state across rows above the window.
+func TestAccountsOverlay_CatchAllBadgeSurvivesWindowScroll(t *testing.T) {
+	cfg := &config.Config{}
+	for i := 0; i < 30; i++ {
+		acct := config.ClaudeAccount{
+			Name:          fmt.Sprintf("acct%02d", i),
+			ConfigDir:     "~/.claude",
+			RemoteMatches: []string{fmt.Sprintf("github.com/org%02d", i)},
+		}
+		switch i {
+		case 0:
+			acct = config.ClaudeAccount{Name: "firstcatch", ConfigDir: "~/.claude"} // rule-less → "default"
+		case 15:
+			acct = config.ClaudeAccount{Name: "latercatch", ConfigDir: "~/.claude"} // rule-less → "unreachable"
+		}
+		cfg.ClaudeAccounts = append(cfg.ClaudeAccounts, acct)
+	}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24) // budget 12 rows
+
+	for i := 0; i < 20; i++ {
+		o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	require.Equal(t, 20, o.cursorIndex())
+
+	// Window is [9,21): the first catch-all (index 0) scrolled off; the later one
+	// (index 15) is still visible.
+	out := o.Render()
+	require.NotContains(t, out, "firstcatch", "the first catch-all scrolled off the top")
+	require.Contains(t, out, "latercatch", "the later catch-all is in the window")
+	assert.Contains(t, out, "unreachable", "the later rule-less account still reads unreachable")
+	assert.NotContains(t, out, "default",
+		"the only 'default' badge belonged to the scrolled-off first catch-all; a broken "+
+			"pre-scan would wrongly render the visible later catch-all as 'default'")
+}
