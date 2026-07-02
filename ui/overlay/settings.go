@@ -300,6 +300,29 @@ func newSettingRows(cfg *config.Config) []settingRow {
 			},
 		},
 		{
+			key: "group_mode", section: "Behavior", label: "Account clustering", kind: kindEnum,
+			description: "Off (the default) keeps the list grouped by repo. On adds a top-level cluster by Claude account above the repo groups — a divider and tinted headers per account. The clustering is a visual no-op unless two or more accounts are present, but, like the status sort, turning it on disables manual reordering (J/K and { }).",
+			// Display value is off/on; the stored config value stays repo/account, so
+			// config.json and a future third grouping axis keep their vocabulary.
+			get: func(c *config.Config) string {
+				if c.GetGroupMode() == config.GroupModeAccount {
+					return "on"
+				}
+				return "off"
+			},
+			set: func(c *config.Config, v string) error {
+				if v == "on" {
+					c.GroupMode = config.GroupModeAccount
+				} else {
+					c.GroupMode = config.GroupModeRepo
+				}
+				return nil
+			},
+			options: func(c *config.Config) []string {
+				return []string{"off", "on"}
+			},
+		},
+		{
 			key: "auto_update", section: "Behavior", label: "Auto-update", kind: kindEnum,
 			description: "Update check at startup: notify shows a hint, auto installs in the background, off disables.",
 			applyNote:   "applies on restart",

@@ -222,6 +222,21 @@ func (c *Config) GetSessionSort() string {
 	}
 }
 
+// GetGroupMode returns the normalized top-level grouping mode: GroupModeAccount,
+// or GroupModeRepo for a nil Config, an empty value, or anything unrecognized — a
+// typo must never silently regroup the list.
+func (c *Config) GetGroupMode() string {
+	if c == nil {
+		return GroupModeRepo
+	}
+	switch c.GroupMode {
+	case GroupModeAccount:
+		return c.GroupMode
+	default:
+		return GroupModeRepo
+	}
+}
+
 // GetBranchPrefix returns the configured git-branch prefix (e.g. "zvi/"), or ""
 // for a nil Config. The list view strips this prefix from each session's branch
 // when rendering, since it repeats identically on every row and carries no

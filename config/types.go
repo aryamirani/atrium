@@ -31,6 +31,21 @@ const (
 	SessionSortStatus = "status"
 )
 
+// GroupMode values (Config.GroupMode). See GetGroupMode for normalization. The
+// mode is a top-level grouping axis, orthogonal to SessionSort's within-group order.
+const (
+	// GroupModeRepo is the default: repo groups in manual order, exactly as before
+	// this key existed.
+	GroupModeRepo = "repo"
+	// GroupModeAccount clusters repo groups by their sessions' Claude account
+	// (personal/work), with a divider and tinted headers. The clustering is a
+	// visual no-op when fewer than two distinct accounts are present (e.g.
+	// ClaudeAccounts unconfigured); like the status sort, though, the mode disables
+	// manual reordering (J/K and { }) whenever it is selected, since the view — not
+	// the manual order — owns placement.
+	GroupModeAccount = "account"
+)
+
 // Profile represents a named program configuration
 type Profile struct {
 	Name    string `json:"name"`
@@ -252,6 +267,13 @@ type Config struct {
 	// Loading, Paused). Empty or unrecognized values normalize to "creation"
 	// (GetSessionSort). The group order itself stays manual ({ / }) in all modes.
 	SessionSort string `json:"session_sort,omitempty"`
+	// GroupMode selects the top-level list grouping: "repo" (default — repo groups
+	// in manual order) or "account" (cluster repo groups by their sessions' Claude
+	// account). Empty or unrecognized values normalize to "repo" (GetGroupMode).
+	// Only meaningful when ClaudeAccounts are configured; with fewer than two
+	// distinct accounts it renders identically to "repo" — but, like the status
+	// sort, selecting it disables manual reordering regardless of account count.
+	GroupMode string `json:"group_mode,omitempty"`
 	// SmartDispatchAuto, when true, lets a confident deterministic project match from the
 	// smart-dispatch input (the `i` key) create the session immediately, skipping the
 	// confirmation form. Off (nil) by default: the pre-filled form always opens first.

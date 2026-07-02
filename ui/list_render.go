@@ -36,6 +36,10 @@ type InstanceRenderer struct {
 	// so it tracks an in-session switch; it is drawn for any non-default mode but
 	// never for a detected "default" or no flag.
 	permissionIndicator string
+	// hideAccountBadge suppresses the per-row Claude-account badge. Set by List.String
+	// when account grouping is visually active (mode == account and >1 account), so the
+	// cluster divider + tinted header carry the identity instead of every row repeating it.
+	hideAccountBadge bool
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
@@ -133,7 +137,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected, marked
 	// Per-session Claude account badge: accent for a routed account, dim for the
 	// default/fallback. Shown only when an account was resolved (empty = feature
 	// off / legacy session).
-	if acct := i.ClaudeAccountName(); acct != "" {
+	if acct := i.ClaudeAccountName(); acct != "" && !r.hideAccountBadge {
 		acctColor := th.Palette.Accent
 		if i.ClaudeAccountIsDefault() {
 			acctColor = th.Palette.FgDim
@@ -319,6 +323,12 @@ func (l *List) String() string {
 	distinct := l.distinctRepoCount()
 	showRepos := distinct > 0
 	foldable := distinct > 1
+	accountGroupingVisible := l.accountGrouped() && l.distinctAccountCount() > 1
+	// Default to showing row badges; the row loop suppresses each one only when it is
+	// redundant with the cluster it renders under (see below).
+	l.renderer.hideAccountBadge = false
+	haveAcct := false
+	prevAcct := ""
 	first := true
 	for i := 0; i < len(l.items); {
 		key := repoKey(l.items[i])
@@ -338,11 +348,27 @@ func (l *List) String() string {
 		}
 		first = false
 
+		if accountGroupingVisible {
+			acct := accountKey(l.items[start])
+			if !haveAcct || acct != prevAcct {
+				appendBlock(l.renderAccountDivider(acct))
+			}
+			haveAcct = true
+			prevAcct = acct
+		}
+
 		if showRepos {
 			headerSelected := collapsed && l.selectedIdx == start
 			ni := l.groupNeedsInputCount(start, end)
 			ur := l.groupUnreadCount(start, end)
-			at := appendBlock(zone.Mark(listHeaderZoneID(key), l.renderRepoHeader(key, collapsed, end-start, ni, ur, headerSelected, foldable)))
+			var accent lipgloss.TerminalColor
+			if accountGroupingVisible {
+				anchor := l.items[start]
+				if anchor.ClaudeAccountName() != "" && !anchor.ClaudeAccountIsDefault() {
+					accent = theme.Current().Palette.Accent
+				}
+			}
+			at := appendBlock(zone.Mark(listHeaderZoneID(key), l.renderRepoHeader(key, collapsed, end-start, ni, ur, headerSelected, foldable, accent)))
 			if headerSelected {
 				selStart, selH = at, len(lines)-at
 			}
@@ -351,6 +377,14 @@ func (l *List) String() string {
 			for j := start; j < end; j++ {
 				if l.isHidden(j) {
 					continue
+				}
+				// Suppress the per-row account badge only when it is redundant with the
+				// cluster this row renders under — i.e. its account matches the block
+				// anchor's, the one the divider and tinted header already show. A session
+				// whose account diverges from its repo anchor (a mixed-account repo) keeps
+				// its badge, so the divider/tint never silently mislabel its identity.
+				if accountGroupingVisible {
+					l.renderer.hideAccountBadge = accountKey(l.items[j]) == accountKey(l.items[start])
 				}
 				at := appendBlock(zone.Mark(listRowZoneID(l.items[j]), l.renderer.Render(l.items[j], j+1, j == l.selectedIdx, l.IsMarked(l.items[j]))))
 				if j == l.selectedIdx {

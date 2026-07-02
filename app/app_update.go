@@ -552,15 +552,22 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.pauseSelected()
 	case keys.KeyMoveUp, keys.KeyMoveDown:
 		if !m.list.ManualReorderEnabled() {
-			return m, m.handleInfoNotice("manual reorder only in creation sort")
+			return m, m.handleInfoNotice("manual reorder is off while sorting or grouping by account")
 		}
 		if name == keys.KeyMoveUp {
 			return m.moveAndPersist(m.list.MoveUp)
 		}
 		return m.moveAndPersist(m.list.MoveDown)
-	case keys.KeyMoveGroupUp:
-		return m.moveAndPersist(m.list.MoveGroupUp)
-	case keys.KeyMoveGroupDown:
+	case keys.KeyMoveGroupUp, keys.KeyMoveGroupDown:
+		// Whole-group moves stay available under a status sort but not while account-
+		// grouped, where the clustering owns block order; surface a hint there rather
+		// than a silent no-op (mirroring the J/K feedback above).
+		if m.list.AccountGrouped() {
+			return m, m.handleInfoNotice("group reorder is off while grouping by account")
+		}
+		if name == keys.KeyMoveGroupUp {
+			return m.moveAndPersist(m.list.MoveGroupUp)
+		}
 		return m.moveAndPersist(m.list.MoveGroupDown)
 	case keys.KeyCollapse:
 		if m.list.Collapse() {
