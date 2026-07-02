@@ -139,6 +139,51 @@ func TestGroupModeChange_ClustersList(t *testing.T) {
 		"the two work-account repos (api, infra) must be adjacent after clustering")
 }
 
+// accountGroupedHome builds a home whose list is in account mode with two distinct
+// accounts, so account grouping and its reorder guards are live. The menu is visible
+// in stateDefault (the hint bar defaults on), so reorder hints land on it.
+func accountGroupedHome(t *testing.T) *home {
+	t.Helper()
+	h := newCreateFormHome(t)
+	for _, spec := range []struct{ repo, acct string }{{"api", "work"}, {"infra", "personal"}} {
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: spec.repo, Path: "/tmp/" + spec.repo, Program: "echo",
+		})
+		require.NoError(t, err)
+		inst.SetClaudeAccount(spec.acct, "", false)
+		h.list.AddInstance(inst)
+	}
+	h.list.SetGroupMode("account")
+	return h
+}
+
+// Pressing { (whole-group move) while account-grouped must explain itself with a
+// hint rather than silently no-op — clustering owns block order there — mirroring
+// the J/K feedback. (Group moves stay available under a status sort, so this hint is
+// account-specific.)
+func TestGroupMode_GroupMoveKeyExplainsInAccountMode(t *testing.T) {
+	h := accountGroupedHome(t)
+	before := append([]*session.Instance(nil), h.list.GetInstances()...)
+
+	pressKey(h, '{') // KeyMoveGroupUp
+
+	require.True(t, h.menu.HasNotice(), "a group move while account-grouped must explain itself")
+	assert.Contains(t, h.menu.String(), "grouping by account")
+	assert.Equal(t, before, h.list.GetInstances(), "the group move stays a no-op")
+}
+
+// The J/K reorder-disabled hint names account grouping as a cause, not only the sort
+// mode, so a user in the default creation sort but account-grouped gets accurate
+// guidance about why reordering is off.
+func TestGroupMode_ManualMoveKeyHintNamesAccountGrouping(t *testing.T) {
+	h := accountGroupedHome(t)
+
+	pressKey(h, 'K') // KeyMoveUp
+
+	require.True(t, h.menu.HasNotice(), "manual reorder is disabled while account-grouped")
+	assert.Contains(t, h.menu.String(), "grouping by account")
+}
+
 func TestSettingsPanel_HidesHintBarLikeOtherModals(t *testing.T) {
 	resetSettingsTestState(t)
 	h := newSettingsTestHome()

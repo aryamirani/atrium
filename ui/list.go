@@ -61,9 +61,16 @@ func repoKey(i *session.Instance) string {
 // decision to drift from what is actually displayed — the counter could fall out of sync
 // during churn, since it was only updated when an instance was started.
 func (l *List) distinctRepoCount() int {
-	seen := make(map[string]struct{}, len(l.items))
-	for _, item := range l.items {
-		seen[repoKey(item)] = struct{}{}
+	return distinctCount(l.items, repoKey)
+}
+
+// distinctCount returns how many distinct keys key(item) yields across items. It
+// backs distinctRepoCount and distinctAccountCount, which differ only in the key
+// function they project each item through.
+func distinctCount(items []*session.Instance, key func(*session.Instance) string) int {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		seen[key(item)] = struct{}{}
 	}
 	return len(seen)
 }
@@ -81,11 +88,7 @@ func accountKey(i *session.Instance) string {
 // grouping visuals so "account" mode with fewer than two accounts renders like repo
 // mode.
 func (l *List) distinctAccountCount() int {
-	seen := make(map[string]struct{}, len(l.items))
-	for _, item := range l.items {
-		seen[accountKey(item)] = struct{}{}
-	}
-	return len(seen)
+	return distinctCount(l.items, accountKey)
 }
 
 // renderRepoHeader renders a repo group header as an optional fold marker, the uppercased name

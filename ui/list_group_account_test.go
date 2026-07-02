@@ -281,3 +281,30 @@ func TestGroupMode_MoveGroupUpNoOpInAccountMode(t *testing.T) {
 	l.SelectInstance(l.items[2])
 	require.False(t, l.MoveGroupUp(), "group moves are disabled while account-grouped")
 }
+
+// A session whose account diverges from its repo anchor (a mixed-account repo)
+// keeps its per-row account badge, so the block's divider and tinted header — which
+// speak for the anchor's account — never silently mislabel it. Badge suppression is
+// per-row (redundant only when the row matches its cluster), not a global toggle.
+func TestGroupMode_KeepsBadgeForAccountDivergingFromRepoAnchor(t *testing.T) {
+	// api holds a work session (the block anchor) then a personal one; infra is
+	// personal. No title/repo contains "personal", so every "personal" in the output
+	// is an account signal: the personal divider label + the diverging row's badge.
+	l := acctList(t, "api|work", "api|personal", "infra|personal")
+	l.SetGroupMode("account")
+	out := ansi.Strip(l.String())
+	require.Equal(t, 2, strings.Count(out, "personal"),
+		"the personal session under the work-clustered api block keeps its badge")
+}
+
+// In account-only mode (no status sort) the per-tick ApplySort must never reorder:
+// clustering keys on each session's account and repo, not its status, so a status
+// change leaves the order untouched and ApplySort reports no work done.
+func TestGroupMode_ApplySortInertWhenAccountOnly(t *testing.T) {
+	l := acctList(t, "api|work", "infra|personal")
+	l.SetGroupMode("account")
+	before := append([]*session.Instance(nil), l.items...)
+	l.items[1].SetStatus(session.NeedsInput) // would float to the top under a status sort
+	require.False(t, l.ApplySort(), "account-only mode has no status sort to re-apply")
+	require.Equal(t, before, l.items, "a status change does not reorder an account-only view")
+}

@@ -324,7 +324,9 @@ func (l *List) String() string {
 	showRepos := distinct > 0
 	foldable := distinct > 1
 	accountGroupingVisible := l.accountGrouped() && l.distinctAccountCount() > 1
-	l.renderer.hideAccountBadge = accountGroupingVisible
+	// Default to showing row badges; the row loop suppresses each one only when it is
+	// redundant with the cluster it renders under (see below).
+	l.renderer.hideAccountBadge = false
 	haveAcct := false
 	prevAcct := ""
 	first := true
@@ -375,6 +377,14 @@ func (l *List) String() string {
 			for j := start; j < end; j++ {
 				if l.isHidden(j) {
 					continue
+				}
+				// Suppress the per-row account badge only when it is redundant with the
+				// cluster this row renders under — i.e. its account matches the block
+				// anchor's, the one the divider and tinted header already show. A session
+				// whose account diverges from its repo anchor (a mixed-account repo) keeps
+				// its badge, so the divider/tint never silently mislabel its identity.
+				if accountGroupingVisible {
+					l.renderer.hideAccountBadge = accountKey(l.items[j]) == accountKey(l.items[start])
 				}
 				at := appendBlock(zone.Mark(listRowZoneID(l.items[j]), l.renderer.Render(l.items[j], j+1, j == l.selectedIdx, l.IsMarked(l.items[j]))))
 				if j == l.selectedIdx {

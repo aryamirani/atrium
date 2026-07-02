@@ -40,6 +40,15 @@ func (l *List) ManualReorderEnabled() bool {
 	return !l.viewActive()
 }
 
+// AccountGrouped reports whether the list is clustering by Claude account. The app
+// uses it to explain why whole-group reorder ({ / }) is inert: block order is owned
+// by the clustering there, not the manual order. Group moves stay available under a
+// status sort (see syncManualGroupOrder), so this is a narrower query than
+// ManualReorderEnabled, which also bars J/K.
+func (l *List) AccountGrouped() bool {
+	return l.accountGrouped()
+}
+
 // InstancesForPersist returns the instances in canonical (manual) order so a view
 // transform never overwrites the user's manual order on disk. With no view active
 // the canonical order is simply items.
@@ -112,9 +121,17 @@ func (l *List) SetGroupMode(mode string) {
 	}
 }
 
-// ApplySort re-derives the view from the latest statuses; the metadata poll calls it
-// each tick. No-op with no view active; returns whether the order changed.
+// ApplySort re-derives the status-sensitive view from the latest statuses; the
+// metadata poll calls it each tick. Only the within-group status sort shifts as
+// statuses update, so this is a no-op unless a sort mode is active: account
+// clustering keys on each session's account and repo, both fixed at creation and
+// changed only via Add/Kill (which rebuild the view directly), so re-clustering on
+// every tick would allocate and recompute a result that never moved. Returns whether
+// the order changed.
 func (l *List) ApplySort() bool {
+	if !l.sortActive() {
+		return false
+	}
 	return l.rebuildView()
 }
 
@@ -148,23 +165,35 @@ func (l *List) rebuildView() bool {
 	return true
 }
 
-// sortWithinRepoGroups stable-sorts each contiguous repo block of items by action-
-// priority (NeedsInput first, then unread Ready, …), leaving block order and
-// membership untouched. Extracted from the former applySort.
-func sortWithinRepoGroups(items []*session.Instance) {
+// forEachRepoBlock calls fn once per maximal contiguous run of items sharing a
+// repoKey — the repo-block primitive the manual invariant guarantees. It is the one
+// definition of "walk the repo blocks left to right"; sortWithinRepoGroups and
+// clusterByAccount both build on it so the block-detection logic lives in a single
+// place. (groupBounds walks outward from a known index, and String's render loop
+// interleaves rendering, so those keep their own traversal.)
+func forEachRepoBlock(items []*session.Instance, fn func(start, end int)) {
 	for start := 0; start < len(items); {
 		key := repoKey(items[start])
 		end := start + 1
 		for end < len(items) && repoKey(items[end]) == key {
 			end++
 		}
+		fn(start, end)
+		start = end
+	}
+}
+
+// sortWithinRepoGroups stable-sorts each contiguous repo block of items by action-
+// priority (NeedsInput first, then unread Ready, …), leaving block order and
+// membership untouched. Extracted from the former applySort.
+func sortWithinRepoGroups(items []*session.Instance) {
+	forEachRepoBlock(items, func(start, end int) {
 		grp := items[start:end]
 		sort.SliceStable(grp, func(i, j int) bool {
 			return session.StatusUrgency(grp[i].GetStatus(), grp[i].Unread()) <
 				session.StatusUrgency(grp[j].GetStatus(), grp[j].Unread())
 		})
-		start = end
-	}
+	})
 }
 
 // clusterByAccount reorders whole repo blocks so blocks sharing a Claude account are
@@ -178,15 +207,9 @@ func clusterByAccount(items []*session.Instance) []*session.Instance {
 		acct  string
 	}
 	var blocks []block
-	for i := 0; i < len(items); {
-		key := repoKey(items[i])
-		j := i + 1
-		for j < len(items) && repoKey(items[j]) == key {
-			j++
-		}
-		blocks = append(blocks, block{items: items[i:j], acct: accountKey(items[i])})
-		i = j
-	}
+	forEachRepoBlock(items, func(start, end int) {
+		blocks = append(blocks, block{items: items[start:end], acct: accountKey(items[start])})
+	})
 	order := make([]string, 0, len(blocks))
 	seen := map[string]bool{}
 	for _, b := range blocks {
