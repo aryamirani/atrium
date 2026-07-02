@@ -47,10 +47,14 @@ type AccountsOverlay struct {
 	previewFocus  int
 }
 
+// NewAccountsOverlay creates the account manager over cfg. It seeds a default
+// 80x24 so Render works before the first SetSize.
 func NewAccountsOverlay(cfg *config.Config) *AccountsOverlay {
 	return &AccountsOverlay{cfg: cfg, width: 80, height: 24} // floor so Render works pre-SetSize
 }
 
+// SetSize records the terminal dimensions; the overlay caps its own box width and
+// windows its rows to fit a short terminal.
 func (o *AccountsOverlay) SetSize(w, h int) { o.width, o.height = w, h }
 
 // test-only accessors
@@ -92,6 +96,8 @@ func (o *AccountsOverlay) clampCursor() {
 	}
 }
 
+// HandleKeyPress routes a key to the active mode and reports whether the overlay
+// should close and whether the config was mutated (the app persists on dirty).
 func (o *AccountsOverlay) HandleKeyPress(msg tea.KeyMsg) (closed bool, dirty bool) {
 	switch o.mode {
 	case modeEdit:
@@ -301,6 +307,8 @@ func (o *AccountsOverlay) rowWindow(n int) (start, end int) {
 	return start, end
 }
 
+// Render draws the overlay's current mode (list, edit, delete-confirm, or preview)
+// as a centered bordered box.
 func (o *AccountsOverlay) Render() string {
 	t := theme.Current()
 	style := lipgloss.NewStyle().
@@ -484,10 +492,10 @@ func padRight(s string, n int) string {
 	return s
 }
 
-func truncTail(s string, max int) string {
+func truncTail(s string, maxLen int) string {
 	r := []rune(s)
-	if max <= 1 || len(r) <= max {
+	if maxLen <= 1 || len(r) <= maxLen {
 		return s
 	}
-	return "…" + string(r[len(r)-max+1:])
+	return "…" + string(r[len(r)-maxLen+1:])
 }
