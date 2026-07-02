@@ -1,6 +1,8 @@
 package overlay
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ZviBaratz/atrium/config"
@@ -332,4 +334,44 @@ func TestAccountsOverlay_PreviewGHMatchShowsDirAndToken(t *testing.T) {
 	out := o.renderPreview()
 	assert.Contains(t, out, "gh-work", "GitHub line shows the resolved config dir")
 	assert.Contains(t, out, "[GH_TOKEN]", "GitHub line shows the token env")
+}
+
+// A matched GH account can set TokenEnv without a config dir; the preview must
+// still surface the token names rather than collapsing to a bare
+// "inherit ambient env" line.
+func TestAccountsOverlay_PreviewGHTokenWithoutDirSurfacesToken(t *testing.T) {
+	cfg := &config.Config{GHAccounts: []config.GHAccount{
+		{Name: "gh", RemoteMatches: []string{"github.com/acme"}, TokenEnv: []string{"GH_TOKEN"}},
+	}}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+	o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	typeInto(o, "github.com/acme")
+	assert.Contains(t, o.renderPreview(), "inherit ambient env [GH_TOKEN]",
+		"token env surfaces even when the account sets no config dir")
+}
+
+// A long account list must window its rows to the terminal height (cursor kept
+// in view) rather than overflowing past the bottom, mirroring SettingsOverlay.
+func TestAccountsOverlay_ListWindowsRowsOnShortTerminal(t *testing.T) {
+	cfg := &config.Config{}
+	for i := 0; i < 30; i++ {
+		cfg.ClaudeAccounts = append(cfg.ClaudeAccounts, config.ClaudeAccount{
+			Name:          fmt.Sprintf("acct%02d", i),
+			ConfigDir:     "~/.claude",
+			RemoteMatches: []string{fmt.Sprintf("github.com/org%02d", i)},
+		})
+	}
+	o := NewAccountsOverlay(cfg)
+	o.SetSize(80, 24)
+
+	for i := 0; i < 25; i++ {
+		o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	require.Equal(t, 25, o.cursorIndex())
+
+	out := o.Render()
+	assert.LessOrEqual(t, strings.Count(out, "\n")+1, 24, "overlay fits within the terminal height")
+	assert.Contains(t, out, "acct25", "the selected row stays visible")
+	assert.NotContains(t, out, "acct00", "rows above the window scroll off")
 }

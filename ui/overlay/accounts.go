@@ -275,6 +275,32 @@ func (o *AccountsOverlay) boxWidth() int {
 
 func (o *AccountsOverlay) inner() int { return o.boxWidth() - 4 } // Padding(1,2) → 4 cols
 
+// rowWindow returns the [start, end) slice of account rows to display so the
+// list fits a short terminal with the cursor kept in view. Everything outside
+// the rows costs a fixed number of lines (border 2 + padding 2 + title/blank 2
+// + tabs/blank 2 + trailing blank 1 + two hint lines 2 + the unmatched-repos
+// hint 1 = 12), so the remaining height budgets the rows. Mirrors the windowing
+// SettingsOverlay applies to its own body.
+func (o *AccountsOverlay) rowWindow(n int) (start, end int) {
+	const chrome = 12
+	budget := o.height - chrome
+	if budget < 3 {
+		budget = 3
+	}
+	if n <= budget {
+		return 0, n
+	}
+	start = 0
+	if o.cursor >= budget {
+		start = o.cursor - budget + 1
+	}
+	end = start + budget
+	if end > n {
+		end = n
+	}
+	return start, end
+}
+
 func (o *AccountsOverlay) Render() string {
 	t := theme.Current()
 	style := lipgloss.NewStyle().
@@ -348,9 +374,12 @@ func (o *AccountsOverlay) renderPreview() string {
 	gh := "inherit ambient env"
 	if ghDir != "" {
 		gh = ghDir
-		if len(ghTok) > 0 {
-			gh += " [" + strings.Join(ghTok, ", ") + "]"
-		}
+	}
+	// A matched GH account can set TokenEnv without a config dir (the token is
+	// injected into the ambient gh account); surface it either way rather than
+	// dropping it when the dir is empty.
+	if len(ghTok) > 0 {
+		gh += " [" + strings.Join(ghTok, ", ") + "]"
 	}
 
 	var b strings.Builder
@@ -384,8 +413,18 @@ func (o *AccountsOverlay) renderList() string {
 		}
 		b.WriteString(t.DimStyle().Render("No "+kind+" accounts — press n to add") + "\n")
 	} else {
+		start, end := o.rowWindow(len(rows))
+		// Catch-all badges depend on order across the whole list (the first
+		// rule-less account is "default", later ones "unreachable"), so account
+		// for any catch-all scrolled off the top before rendering the window.
 		seenCatchAll := false
-		for i, r := range rows {
+		for i := 0; i < start; i++ {
+			if rows[i].catchAll {
+				seenCatchAll = true
+			}
+		}
+		for i := start; i < end; i++ {
+			r := rows[i]
 			marker := "  "
 			if i == o.cursor {
 				marker = t.AccentStyle().Render("› ")
