@@ -328,22 +328,27 @@ func TestPollClaudeIdleAndPrompt(t *testing.T) {
 	require.Equal(t, PanePrompt, s.Poll(), "a tool-permission y/n prompt takes precedence")
 }
 
-// An interactive selection prompt (AskUserQuestion / plan approval) blocks on the user
-// just like the permission dialog, even though it shows no permission text. Its footer
-// is the signal — and the real idle/working footers must not trip it.
+// An interactive selection prompt (AskUserQuestion) blocks on the user just like the
+// permission dialog, even though it shows no permission text. Its footer is the signal
+// — and the real idle/working footers must not trip it. Selections classify as
+// PanePromptManual (#271): they are judgment prompts (AskUserQuestion renders even in
+// bypass/auto permission modes), so autoyes must surface them instead of tapping Enter.
 func TestPollClaudeSelectionPrompt(t *testing.T) {
 	selection := "How do you want to be notified?\n  1. Telegram\n  2. Email\n" +
 		"Enter to select · ↑/↓ to navigate · Esc to cancel"
 	c := selection
 	s := pollSession(t, "claude", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(), "a selection prompt is a needs-input state")
+	require.Equal(t, PanePromptManual, s.Poll(), "a selection prompt is a manual needs-input state")
+
+	_, hasPrompt := s.HasUpdated()
+	require.False(t, hasPrompt, "the HasUpdated shim must not report a manual prompt as tappable")
 
 	// The live AskUserQuestion footer carries extra hints ("n to add notes") between the
 	// navigate and cancel tokens; it must still classify as a prompt.
 	c = "Server restart?\n  1. Relaunch\n❯ 2. Restart now\n  3. Nav only\n" +
 		"Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel"
 	s = pollSession(t, "claude", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(), "selection footer with extra hints is a prompt")
+	require.Equal(t, PanePromptManual, s.Poll(), "selection footer with extra hints is a manual prompt")
 
 	// Footers captured from live idle/working panes must classify as idle/working,
 	// never as a prompt.
@@ -431,7 +436,7 @@ func TestPollClaudeSelectionPromptBelowStatusLine(t *testing.T) {
 	}, "\n")
 	c := pane
 	s := pollSession(t, "claude", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(),
+	require.Equal(t, PanePromptManual, s.Poll(),
 		"a selection prompt whose footer sits above a multi-line statusLine is still a prompt")
 }
 
@@ -467,7 +472,7 @@ func TestPollClaudeSelectionPromptAboveStatusLineDivider(t *testing.T) {
 		}, tc.statusLine...), "\n")
 		c := pane
 		s := pollSession(t, "claude", &c, nil)
-		require.Equal(t, PanePrompt, s.Poll(),
+		require.Equal(t, PanePromptManual, s.Poll(),
 			"a selection prompt above a %s statusLine is still a prompt", tc.name)
 	}
 }
@@ -544,7 +549,7 @@ func TestPollClaudePromptWrapTolerant(t *testing.T) {
 		"Enter to select · ↑/↓ to navigate\n· n to add notes · Esc to cancel"
 	c := wrappedFooter
 	s := pollSession(t, "claude", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(), "a wrapped selection footer is still a prompt")
+	require.Equal(t, PanePromptManual, s.Poll(), "a wrapped selection footer is still a prompt")
 
 	// Permission dialog whose decline option wraps mid-sentence.
 	wrappedDialog := "Do you want to proceed?\n  Yes\n  No, and tell Claude what to do\ndifferently"
@@ -560,7 +565,7 @@ func TestPollClaudePromptWrapTolerant(t *testing.T) {
 		"Enter to select · ↑/↓ to navigate\n· n to add notes\n· Esc to cancel"
 	c = threeLineFooter
 	s = pollSession(t, "claude", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(), "a footer wrapped across the full footer window is still a prompt")
+	require.Equal(t, PanePromptManual, s.Poll(), "a footer wrapped across the full footer window is still a prompt")
 }
 
 // Regression: capture-pane includes the scrolled-back transcript, so the marker strings
@@ -654,6 +659,33 @@ func TestPollGemini(t *testing.T) {
 	require.Equal(t, PaneIdle, s.PollNow(), "no marker at face value is idle")
 	c = working
 	require.Equal(t, PaneWorking, s.PollNow(), "a live marker at face value is working")
+}
+
+// A live aider confirm pane classifies PanePrompt — auto-tappable, NOT manual:
+// aider's confirms are permission-type prompts autoyes should answer, unlike
+// claude's judgment selections (#271). Aider has no busy marker, so without the
+// prompt match the quiet pane would commit PaneIdle via the content-change
+// fallback — a blocked session showing Ready. Pane captured from a live aider
+// 0.86.2 in tmux (2026-07-04; see agent.TestAiderConfirmShapes).
+func TestPollAiderConfirmPrompt(t *testing.T) {
+	pane := strings.Join([]string{
+		"> please look at qux.py",
+		"",
+		"qux.py",
+		"Add file to the chat? (Y)es/(N)o/(D)on't ask again [Yes]:",
+	}, "\n")
+	c := pane
+	s := pollSession(t, "aider", &c, nil)
+	require.Equal(t, PanePrompt, s.Poll(), "an aider confirm is an auto-tappable prompt")
+
+	// The pre-#271 miss: a confirm shape without "(D)on't ask again" (here the
+	// shell-command one) read as idle once the pane settled.
+	c = "mkdir -p build\nRun shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:"
+	s = pollSession(t, "aider", &c, nil)
+	require.Equal(t, PanePrompt, s.Poll(), "every captured confirm shape is a prompt")
+	c = "Add 0.2k tokens of command output to the chat? (Y)es/(N)o [Yes]:"
+	s = pollSession(t, "aider", &c, nil)
+	require.Equal(t, PanePrompt, s.Poll(), "the plain (Y)es/(N)o shape is a prompt")
 }
 
 // Hysteresis (content-change fallback, e.g. aider): a content change reads as working;

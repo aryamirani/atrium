@@ -95,7 +95,16 @@ var claude = &Adapter{
 		// window, so this matcher is structural: the rule-delimited segment scan
 		// finds the footer wherever the statusLine displaced it, while the
 		// input-box stop keeps a footer quoted in the transcript from counting.
-		{Name: "selection", Match: claudeSelectionFooterVisible},
+		// NoAutoTap (#271, reversing the #103-era "generic selections stay
+		// auto-tappable" pin): a selection is a judgment prompt — AskUserQuestion
+		// renders even in bypass/auto permission modes, exactly where the agent
+		// wants a human choice — and auto-Enter picks whatever option is
+		// highlighted, chaining through multi-question flows on repeated ticks.
+		// Permission/plan dialogs are unaffected: they match earlier in this
+		// list, so they never reach here. Side effect, accepted: a stray open
+		// selector (model/account picker) under autoyes surfaces needs-input
+		// instead of being blindly Enter-ed.
+		{Name: "selection", NoAutoTap: true, Match: claudeSelectionFooterVisible},
 	},
 
 	// Ghost-text prompt suggestion in the idle input box (suggestion.go).
@@ -244,16 +253,38 @@ var gemini = &Adapter{
 }
 
 // Aider. No stable busy marker is known, so it rides the poller's
-// content-change fallback; its single confirmation shape and first-run
-// documentation prompt carry over from the pre-adapter heuristics.
+// content-change fallback; the confirm matcher covers every confirm_ask
+// option shape, and the first-run documentation gate carries over from the
+// pre-adapter heuristics.
 var aider = &Adapter{
 	Key:         KeyAider,
 	DisplayName: "Aider",
 	aliases:     []string{"aider"},
 
+	// Heuristic strings verified against a live aider 0.86.2 (2026-07-04),
+	// one tmux capture per confirm shape (registry_test.go
+	// TestAiderConfirmShapes). Minor granularity: aider ships 0.x minors
+	// steadily while the confirm_ask format has been stable for years, so a
+	// minor bump is the right re-verification cue and patch bumps are noise.
+	VerifiedVersion:  "0.86.2",
+	DriftGranularity: GranularityMinor,
+
 	Prompts: []PromptMatcher{
+		// Every confirm_ask (io.py at 0.86.2) opens its options with
+		// " (Y)es/(N)o", then appends "/(A)ll" (group, not explicit-yes),
+		// "/(S)kip all" (group), "/(D)on't ask again" (allow_never), then
+		// " [Yes]: "/" [No]: ". Before #271 only the "/(D)on't ask again"
+		// shape was matched, so the plain create-file/edit-unadded/run-output
+		// confirms and both group shapes read as *idle* — a blocked session
+		// showed Ready and autoyes tapped nothing. Matching the ubiquitous
+		// pair as two tokens (not the contiguous "(Y)es/(N)o") keeps a hard
+		// terminal wrap mid-run from defeating the match: flattenChrome joins
+		// physical lines with a space. Known, pre-existing limit: an answered
+		// confirm ("… [Yes]: y") lingering in the bottom window re-matches
+		// until output scrolls it away — with autoyes the extra Enter just
+		// accepts the next confirm's default, the intended semantics.
 		{Name: "confirm", Window: WindowPrompt,
-			All: []string{"(Y)es/(N)o/(D)on't ask again"}},
+			All: []string{"(Y)es", "(N)o"}},
 	},
 
 	Gates: []Gate{

@@ -1044,13 +1044,15 @@ func (i *Instance) TapEnter() {
 }
 
 // ApprovePrompt sends a single Enter to the agent pane to answer a visible
-// prompt (tool permission, plan approval) on the user's behalf. Unlike
-// TapEnter — the self-gating autoyes path — this is user-initiated, so it
-// ignores AutoYes and returns errors instead of logging them. It deliberately
-// answers PanePromptManual prompts too: a human keypress is exactly the
-// manual confirmation the autoyes NoAutoTap guard preserves. Note that Enter
-// selects whatever option the dialog has highlighted — on claude's plan
-// dialog the default both accepts the plan and enables auto-accept edits.
+// prompt (tool permission, plan approval, selection) on the user's behalf.
+// Unlike TapEnter — the self-gating autoyes path — this is user-initiated, so
+// it ignores AutoYes and returns errors instead of logging them. It
+// deliberately answers PanePromptManual prompts too: a human keypress is
+// exactly the manual confirmation the autoyes NoAutoTap guard preserves. Note
+// that Enter selects whatever option the dialog has highlighted — on claude's
+// plan dialog the default both accepts the plan and enables auto-accept
+// edits, and on a selection (AskUserQuestion) it picks the highlighted
+// option.
 func (i *Instance) ApprovePrompt() error {
 	ts := i.tmux()
 	if !i.isStarted() || i.Paused() || ts == nil {

@@ -10,7 +10,7 @@ func TestAdaptersExposesSeededVersions(t *testing.T) {
 		KeyClaude: {"2.1.185", GranularityMinor},
 		KeyGemini: {"0.27", GranularityMinor},
 		KeyCodex:  {"", GranularityPatch},
-		KeyAider:  {"", GranularityPatch},
+		KeyAider:  {"0.86.2", GranularityMinor},
 	}
 	got := Adapters()
 	if len(got) != len(want) {
