@@ -445,7 +445,9 @@ func TestAider(t *testing.T) {
 // all" (group), "/(D)on't ask again" (allow_never), then " [Yes]: "/" [No]: ".
 // Before #271 only the "/(D)on't ask again" shape was matched, so the other
 // confirms read as *idle* — a blocked session showed Ready and autoyes tapped
-// nothing.
+// nothing. The FP guards below pin the other half of the matcher
+// (aiderConfirmVisible): only a pane still blocked at the trailing
+// "[Yes]:"/"[No]:" default suffix is a live confirm.
 func TestAiderConfirmShapes(t *testing.T) {
 	cases := []struct {
 		name string
@@ -509,6 +511,37 @@ func TestAiderConfirmShapes(t *testing.T) {
 
 	_, ok = aider.DetectPrompt("I answered (Y)es to the last prompt.\n>")
 	require.False(t, ok, "one token alone must not read as a prompt")
+
+	// Both tokens present but no live confirm: the pane must end at the
+	// "[Yes]:"/"[No]:" default suffix where confirm_ask parks its cursor.
+	// Displayed content that merely mentions both tokens above the composer
+	// (e.g. aider showing this very matcher's source, or prose about Y/N
+	// confirms) is not a prompt.
+	sourceDisplay := strings.Join([]string{
+		"Here is the matcher table entry:",
+		"    All: []string{\"(Y)es\", \"(N)o\"},",
+		">",
+	}, "\n")
+	_, ok = aider.DetectPrompt(sourceDisplay)
+	require.False(t, ok, "both tokens in displayed content above the composer must not read as a prompt")
+
+	// An answered confirm is no longer live: the echoed answer ("… [Yes]: y")
+	// displaces the suffix from the line end…
+	_, ok = aider.DetectPrompt("Add file to the chat? (Y)es/(N)o [Yes]: y")
+	require.False(t, ok, "an answered confirm must not re-read as a live prompt")
+
+	// …and once any output lands below it, the suffix line is no longer
+	// bottom-most. Pre-fix, this lingering pane re-matched every poll tick
+	// until 15 lines of output scrolled it away — autoyes tapped a stray
+	// Enter per tick, and without autoyes the session pinned NeedsInput
+	// while aider was actually working.
+	answered := strings.Join([]string{
+		"Add file to the chat? (Y)es/(N)o/(D)on't ask again [Yes]: y",
+		"Added qux.py to the chat",
+		">",
+	}, "\n")
+	_, ok = aider.DetectPrompt(answered)
+	require.False(t, ok, "an answered confirm above later output must not re-read as a live prompt")
 }
 
 // NamerKeys pins which agents claim headless auto-naming and their preference

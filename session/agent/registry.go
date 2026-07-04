@@ -252,6 +252,38 @@ var gemini = &Adapter{
 	HeadlessNamer: true, // `gemini -p` prints bare text (session/naming.go)
 }
 
+// aiderConfirmVisible backs the aider "confirm" matcher. Every confirm_ask
+// (io.py at 0.86.2) opens its options with " (Y)es/(N)o", then appends
+// "/(A)ll" (group, not explicit-yes), "/(S)kip all" (group), "/(D)on't ask
+// again" (allow_never), and blocks at a trailing " [Yes]: "/" [No]: " default
+// suffix. Two conditions, each doing one job:
+//
+//   - The "(Y)es"+"(N)o" pair anywhere in the flattened window covers every
+//     option shape. Matching two tokens (not the contiguous "(Y)es/(N)o")
+//     keeps a hard terminal wrap mid-run from defeating the match:
+//     flattenChrome joins physical lines with a space.
+//   - The last non-empty line must end with "]:" — the default suffix where
+//     confirm_ask parks its cursor while blocked. This is the liveness
+//     anchor: an answered confirm ("… [Yes]: y", or with output printed
+//     below) and displayed content that merely mentions both tokens above
+//     the "> " composer do not match, because something other than the
+//     suffix ends the pane.
+//
+// The anchor is the bare "]:" rather than "[Yes]:"/"[No]:" to stay as
+// wrap-tolerant as the token pair: of the possible wrap points inside the
+// suffix, most leave a "]:"-tailed fragment as the last line, while the full
+// bracket run survives none of them. Residual race, accepted: after an
+// accept, the suffix line stays bottom-most until aider's next output lands,
+// so a poll tick in that sub-second gap can still tap one extra Enter — with
+// autoyes it accepts the next confirm's default, the intended semantics.
+func aiderConfirmVisible(content string) bool {
+	flat := flattenChrome(content, WindowPrompt)
+	if !strings.Contains(flat, "(Y)es") || !strings.Contains(flat, "(N)o") {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSpace(liveChromeLines(content, 1)), "]:")
+}
+
 // Aider. No stable busy marker is known, so it rides the poller's
 // content-change fallback; the confirm matcher covers every confirm_ask
 // option shape, and the first-run documentation gate carries over from the
@@ -270,21 +302,13 @@ var aider = &Adapter{
 	DriftGranularity: GranularityMinor,
 
 	Prompts: []PromptMatcher{
-		// Every confirm_ask (io.py at 0.86.2) opens its options with
-		// " (Y)es/(N)o", then appends "/(A)ll" (group, not explicit-yes),
-		// "/(S)kip all" (group), "/(D)on't ask again" (allow_never), then
-		// " [Yes]: "/" [No]: ". Before #271 only the "/(D)on't ask again"
-		// shape was matched, so the plain create-file/edit-unadded/run-output
-		// confirms and both group shapes read as *idle* — a blocked session
-		// showed Ready and autoyes tapped nothing. Matching the ubiquitous
-		// pair as two tokens (not the contiguous "(Y)es/(N)o") keeps a hard
-		// terminal wrap mid-run from defeating the match: flattenChrome joins
-		// physical lines with a space. Known, pre-existing limit: an answered
-		// confirm ("… [Yes]: y") lingering in the bottom window re-matches
-		// until output scrolls it away — with autoyes the extra Enter just
-		// accepts the next confirm's default, the intended semantics.
-		{Name: "confirm", Window: WindowPrompt,
-			All: []string{"(Y)es", "(N)o"}},
+		// See aiderConfirmVisible: the option-pair match covers every
+		// confirm_ask shape — before #271 only the "/(D)on't ask again" shape
+		// was matched, so the plain and group confirms read as *idle* (a
+		// blocked session showed Ready and autoyes tapped nothing) — and the
+		// trailing-"]:" liveness anchor keeps an answered confirm or
+		// token-bearing displayed content from matching.
+		{Name: "confirm", Match: aiderConfirmVisible},
 	},
 
 	Gates: []Gate{

@@ -665,8 +665,11 @@ func TestPollGemini(t *testing.T) {
 // aider's confirms are permission-type prompts autoyes should answer, unlike
 // claude's judgment selections (#271). Aider has no busy marker, so without the
 // prompt match the quiet pane would commit PaneIdle via the content-change
-// fallback — a blocked session showing Ready. Pane captured from a live aider
-// 0.86.2 in tmux (2026-07-04; see agent.TestAiderConfirmShapes).
+// fallback — a blocked session showing Ready. One representative pane (captured
+// from a live aider 0.86.2 in tmux, 2026-07-04) proves the wiring: Poll consumes
+// only the match result, so the full confirm_ask shape catalog stays pinned at
+// the agent layer (agent.TestAiderConfirmShapes), like the codex/gemini poll
+// tests above.
 func TestPollAiderConfirmPrompt(t *testing.T) {
 	pane := strings.Join([]string{
 		"> please look at qux.py",
@@ -677,15 +680,6 @@ func TestPollAiderConfirmPrompt(t *testing.T) {
 	c := pane
 	s := pollSession(t, "aider", &c, nil)
 	require.Equal(t, PanePrompt, s.Poll(), "an aider confirm is an auto-tappable prompt")
-
-	// The pre-#271 miss: a confirm shape without "(D)on't ask again" (here the
-	// shell-command one) read as idle once the pane settled.
-	c = "mkdir -p build\nRun shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:"
-	s = pollSession(t, "aider", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(), "every captured confirm shape is a prompt")
-	c = "Add 0.2k tokens of command output to the chat? (Y)es/(N)o [Yes]:"
-	s = pollSession(t, "aider", &c, nil)
-	require.Equal(t, PanePrompt, s.Poll(), "the plain (Y)es/(N)o shape is a prompt")
 }
 
 // Hysteresis (content-change fallback, e.g. aider): a content change reads as working;
