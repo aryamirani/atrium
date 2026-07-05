@@ -77,15 +77,17 @@ func TestClaudePrompts(t *testing.T) {
 	require.Equal(t, "permission", m.Name)
 	require.False(t, m.NoAutoTap, "permission prompts stay auto-tappable")
 
-	_, ok = claude.DetectPrompt("How do you want to be notified?\n  1. Telegram\n  2. Email\n" +
+	m, ok = claude.DetectPrompt("How do you want to be notified?\n  1. Telegram\n  2. Email\n" +
 		"Enter to select · ↑/↓ to navigate · Esc to cancel")
 	require.True(t, ok, "selection prompt")
+	require.True(t, m.NoAutoTap, "selections are judgment prompts; autoyes must not answer them")
 
 	// Wrapped footer: "Esc to cancel" lands on a different physical line than
 	// the nav/select tokens; flattening must reconstruct it.
-	_, ok = claude.DetectPrompt("Server restart?\n  1. Relaunch\n❯ 2. Restart now\n" +
+	m, ok = claude.DetectPrompt("Server restart?\n  1. Relaunch\n❯ 2. Restart now\n" +
 		"Enter to select · ↑/↓ to navigate\n· n to add notes · Esc to cancel")
 	require.True(t, ok, "wrapped selection footer")
+	require.True(t, m.NoAutoTap, "wrapped selection footer must stay manual-only")
 
 	// A custom multi-line statusLine below the footer (drawing its own divider
 	// rule) pushes the footer out of any fixed bottom window; the structural
@@ -100,7 +102,14 @@ func TestClaudePrompts(t *testing.T) {
 	}, "\n"))
 	require.True(t, ok, "selection footer above a divider-drawing statusLine")
 	require.Equal(t, "selection", m.Name)
-	require.False(t, m.NoAutoTap, "generic selections stay auto-tappable")
+	// Reversal (#271) of the #103-era pin ("generic selections stay
+	// auto-tappable"): the selection footer is AskUserQuestion's surface — a
+	// judgment prompt the agent renders even in bypass/auto permission modes,
+	// exactly where it wants a human choice. Auto-Enter picks whatever option
+	// is highlighted and chains through multi-question flows, so autoyes must
+	// surface it as needs-input instead (the same carve-out #103 made for the
+	// plan-approval dialog).
+	require.True(t, m.NoAutoTap, "selections are manual-only; autoyes must not answer them")
 
 	// A footer quoted in the transcript sits above the input box; the scan stops
 	// at the box interior, so the quote must not read as a live prompt.
@@ -417,6 +426,8 @@ func TestAider(t *testing.T) {
 	require.False(t, aider.HasBusyMarker("anything at all"),
 		"aider has no busy marker; it rides the content-change fallback")
 
+	// The pre-#271 pinned shape must keep matching (the broadened matcher is a
+	// strict superset — additive remediation, nothing replaced).
 	_, ok := aider.DetectPrompt("Add file to the chat? (Y)es/(N)o/(D)on't ask again [Yes]:")
 	require.True(t, ok)
 
@@ -425,6 +436,112 @@ func TestAider(t *testing.T) {
 	require.Equal(t, DismissDAndEnter, g.Dismiss)
 
 	require.Nil(t, aider.Resume, "aider has no conversation resume")
+}
+
+// TestAiderConfirmShapes pins every confirm_ask option shape aider 0.86.2
+// renders, each against a pane captured live in tmux (2026-07-04; environment
+// warning lines trimmed). confirm_ask (io.py) always opens the options with
+// " (Y)es/(N)o", then appends "/(A)ll" (group, not explicit-yes), "/(S)kip
+// all" (group), "/(D)on't ask again" (allow_never), then " [Yes]: "/" [No]: ".
+// Before #271 only the "/(D)on't ask again" shape was matched, so the other
+// confirms read as *idle* — a blocked session showed Ready and autoyes tapped
+// nothing. The FP guards below pin the other half of the matcher
+// (aiderConfirmVisible): only a pane still blocked at the trailing
+// "[Yes]:"/"[No]:" default suffix is a live confirm.
+func TestAiderConfirmShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		pane string
+	}{
+		// main.py:191 — plain shape, startup .gitignore recommendation.
+		{"plain gitignore", strings.Join([]string{
+			"Update git name with: git config user.name \"Your Name\"",
+			"Update git email with: git config user.email \"you@example.com\"",
+			"You can skip this check with --no-gitignore",
+			"Add .aider* to .gitignore (recommended)? (Y)es/(N)o [Yes]:",
+		}, "\n")},
+		// commands.py:1019 — plain shape after /run.
+		{"plain run output", strings.Join([]string{
+			"hello-from-atrium",
+			"Add 0.2k tokens of command output to the chat? (Y)es/(N)o [Yes]:",
+		}, "\n")},
+		// base_coder.py check_for_file_mentions — a single mention (group of 1
+		// collapses, allow_never=True keeps the "(D)on't" option).
+		{"single file mention", strings.Join([]string{
+			"> please look at qux.py",
+			"qux.py",
+			"Add file to the chat? (Y)es/(N)o/(D)on't ask again [Yes]:",
+		}, "\n")},
+		// base_coder.py check_for_file_mentions — a multi-file group.
+		{"multi file mention", strings.Join([]string{
+			"> please look at foo.py and bar.py",
+			"bar.py",
+			"Add file to the chat? (Y)es/(N)o/(A)ll/(S)kip all/(D)on't ask again [Yes]:",
+		}, "\n")},
+		// base_coder.py:2456 handle_shell_commands (explicit_yes_required drops
+		// "(A)ll"). LLM-driven, so captured by driving the installed package's
+		// InputOutput.confirm_ask in tmux with that caller's exact kwargs.
+		{"run shell command", strings.Join([]string{
+			"mkdir -p build",
+			"Run shell command? (Y)es/(N)o/(S)kip all/(D)on't ask again [Yes]:",
+		}, "\n")},
+		// A hard terminal wrap can split the options run mid-token; flattening
+		// joins the physical lines, so the pair match must survive it.
+		{"wrapped options", "Add file to the chat? (Y)es/\n(N)o/(D)on't ask again [Yes]:"},
+	}
+	for _, c := range cases {
+		m, ok := aider.DetectPrompt(c.pane)
+		require.True(t, ok, "%s must classify as a prompt", c.name)
+		require.Equal(t, "confirm", m.Name, c.name)
+		require.False(t, m.NoAutoTap, "%s: aider confirms stay auto-tappable", c.name)
+	}
+
+	// FP guards: an idle aider pane (startup banner + bare composer, captured
+	// from the same 0.86.2 session) and prose carrying only one of the tokens
+	// must stay non-prompts.
+	idle := strings.Join([]string{
+		"Aider v0.86.2",
+		"Main model: gpt-4o with diff edit format",
+		"Git repo: .git with 3 files",
+		"Repo-map: using 4096 tokens, auto refresh",
+		">",
+	}, "\n")
+	_, ok := aider.DetectPrompt(idle)
+	require.False(t, ok, "an idle aider pane must not read as a prompt")
+
+	_, ok = aider.DetectPrompt("I answered (Y)es to the last prompt.\n>")
+	require.False(t, ok, "one token alone must not read as a prompt")
+
+	// Both tokens present but no live confirm: the pane must end at the
+	// "[Yes]:"/"[No]:" default suffix where confirm_ask parks its cursor.
+	// Displayed content that merely mentions both tokens above the composer
+	// (e.g. aider showing this very matcher's source, or prose about Y/N
+	// confirms) is not a prompt.
+	sourceDisplay := strings.Join([]string{
+		"Here is the matcher table entry:",
+		"    All: []string{\"(Y)es\", \"(N)o\"},",
+		">",
+	}, "\n")
+	_, ok = aider.DetectPrompt(sourceDisplay)
+	require.False(t, ok, "both tokens in displayed content above the composer must not read as a prompt")
+
+	// An answered confirm is no longer live: the echoed answer ("… [Yes]: y")
+	// displaces the suffix from the line end…
+	_, ok = aider.DetectPrompt("Add file to the chat? (Y)es/(N)o [Yes]: y")
+	require.False(t, ok, "an answered confirm must not re-read as a live prompt")
+
+	// …and once any output lands below it, the suffix line is no longer
+	// bottom-most. Pre-fix, this lingering pane re-matched every poll tick
+	// until 15 lines of output scrolled it away — autoyes tapped a stray
+	// Enter per tick, and without autoyes the session pinned NeedsInput
+	// while aider was actually working.
+	answered := strings.Join([]string{
+		"Add file to the chat? (Y)es/(N)o/(D)on't ask again [Yes]: y",
+		"Added qux.py to the chat",
+		">",
+	}, "\n")
+	_, ok = aider.DetectPrompt(answered)
+	require.False(t, ok, "an answered confirm above later output must not re-read as a live prompt")
 }
 
 // NamerKeys pins which agents claim headless auto-naming and their preference
