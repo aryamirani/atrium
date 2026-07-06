@@ -457,33 +457,6 @@ func (t *Session) start(workDir string, program string) error {
 	return nil
 }
 
-// CheckAndHandleTrustPrompt checks the pane content once for a startup gate (a trust or
-// setup screen that consumes keystrokes) and dismisses it with the adapter's keystroke if
-// found. Returns true if a gate was found and handled.
-func (t *Session) CheckAndHandleTrustPrompt() bool {
-	content, err := t.CapturePaneContent()
-	if err != nil {
-		return false
-	}
-
-	gate, ok := t.adapter.GateUp(content)
-	if !ok {
-		return false
-	}
-
-	switch gate.Dismiss {
-	case agent.DismissDAndEnter:
-		if err := t.TapDAndEnter(); err != nil {
-			log.ErrorLog.Printf("could not tap D+enter on startup gate: %v", err)
-		}
-	default:
-		if err := t.TapEnter(); err != nil {
-			log.ErrorLog.Printf("could not tap enter on startup gate: %v", err)
-		}
-	}
-	return true
-}
-
 // IsReadyForPrompt reports whether the agent has rendered and is past any startup
 // gate, so a queued first message can be submitted into its input box. It is a
 // read-only check: it captures the pane once and never sends keystrokes.
@@ -491,17 +464,17 @@ func (t *Session) IsReadyForPrompt() bool {
 	if !t.DoesSessionExist() {
 		return false
 	}
-	content, err := t.CapturePaneContent()
-	if err != nil || strings.TrimSpace(content) == "" {
+	raw, err := t.CapturePaneContent()
+	if err != nil || strings.TrimSpace(raw) == "" {
 		return false
 	}
-	_, gated := t.adapter.GateUp(content)
+	_, gated := t.adapter.GateUp(cleanForDetection(raw))
 	return !gated
 }
 
 // AwaitingInput reports whether keystrokes typed now would land in the agent's live
 // input box. It is the positive readiness signal for delivering a queued initial prompt:
-// the session exists, the pane has rendered, no startup gate (GateUp, raw pane) and no
+// the session exists, the pane has rendered, no startup gate (GateUp) and no
 // blocking prompt (DetectPrompt) is up, and the composer's input box is actually on screen
 // (InputBoxVisible).
 //
@@ -522,10 +495,10 @@ func (t *Session) AwaitingInput() bool {
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return false
 	}
-	if _, gated := t.adapter.GateUp(raw); gated {
+	content := cleanForDetection(raw)
+	if _, gated := t.adapter.GateUp(content); gated {
 		return false
 	}
-	content := cleanForDetection(raw)
 	if _, prompted := t.adapter.DetectPrompt(content); prompted {
 		return false
 	}
@@ -568,14 +541,6 @@ func (t *Session) Restore() error {
 func (t *Session) TapEnter() error {
 	if err := t.sendKeysToPane("Enter"); err != nil {
 		return fmt.Errorf("error sending enter keystroke to tmux pane: %w", err)
-	}
-	return nil
-}
-
-// TapDAndEnter sends 'D' followed by an enter keystroke to the agent pane.
-func (t *Session) TapDAndEnter() error {
-	if err := t.sendKeysToPane("D", "Enter"); err != nil {
-		return fmt.Errorf("error sending D+enter keystrokes to tmux pane: %w", err)
 	}
 	return nil
 }

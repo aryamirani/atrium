@@ -98,29 +98,20 @@ func (m PromptMatcher) matches(content string) bool {
 	return false
 }
 
-// DismissKey is the keystroke that dismisses a startup gate.
-type DismissKey int
-
-const (
-	// DismissEnter accepts the gate's pre-highlighted option (trust screens).
-	DismissEnter DismissKey = iota
-	// DismissDAndEnter sends 'D' then Enter (aider's "(D)on't ask again").
-	DismissDAndEnter
-)
-
-// Gate is a one-time setup/trust screen that consumes keystrokes until
-// dismissed, so a queued first prompt must not be typed while one is up.
+// Gate is a one-time setup/trust screen that consumes keystrokes until a human
+// dismisses it, so a queued first prompt must not be typed while one is up. Atrium
+// never auto-dismisses a gate (surfacing it as needs-input is safer than blindly
+// accepting a folder-trust or new-MCP screen); GateUp is a detection-only signal.
 type Gate struct {
-	// Contains marks the gate as up when any entry is present in the raw pane.
+	// Contains marks the gate as up when any entry is present in the live dialog
+	// region (the bottom chrome scanned by GateUp), not anywhere in the pane.
 	Contains []string
-	// Dismiss is the keystroke that clears the gate.
-	Dismiss DismissKey
 }
 
 // Adapter is the declarative profile of one agent CLI. The zero value of every
 // optional field means "no support": nil BusyMarkers falls back to the poller's
 // content-change hysteresis, no Prompts means prompts are never surfaced, no
-// Gates means nothing is auto-dismissed, nil Resume relaunches without history.
+// Gates means no startup screen is detected, nil Resume relaunches without history.
 type Adapter struct {
 	Key         Key
 	DisplayName string
@@ -274,11 +265,21 @@ func (a *Adapter) DetectPermissionMode(content string) (mode string, known bool)
 	return a.PermissionMode(content)
 }
 
-// GateUp returns the startup gate currently showing in the raw pane content.
+// GateUp returns the startup gate currently showing in the live dialog region of the
+// cleaned pane. Detection is confined to the bottom WindowPrompt non-empty lines — the
+// same budget and windowing the prompt matchers use — so a gate literal quoted in the
+// scrolled-back transcript or in an agent's own output (a session editing this registry,
+// or discussing a "New MCP server") is not mistaken for a live gate. flattenChrome also
+// reconstructs a title/footer wrapped across physical lines at a narrow pane width. The
+// input must already be cleaned for detection (ANSI stripped; see tmux's cleanForDetection).
 func (a *Adapter) GateUp(content string) (Gate, bool) {
+	if len(a.Gates) == 0 {
+		return Gate{}, false
+	}
+	flat := flattenChrome(content, WindowPrompt)
 	for _, g := range a.Gates {
 		for _, s := range g.Contains {
-			if strings.Contains(content, s) {
+			if strings.Contains(flat, s) {
 				return g, true
 			}
 		}
