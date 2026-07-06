@@ -6,7 +6,9 @@ package app
 // and per-action work to app_keys.go. Trivial cases remain inline in the switch.
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ZviBaratz/atrium/log"
@@ -243,7 +245,24 @@ func (m *home) handleAttachFinished(msg attachFinishedMsg) (tea.Model, tea.Cmd) 
 	// the layout and selection-derived panes from here.
 	m.state = stateDefault
 	if msg.err != nil {
+		// A failed sibling-cycle re-attach still carries keeper losses from the
+		// previous attach (attachExecCarry seeds them before Run can fail); surface
+		// them alongside the attach error, honoring the promise below that only the
+		// kill and AttachExitError paths stay log-only.
+		if len(msg.keeperErrs) > 0 {
+			return m, m.handleError(errors.Join(msg.err, errors.New(strings.Join(msg.keeperErrs, "\n"))))
+		}
 		return m, m.handleError(msg.err)
+	}
+	// The attach keeper cleared prompt(s) while the loop was suspended — delivered
+	// ones, or abandoned ones whose hard-failure budget ran out — but it cannot
+	// persist (persistence is main-loop-owned). Mirror promptDeliveredMsg's persist
+	// here — before the kill/cycle early returns below, so no detach path leaves a
+	// cleared prompt resurrectable from state.json.
+	if msg.keeperDelivered || len(msg.keeperErrs) > 0 {
+		if err := m.persistInstances(); err != nil {
+			log.ErrorLog.Printf("failed to persist after keeper prompt delivery: %v", err)
+		}
 	}
 	// The user was watching this session until a moment ago, so if the agent
 	// finished while attached, the poll below settles a stale Running to Ready —
@@ -282,7 +301,9 @@ func (m *home) handleAttachFinished(msg attachFinishedMsg) (tea.Model, tea.Cmd) 
 		if next := m.cycleTarget(msg.killTarget); next != nil {
 			m.list.SelectInstance(next)
 			m.pushOneContext(next)
-			return m, m.attachExec(next.Attach, next)
+			// Carry keeper losses into the next attach's keeper so the chain's final
+			// plain detach surfaces them (this branch returns before the surfacing).
+			return m, m.attachExecCarry(next.Attach, next, msg.keeperErrs)
 		}
 	}
 	if msg.rawModeFailed {
@@ -301,17 +322,28 @@ func (m *home) handleAttachFinished(msg attachFinishedMsg) (tea.Model, tea.Cmd) 
 			"terminal/SSH/Docker session provides a real TTY; `stty -ixon` can also stop " +
 			"Ctrl+Q being swallowed.")
 	}
-	// Polling stalled for the whole list while attached, so every row is stale on
-	// return. Sweep every active session immediately instead of waiting up to a full
-	// ~2s sweep cycle: the selected row is polled face-value (PollNow) so a stale
-	// "running" on a now-idle agent doesn't linger — and re-runs through the hysteresis
-	// from there — while background rows keep the hysteresis Poll so a mid-turn agent
+	// Polling stalled for the whole list while attached (the keeper services only
+	// prompt-delivery and auto-yes work), so every row is stale on return. Sweep
+	// every active session immediately instead of waiting up to a full ~2s sweep
+	// cycle: the selected row is polled face-value (PollNow) so a stale "running" on
+	// a now-idle agent doesn't linger — and re-runs through the hysteresis from
+	// there — while background rows keep the hysteresis Poll so a mid-turn agent
 	// isn't falsely flagged done. Pin the poll tracker to the current selection first so
 	// instanceChanged's own (hysteresis) poll doesn't also fire for the same instance.
 	selected := m.list.GetSelectedInstance()
 	m.lastStatusPollSelection = selected
-	return m, tea.Batch(tea.WindowSize(), m.instanceChanged(),
-		sweepMetadataNowCmd(m.ctx, m.snapshotActiveInstances(), selected))
+	cmds := []tea.Cmd{tea.WindowSize(), m.instanceChanged(),
+		sweepMetadataNowCmd(m.ctx, m.snapshotActiveInstances(), selected, m.attachGen)}
+	// Prompts the keeper definitively failed to deliver mid-attach: surface the loss
+	// like promptSendErrorMsg would, rather than leaving sessions silently
+	// Ready-but-idle. The sibling-cycle branch carries its errs forward to the next
+	// keeper, so they land here at the chain's end; only the kill and
+	// AttachExitError paths remain log-only (each opens its own modal that a second
+	// notice would fight).
+	if len(msg.keeperErrs) > 0 {
+		cmds = append(cmds, m.handleError(errors.New(strings.Join(msg.keeperErrs, "\n"))))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd) {
@@ -351,7 +383,7 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 	// keystrokes in the trust dialog instead of the input box.
 	m.menu.SetState(ui.StateDefault)
 
-	if m.shouldAutoOpen(msg.instance) {
+	if m.shouldAutoOpen(msg.instance, msg.hadPrompt) {
 		// Drop straight into the new session, mirroring the KeyEnter attach path.
 		// Attach msg.instance directly rather than via m.list.Attach(): a background
 		// instanceStartedMsg from another freshly-created session could have moved

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -83,18 +84,18 @@ func (f *fakeAgentPane) exec() cmd_test.MockCmdExec {
 		RunFunc: func(cmd *exec.Cmd) error {
 			args := cmd.Args
 			switch {
-			case hasArg(args, "send-keys") && hasArg(args, "Enter"):
+			case slices.Contains(args, "send-keys") && slices.Contains(args, "Enter"):
 				f.enters++
 				f.box = "" // a submitting Enter clears the composer
-			case hasArg(args, "send-keys") && hasArg(args, "-l"):
+			case slices.Contains(args, "send-keys") && slices.Contains(args, "-l"):
 				text := lastArg(args)
 				f.typed = append(f.typed, text)
 				if !f.noLand {
 					f.box += text
 				}
-			case hasArg(args, "set-buffer"):
+			case slices.Contains(args, "set-buffer"):
 				f.pending = lastArg(args)
-			case hasArg(args, "paste-buffer"):
+			case slices.Contains(args, "paste-buffer"):
 				f.pasted = append(f.pasted, f.pending)
 				if !f.noLand {
 					f.box += f.pending
@@ -114,15 +115,6 @@ func (f *fakeAgentPane) exec() cmd_test.MockCmdExec {
 			}
 		},
 	}
-}
-
-func hasArg(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
-	}
-	return false
 }
 
 func lastArg(args []string) string { return args[len(args)-1] }
@@ -203,19 +195,21 @@ func TestPendingPromptSurvivesRoundTrip(t *testing.T) {
 	store := newTestStorage(t)
 
 	a := newPausedInstance(t, "pending")
-	a.Prompt = "finish the migration"
-	a.PromptQueuedAt = time.Unix(1000, 0) // long-past queue time
+	// Write the fields directly (same package) to plant a deliberately long-past queue
+	// time; QueuePrompt would stamp it with now and defeat the clock-restart assertion.
+	a.prompt = "finish the migration"
+	a.promptQueuedAt = time.Unix(1000, 0)
 
 	require.NoError(t, store.SaveInstances([]*Instance{a}))
 	got, err := store.LoadInstances(context.Background())
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 
-	require.Equal(t, "finish the migration", got[0].Prompt,
+	require.Equal(t, "finish the migration", got[0].Prompt(),
 		"an undelivered prompt must survive a restart so it can be re-delivered")
-	require.False(t, got[0].PromptQueuedAt.IsZero(),
+	require.False(t, got[0].PromptQueuedAt().IsZero(),
 		"a restored pending prompt must have a delivery clock")
-	require.True(t, got[0].PromptQueuedAt.After(time.Unix(1000, 0)),
+	require.True(t, got[0].PromptQueuedAt().After(time.Unix(1000, 0)),
 		"the delivery timeout must restart from reload, not keep the stale wall-clock age")
 }
 

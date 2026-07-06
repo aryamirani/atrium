@@ -41,7 +41,7 @@ func (m *home) instanceChanged() tea.Cmd {
 	if selected != m.lastStatusPollSelection {
 		m.lastStatusPollSelection = selected
 		m.selectedSince = time.Now()
-		return pollSelectedCmd(selected)
+		return pollSelectedCmd(selected, m.attachGen)
 	}
 	return nil
 }
@@ -114,6 +114,8 @@ type instanceMetaResult struct {
 type instancePolledMsg struct {
 	instance *session.Instance
 	state    tmux.PaneState
+	// attachGen stamps home.attachGen at cmd creation, like metadataUpdateDoneMsg.
+	attachGen uint64
 }
 
 // pollSelectedCmd polls a single instance off the UI thread for an immediate status refresh
@@ -125,12 +127,12 @@ type instancePolledMsg struct {
 // A detach is different — the tick stream was stalled while attached, so every row is stale
 // — and is handled by sweepMetadataNowCmd (a face-value PollNow for the selected row plus a
 // full background sweep), not here.
-func pollSelectedCmd(inst *session.Instance) tea.Cmd {
+func pollSelectedCmd(inst *session.Instance, attachGen uint64) tea.Cmd {
 	if inst == nil || !inst.Started() || inst.Paused() {
 		return nil
 	}
 	return func() tea.Msg {
-		return instancePolledMsg{instance: inst, state: inst.Poll()}
+		return instancePolledMsg{instance: inst, state: inst.Poll(), attachGen: attachGen}
 	}
 }
 
@@ -220,14 +222,17 @@ func sendPromptCmd(instance *session.Instance, prompt string) tea.Cmd {
 // deliverReadyPrompts dispatches a send for each ready instance with a queued prompt and
 // returns the commands that perform them. The prompt is NOT cleared here — it stays queued
 // until delivery is confirmed (promptDeliveredMsg), so a failed or unconfirmed send is
-// retried by a later tick rather than lost. An in-flight guard ensures only one send is
-// outstanding per instance, so overlapping ticks cannot dispatch the same prompt twice.
+// retried by a later tick rather than lost. ClaimPrompt's atomic in-flight guard ensures
+// only one send is outstanding per instance, so overlapping dispatchers (a later tick, or
+// the attach keeper) cannot send the same prompt twice.
 func deliverReadyPrompts(results []instanceMetaResult) []tea.Cmd {
 	var cmds []tea.Cmd
 	for _, r := range results {
-		if r.readyForPrompt && r.instance.Prompt != "" && !r.instance.PromptSending() {
-			r.instance.MarkPromptSending()
-			cmds = append(cmds, sendPromptCmd(r.instance, r.instance.Prompt))
+		if !r.readyForPrompt {
+			continue
+		}
+		if prompt, ok := r.instance.ClaimPrompt(); ok {
+			cmds = append(cmds, sendPromptCmd(r.instance, prompt))
 		}
 	}
 	return cmds
@@ -301,15 +306,20 @@ func recoverLostInstances(results []instanceMetaResult, strikes map[*session.Ins
 }
 
 // metadataUpdateDoneMsg is sent when the background metadata update completes.
+// attachGen records home.attachGen at cmd creation; the handler drops results from
+// an older generation — a terminal attach ran in between, and the keeper may have
+// advanced the very panes the capture observed (see home.attachGen).
 type metadataUpdateDoneMsg struct {
-	results []instanceMetaResult
+	results   []instanceMetaResult
+	attachGen uint64
 }
 
 // metadataSweepDoneMsg carries the result of a one-shot, off-cadence metadata refresh
 // (see sweepMetadataNowCmd). Unlike metadataUpdateDoneMsg, its handler applies the
-// results without re-arming the periodic tick.
+// results without re-arming the periodic tick. attachGen guards staleness the same way.
 type metadataSweepDoneMsg struct {
-	results []instanceMetaResult
+	results   []instanceMetaResult
+	attachGen uint64
 }
 
 // sweepMetadataNowCmd refreshes every active session immediately (no 500ms sleep, no
@@ -319,12 +329,12 @@ type metadataSweepDoneMsg struct {
 // so a stale "running" on a now-idle agent doesn't linger; background rows keep the
 // hysteresis Poll so a mid-turn agent isn't falsely flagged done (see collectMetadata's
 // fresh argument). Returns nil when there are no active sessions to refresh.
-func sweepMetadataNowCmd(ctx context.Context, active []*session.Instance, selected *session.Instance) tea.Cmd {
+func sweepMetadataNowCmd(ctx context.Context, active []*session.Instance, selected *session.Instance, attachGen uint64) tea.Cmd {
 	if len(active) == 0 {
 		return nil
 	}
 	return func() tea.Msg {
-		return metadataSweepDoneMsg{results: collectMetadata(ctx, active, selected, true)}
+		return metadataSweepDoneMsg{results: collectMetadata(ctx, active, selected, true), attachGen: attachGen}
 	}
 }
 
@@ -360,7 +370,7 @@ func pollTargets(active []*session.Instance, selected *session.Instance, fullSwe
 	}
 	var out []*session.Instance
 	for _, inst := range active {
-		if inst == selected || inst.Prompt != "" {
+		if inst == selected || inst.Prompt() != "" {
 			out = append(out, inst)
 		}
 	}
@@ -415,10 +425,10 @@ func collectMetadata(ctx context.Context, poll []*session.Instance, selected *se
 			}
 			// Only probe readiness while a prompt is actually queued (a brief
 			// window after a new session), so the extra pane capture is rare.
-			if instance.Prompt != "" {
+			if instance.Prompt() != "" {
 				r.readyForPrompt = promptDeliveryReady(
 					r.state, instance.AwaitingInput(),
-					instance.PromptQueuedAt, time.Now())
+					instance.PromptQueuedAt(), time.Now())
 			}
 			if instance == selected {
 				r.diffStats = instance.ComputeDiff()
@@ -509,25 +519,25 @@ func applyDiffStats(inst *session.Instance, stats *git.DiffStats) {
 // Only the selected instance gets a full diff (with Content); the rest get a
 // lightweight numstat-only summary. This keeps per-instance memory bounded
 // since the diff pane only ever renders the selected one.
-func tickUpdateMetadataCmd(ctx context.Context, active []*session.Instance, selected *session.Instance, fullSweep bool) tea.Cmd {
+func tickUpdateMetadataCmd(ctx context.Context, active []*session.Instance, selected *session.Instance, fullSweep bool, attachGen uint64) tea.Cmd {
 	return func() tea.Msg {
 		// Honor ctx during the inter-tick wait so a shutdown mid-sleep doesn't leave
 		// this goroutine parked for up to 500ms.
 		select {
 		case <-time.After(500 * time.Millisecond):
 		case <-ctx.Done():
-			return metadataUpdateDoneMsg{}
+			return metadataUpdateDoneMsg{attachGen: attachGen}
 		}
 
 		if len(active) == 0 {
-			return metadataUpdateDoneMsg{}
+			return metadataUpdateDoneMsg{attachGen: attachGen}
 		}
 
 		poll := pollTargets(active, selected, fullSweep)
 		if len(poll) == 0 {
-			return metadataUpdateDoneMsg{}
+			return metadataUpdateDoneMsg{attachGen: attachGen}
 		}
 
-		return metadataUpdateDoneMsg{results: collectMetadata(ctx, poll, selected, false)}
+		return metadataUpdateDoneMsg{results: collectMetadata(ctx, poll, selected, false), attachGen: attachGen}
 	}
 }
