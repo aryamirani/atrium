@@ -53,7 +53,11 @@ func TestNoteAutoPauseCommit(t *testing.T) {
 func TestKillPropagatesTeardownFailure(t *testing.T) {
 	ts := tmuxWithRun("boom", func(c *exec.Cmd) error {
 		if slices.Contains(c.Args, "kill-session") {
-			return fmt.Errorf("server is wedged")
+			// Real tmux: diagnostic on stderr, generic non-zero exit.
+			if c.Stderr != nil {
+				fmt.Fprintln(c.Stderr, "server is wedged")
+			}
+			return fmt.Errorf("exit status 1")
 		}
 		return nil
 	})
@@ -70,7 +74,12 @@ func TestKillPropagatesTeardownFailure(t *testing.T) {
 func TestKillTreatsDeadSessionAsClean(t *testing.T) {
 	ts := tmuxWithRun("gone", func(c *exec.Cmd) error {
 		if slices.Contains(c.Args, "kill-session") {
-			return fmt.Errorf("can't find session: gone")
+			// Real tmux delivers "can't find session" on stderr and exits non-zero;
+			// Close must classify it as already-gone from the stderr text.
+			if c.Stderr != nil {
+				fmt.Fprintln(c.Stderr, "can't find session: gone")
+			}
+			return fmt.Errorf("exit status 1")
 		}
 		return nil
 	})

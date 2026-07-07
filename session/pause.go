@@ -212,8 +212,13 @@ func (i *Instance) Resume() error {
 	// exactly as it was left — changes restored, no history artifact. Best-effort:
 	// the WIP content is safe inside the commit regardless, so a failure here must
 	// not abort resume; worst case is the prior behavior (the commit stays).
-	if err := i.unwindAutoPauseCommits(wt); err != nil {
+	if n, err := i.unwindAutoPauseCommits(wt); err != nil {
 		log.ErrorLog.Print(err)
+	} else {
+		// The unwound commits are pending changes again, so walk the count pause
+		// bumped back down; otherwise the kill dialog would over-count after a
+		// resume (durably if the session is re-paused before the next poll).
+		i.noteAutoPauseUnwind(n)
 	}
 
 	// Check if tmux session still exists from pause, otherwise create new one
@@ -255,10 +260,12 @@ const maxAutoPauseUnwind = 64
 // as it was left (changes re-staged, no history artifact). Walking the whole run
 // — not just HEAD~1 — also coalesces legacy stacks from multiple reboots. It is a
 // no-op when HEAD is not an auto-commit, so a genuine user commit is never reset.
-func (i *Instance) unwindAutoPauseCommits(wt *git.Worktree) error {
+// Returns how many commits were actually unwound (0 when nothing was reset) so the
+// caller can walk the cached commit count back down by the same amount.
+func (i *Instance) unwindAutoPauseCommits(wt *git.Worktree) (int, error) {
 	subjects, err := wt.CommitSubjects(maxAutoPauseUnwind)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	n := 0
 	for n < len(subjects) && isAutoPauseCommit(subjects[n]) {
@@ -269,7 +276,10 @@ func (i *Instance) unwindAutoPauseCommits(wt *git.Worktree) error {
 	// longer than the cap). Either way there's nothing safe to land on, so leave
 	// history untouched rather than soft-reset below the first commit.
 	if n == 0 || n == len(subjects) {
-		return nil
+		return 0, nil
 	}
-	return wt.ResetSoft(fmt.Sprintf("HEAD~%d", n))
+	if err := wt.ResetSoft(fmt.Sprintf("HEAD~%d", n)); err != nil {
+		return 0, err
+	}
+	return n, nil
 }

@@ -539,7 +539,7 @@ func (msg batchKillDoneMsg) summary() string {
 	}
 	total := msg.killed + len(msg.failures)
 	var b strings.Builder
-	fmt.Fprintf(&b, "Killed %d of %d session%s. %d could not be killed:",
+	fmt.Fprintf(&b, "Killed %d of %d session%s. %d reported errors:",
 		msg.killed, total, plural(total), len(msg.failures))
 	for _, f := range msg.failures {
 		fmt.Fprintf(&b, "\n  • %s — %s", f.title, f.err.Error())
@@ -582,9 +582,12 @@ func (m *home) killInstances(insts []*session.Instance, message string) tea.Cmd 
 			// KillInstance removes the row regardless of teardown outcome, so its
 			// preview terminal must be cleaned up either way. A teardown failure is
 			// recorded (naming what leaked) but does not count toward killed, so the
-			// "killed N" notice reflects only clean teardowns.
+			// "killed N" notice reflects only clean teardowns. The row and storage
+			// entry are already gone, so the message says so rather than implying the
+			// session survived.
 			if err := m.list.KillInstance(inst); err != nil {
-				res.failures = append(res.failures, killFailure{inst.Title, err})
+				res.failures = append(res.failures, killFailure{inst.Title,
+					fmt.Errorf("removed, but teardown was incomplete: %w", err)})
 			} else {
 				res.killed++
 			}

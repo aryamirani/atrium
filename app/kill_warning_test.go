@@ -83,7 +83,7 @@ func TestKillMarked_AggregatesUnmergedWork(t *testing.T) {
 	c := addActive(t, h, "charlie")
 	a.SetDiffStats(&git.DiffStats{Commits: 1})
 	b.SetDiffStats(&git.DiffStats{Dirty: true})
-	_ = c // charlie is clean
+	// charlie (c) is left clean — it is marked below but must not be counted.
 
 	pressRune(h, 'v')
 	h.list.ToggleMark(a)

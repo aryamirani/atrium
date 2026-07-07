@@ -110,6 +110,43 @@ func TestPauseResume_BaseRefSession_RoundTripsWithoutDataLoss(t *testing.T) {
 	require.Equal(t, "in progress\n", string(content), "the edited content must be restored verbatim")
 }
 
+// TestPauseResume_ReconcilesCachedCommitCount pins the kill-warning accounting
+// across a pause→resume→pause cycle. pause folds its auto-WIP commit into the cached
+// count so the kill dialog can warn; resume unwinds that commit, so the cache must be
+// walked back down too — otherwise a session re-paused before the next metadata poll
+// (which skips paused instances) would carry a permanently inflated, persisted count.
+func TestPauseResume_ReconcilesCachedCommitCount(t *testing.T) {
+	wt := newTestWorktree(t)
+	wtPath := wt.GetWorktreePath()
+
+	aliveExec := cmd_test.MockCmdExec{
+		RunFunc:    func(*exec.Cmd) error { return nil },
+		OutputFunc: func(*exec.Cmd) ([]byte, error) { return nil, nil },
+	}
+	pty := newRecordingPtyFactory(t, nil)
+	ts := tmux.NewSessionWithDeps(context.Background(), "sess", "claude", pty, aliveExec)
+	inst := &Instance{Title: "sess", status: Running, started: true, gitWorktree: wt, tmuxSession: ts}
+
+	// A never-polled (nil-stats) session with a dirty worktree.
+	require.NoError(t, os.WriteFile(filepath.Join(wtPath, "work.txt"), []byte("in progress\n"), 0644))
+
+	// Pause folds the one auto-WIP commit into the cache so the kill dialog warns.
+	require.NoError(t, inst.Pause())
+	require.NotNil(t, inst.GetDiffStats(), "pause must seed the cached stats it warns from")
+	require.Equal(t, 1, inst.GetDiffStats().Commits, "pause folds its auto-WIP commit into the cached count")
+
+	// Resume unwinds that commit; the cache must come back down and the restored
+	// changes read as dirty again.
+	require.NoError(t, inst.Resume())
+	require.Equal(t, 0, inst.GetDiffStats().Commits, "resume walks the pause-bumped count back down")
+	require.True(t, inst.GetDiffStats().Dirty, "the unwound WIP returns as a pending change")
+
+	// Re-pausing before any poll must land on 1, not 2: git again holds exactly one
+	// WIP commit ahead of base, and the cache must track it.
+	require.NoError(t, inst.Pause())
+	require.Equal(t, 1, inst.GetDiffStats().Commits, "resume→re-pause must not inflate the cached commit count")
+}
+
 // TestUnwindAutoPauseCommits_CollapsesStackedAutoCommits covers the legacy case
 // the issue calls out: several reboots stacked multiple auto-commits. A single
 // unwind must collapse the whole consecutive run back to the real ancestor.
@@ -124,7 +161,9 @@ func TestUnwindAutoPauseCommits_CollapsesStackedAutoCommits(t *testing.T) {
 	require.NoError(t, wt.CommitChanges(autoMsg("Tue")))
 
 	inst := &Instance{Title: "sess", gitWorktree: wt}
-	require.NoError(t, inst.unwindAutoPauseCommits(wt))
+	n, err := inst.unwindAutoPauseCommits(wt)
+	require.NoError(t, err)
+	require.Equal(t, 2, n, "both stacked auto-commits are reported as unwound")
 
 	require.Equal(t, baseSHA, gitOutput(t, wtPath, "rev-parse", "HEAD"), "all consecutive auto-commits must collapse")
 	require.NotEmpty(t, gitOutput(t, wtPath, "status", "--porcelain"))
@@ -145,7 +184,9 @@ func TestUnwindAutoPauseCommits_PreservesRealCommit(t *testing.T) {
 	headBefore := gitOutput(t, wtPath, "rev-parse", "HEAD")
 
 	inst := &Instance{Title: "sess", gitWorktree: wt}
-	require.NoError(t, inst.unwindAutoPauseCommits(wt))
+	n, err := inst.unwindAutoPauseCommits(wt)
+	require.NoError(t, err)
+	require.Equal(t, 0, n, "a real HEAD is never unwound, so nothing is reported")
 
 	require.Equal(t, headBefore, gitOutput(t, wtPath, "rev-parse", "HEAD"),
 		"a real commit at HEAD must never be unwound")

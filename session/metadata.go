@@ -101,6 +101,20 @@ func (i *Instance) noteAutoPauseCommit() {
 	i.diffStats.Commits++
 }
 
+// noteAutoPauseUnwind reverses noteAutoPauseCommit's cached accounting when Resume
+// soft-resets the n auto-WIP commits back into pending changes: drop them from the
+// cached ahead-count and mark the tree dirty again. Without this the pause-bumped
+// count drifts above the real ahead-count after a resume — durably (and persisted)
+// for a session re-paused before the next poll, since the poll skips paused
+// instances. No-op when no stats are cached. Main-loop only, like noteAutoPauseCommit.
+func (i *Instance) noteAutoPauseUnwind(n int) {
+	if i.diffStats == nil || n <= 0 {
+		return
+	}
+	i.diffStats.Commits = max(0, i.diffStats.Commits-n)
+	i.diffStats.Dirty = true
+}
+
 // ComputePRStatus fetches the session branch's pull-request status off the main
 // thread (it may shell out to gh over the network). Returns nil for sessions
 // that cannot have a PR — not started, paused, or direct (no worktree/branch).
