@@ -355,6 +355,15 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 		// logged inside KillInstance; the meaningful failure here is msg.err, which
 		// is surfaced below, so discard Kill's return rather than fight that modal.
 		_ = m.list.Kill()
+		// A quit deferred while this session was Loading (issue #268): the failed
+		// session is torn down and gone from the list, so resume the quit if it's now
+		// safe. Surface the start error last either way — if the quit re-defers (a
+		// sibling is still starting) the toast still matters; if it exits, it's moot.
+		if m.quitRequested {
+			if cmd, done := m.resumeQuitAfterStart(); done {
+				return m, tea.Batch(cmd, m.handleError(msg.err), m.instanceChanged())
+			}
+		}
 		return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 	}
 
@@ -366,9 +375,30 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 	// Ready/NeedsInput on later ticks.
 	msg.instance.SetStatus(session.Running)
 
-	// Save after successful start
+	// Save after successful start — before honoring a deferred quit, so this
+	// completion is durably recorded even while a sibling is still starting (a
+	// crash in that window would otherwise orphan it, the very #268 symptom). On
+	// failure a deferred+safe quit still gets its escape-hatch modal (via
+	// resumeQuitAfterStart → handleQuit) rather than a dead-end error toast.
 	if err := m.persistInstances(); err != nil {
+		if m.quitRequested {
+			if cmd, done := m.resumeQuitAfterStart(); done {
+				return m, cmd
+			}
+		}
 		return m, m.handleError(err)
+	}
+
+	// A quit deferred while this session was Loading (issue #268) takes precedence
+	// over the rest of the post-start handling (welcome, auto-open): now that this
+	// start is persisted, complete the quit if it's safe. resumeQuitAfterStart waits
+	// for any sibling still Loading and won't exit from under an open overlay.
+	if m.quitRequested {
+		if cmd, done := m.resumeQuitAfterStart(); done {
+			return m, cmd
+		}
+		// The deferred quit was dropped (the user navigated into an overlay); fall
+		// through and finish this start normally.
 	}
 	m.recordRecentPath(msg.instance.Path)
 	// First successful session start retires the one-time welcome. This is the single

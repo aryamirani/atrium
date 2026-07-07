@@ -350,11 +350,88 @@ func (m *home) finishBatch(cleanup []*session.Instance, hasFailures bool, notice
 	return tea.Batch(m.showInfo(summary), m.instanceChanged())
 }
 
+// handleQuit is the key-initiated quit authority (q / ctrl+c from the list).
+//
+// It defers the exit while any session is still Loading (issue #268): a Loading
+// session isn't yet in the persisted set (SaveInstances only keeps Started()
+// instances), so quitting now would drop it — the agent would keep running
+// invisibly on the tmux socket and reusing its title would later fail with
+// "branch exists". Instead it arms quitRequested and lets handleInstanceStarted
+// complete the quit (via resumeQuitAfterStart) once the in-flight Start finishes.
+//
+// Pressing quit again while still Loading escalates to a force-quit confirm: a
+// wedged Start (a stuck git/tmux subprocess) would otherwise never send its
+// completion, leaving the TUI unquittable. Confirming abandons the starting
+// session; cancelling keeps waiting.
+//
+// On a persist failure it opens a confirm modal rather than trapping the user in
+// an unquittable TUI: with a full disk / read-only data dir SaveState fails on
+// every attempt, and the old code re-showed the error toast forever with no
+// escape hatch. tea.Quit is itself a tea.Cmd, so it can be the confirm action
+// directly — confirming feeds QuitMsg back through the runtime.
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
+	if m.anyLoading() {
+		if m.quitRequested {
+			// Second explicit quit while a session is still starting: the user is
+			// insisting, so offer to abandon it rather than trap them behind an
+			// in-flight (or wedged) Start. Its branch/worktree may be left behind,
+			// hence the confirm.
+			return m, m.confirmAction(
+				"A session is still starting.\n\nQuit and abandon it? Its branch/worktree may be left behind.",
+				tea.Quit,
+			)
+		}
+		m.quitRequested = true
+		return m, m.handleInfoNotice(quitAfterStartupNotice)
+	}
+	m.quitRequested = false
 	if err := m.persistInstances(); err != nil {
-		return m, m.handleError(err)
+		return m, m.confirmAction(
+			"Could not save state: "+err.Error()+"\n\nQuit anyway? Unsaved state will be lost.",
+			tea.Quit,
+		)
 	}
 	return m, tea.Quit
+}
+
+// resumeQuitAfterStart completes a quit that was deferred while a session was
+// Loading (issue #268); handleInstanceStarted calls it once an in-flight Start
+// settles. It waits for every still-Loading sibling, and only exits from the
+// default view: a start completes on a background message that Update dispatches
+// regardless of m.state, so quitting unconditionally here would yank the app out
+// from under an open overlay (settings, rename, the new-session form, a confirm).
+// If the user has navigated into an overlay, the deferred quit is dropped rather
+// than fired blind — an explicit q still exits once they return to the list.
+//
+// The bool reports whether the returned command is the model's next command
+// (true), or the deferred quit was dropped and the caller should fall through to
+// its normal post-start handling (false).
+func (m *home) resumeQuitAfterStart() (tea.Cmd, bool) {
+	if m.anyLoading() {
+		// A sibling is still starting; keep the deferred quit armed.
+		return m.handleInfoNotice(quitAfterStartupNotice), true
+	}
+	if m.state != stateDefault {
+		m.quitRequested = false
+		return nil, false
+	}
+	// Nothing left Loading and we're on the list: complete the quit. handleQuit
+	// persists and exits, or opens the save-failure "Quit anyway?" modal.
+	_, cmd := m.handleQuit()
+	return cmd, true
+}
+
+// anyLoading reports whether any session is still in its Start phase. Such a
+// session is on the list but not yet persisted, so quitting must wait for it (see
+// handleQuit). session.Loading has a single producer (createSessionFromForm) and
+// a single completion signal (instanceStartedMsg), so this covers the whole set.
+func (m *home) anyLoading() bool {
+	for _, inst := range m.list.GetInstances() {
+		if inst.GetStatus() == session.Loading {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {

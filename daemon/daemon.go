@@ -84,7 +84,8 @@ func effectivePollInterval(ms int) time.Duration {
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
 // It's expected that the main process kills the daemon when the main process starts.
 // ctx carries the daemon's shutdown signal (main installs signal.NotifyContext for
-// SIGINT/SIGTERM); cancelling it stops the poll loop and kills in-flight subprocesses.
+// SIGINT/SIGTERM/SIGHUP); cancelling it stops the poll loop and kills in-flight
+// subprocesses.
 func RunDaemon(ctx context.Context, cfg *config.Config) error {
 	log.InfoLog.Printf("starting daemon")
 
@@ -195,8 +196,8 @@ func RunDaemon(ctx context.Context, cfg *config.Config) error {
 		}
 	}()
 
-	// Block until the lifecycle context is cancelled (SIGINT/SIGTERM via main's
-	// signal.NotifyContext). Save instances before exiting.
+	// Block until the lifecycle context is cancelled (SIGINT/SIGTERM/SIGHUP via
+	// main's signal.NotifyContext). Save instances before exiting.
 	<-ctx.Done()
 	log.InfoLog.Printf("shutting down: %v", context.Cause(ctx))
 

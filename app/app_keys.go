@@ -26,6 +26,12 @@ import (
 // surfaces identical wording.
 const stillStartingNotice = "session is still starting — try again in a moment"
 
+// quitAfterStartupNotice is shown when the user asks to quit while a session is
+// still Loading. Rather than drop the half-created session, handleQuit waits for
+// its Start to finish and then exits (issue #268). The parenthetical advertises
+// the force-quit escape (a second quit) for a Start that never finishes.
+const quitAfterStartupNotice = "finishing session startup before quitting… (q again to abandon)"
+
 // selectedActionable returns the selected instance when a per-session action may
 // run against it. The bool is false (with the command to return) when there is no
 // selection or it is still starting — the two guards almost every session action

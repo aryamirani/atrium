@@ -198,6 +198,13 @@ func (m *Menu) HasNotice() bool {
 	return m.notice != ""
 }
 
+// NoticeText returns the current transient notice (empty when none is set). The
+// text is the flattened form stored by SetNotice; it is exposed so callers can
+// tell which message currently rides the row.
+func (m *Menu) NoticeText() string {
+	return m.notice
+}
+
 // SetSize sets the width of the window. The menu will be centered horizontally within this width.
 func (m *Menu) SetSize(width, height int) {
 	m.width = width
