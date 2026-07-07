@@ -54,7 +54,7 @@ func TestCloseTreatsDeadSessionAsSuccess(t *testing.T) {
 						// classification (its production path), not just the
 						// error-string fallback that test fakes would otherwise hit.
 						if cmd.Stderr != nil {
-							fmt.Fprintln(cmd.Stderr, msg)
+							_, _ = fmt.Fprintln(cmd.Stderr, msg)
 						}
 						return fmt.Errorf("exit status 1")
 					}
@@ -80,7 +80,7 @@ func TestCloseSurfacesRealTeardownFailure(t *testing.T) {
 				// Real tmux: diagnostic on stderr, generic non-zero exit. Close must
 				// fold the stderr text into the surfaced error.
 				if cmd.Stderr != nil {
-					fmt.Fprintln(cmd.Stderr, "server is wedged")
+					_, _ = fmt.Fprintln(cmd.Stderr, "server is wedged")
 				}
 				return fmt.Errorf("exit status 1")
 			}

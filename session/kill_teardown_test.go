@@ -55,7 +55,7 @@ func TestKillPropagatesTeardownFailure(t *testing.T) {
 		if slices.Contains(c.Args, "kill-session") {
 			// Real tmux: diagnostic on stderr, generic non-zero exit.
 			if c.Stderr != nil {
-				fmt.Fprintln(c.Stderr, "server is wedged")
+				_, _ = fmt.Fprintln(c.Stderr, "server is wedged")
 			}
 			return fmt.Errorf("exit status 1")
 		}
@@ -77,7 +77,7 @@ func TestKillTreatsDeadSessionAsClean(t *testing.T) {
 			// Real tmux delivers "can't find session" on stderr and exits non-zero;
 			// Close must classify it as already-gone from the stderr text.
 			if c.Stderr != nil {
-				fmt.Fprintln(c.Stderr, "can't find session: gone")
+				_, _ = fmt.Fprintln(c.Stderr, "can't find session: gone")
 			}
 			return fmt.Errorf("exit status 1")
 		}
