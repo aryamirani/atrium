@@ -350,11 +350,46 @@ func (m *home) finishBatch(cleanup []*session.Instance, hasFailures bool, notice
 	return tea.Batch(m.showInfo(summary), m.instanceChanged())
 }
 
+// handleQuit is the single quit authority for the TUI.
+//
+// It defers the exit while any session is still Loading (issue #268): a Loading
+// session isn't yet in the persisted set (SaveInstances only keeps Started()
+// instances), so quitting now would drop it — the agent would keep running
+// invisibly on the tmux socket and reusing its title would later fail with
+// "branch exists". Instead it arms quitRequested and lets handleInstanceStarted
+// re-invoke it once the in-flight Start completes.
+//
+// On a persist failure it opens a confirm modal rather than trapping the user in
+// an unquittable TUI: with a full disk / read-only data dir SaveState fails on
+// every attempt, and the old code re-showed the error toast forever with no
+// escape hatch. tea.Quit is itself a tea.Cmd, so it can be the confirm action
+// directly — confirming feeds QuitMsg back through the runtime.
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
+	if m.anyLoading() {
+		m.quitRequested = true
+		return m, m.handleInfoNotice(quitAfterStartupNotice)
+	}
+	m.quitRequested = false
 	if err := m.persistInstances(); err != nil {
-		return m, m.handleError(err)
+		return m, m.confirmAction(
+			"Could not save state: "+err.Error()+"\n\nQuit anyway? Unsaved state will be lost.",
+			tea.Quit,
+		)
 	}
 	return m, tea.Quit
+}
+
+// anyLoading reports whether any session is still in its Start phase. Such a
+// session is on the list but not yet persisted, so quitting must wait for it (see
+// handleQuit). session.Loading has a single producer (createSessionFromForm) and
+// a single completion signal (instanceStartedMsg), so this covers the whole set.
+func (m *home) anyLoading() bool {
+	for _, inst := range m.list.GetInstances() {
+		if inst.GetStatus() == session.Loading {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {

@@ -37,7 +37,14 @@ var (
 	updateCheckOnly bool
 	verboseFlag     bool
 	binName         string
-	rootCmd         = &cobra.Command{
+	// quitSignals is the set that drives a graceful shutdown. Registering SIGHUP
+	// is load-bearing: it overrides Go's default "terminate without running
+	// defers" disposition, so closing the terminal / losing SSH cancels the
+	// lifecycle context and lets the deferred autoyes-daemon handoff run instead
+	// of hard-killing the process. Extracted as a package var so a test can assert
+	// SIGHUP stays in the set (see TestQuitSignals).
+	quitSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+	rootCmd     = &cobra.Command{
 		Use:   "atrium",
 		Short: "Atrium - A command center for orchestrating multiple AI coding agents like Claude Code, Aider, Codex, and Amp.",
 		// A runtime failure is not a usage error: let main() be the single
@@ -53,11 +60,13 @@ var (
 			log.SetVerbose(verboseFlag)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Root lifecycle context: cancelled on SIGINT/SIGTERM so in-flight
-			// git/gh/tmux subprocesses are killed rather than orphaned on shutdown.
-			// (Inside the TUI, Ctrl+C is a key event handled by Bubble Tea, not a
-			// signal — this covers SIGTERM and the daemon's signal-driven exit.)
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			// Root lifecycle context: cancelled on SIGINT/SIGTERM/SIGHUP so in-flight
+			// git/gh/tmux subprocesses are killed rather than orphaned on shutdown,
+			// and — crucially for SIGHUP (terminal close / SSH disconnect) — so the
+			// deferred autoyes-daemon handoff below runs instead of the process being
+			// hard-killed with its defers skipped. (Inside the TUI, Ctrl+C is a key
+			// event handled by Bubble Tea, not a signal.)
+			ctx, stop := signal.NotifyContext(context.Background(), quitSignals...)
 			defer stop()
 			log.Initialize(daemonFlag)
 			defer log.Close()
@@ -208,9 +217,10 @@ var (
 			if !update.IsUpdatableVersion(version) {
 				return fmt.Errorf("this is a dev build (version %q); self-update only works on release builds — see install.sh", version)
 			}
-			// Same signal-driven lifecycle as the root command: Ctrl+C aborts a
-			// download cleanly instead of leaving the HTTP transfer orphaned.
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			// Same signal-driven lifecycle as the root command: Ctrl+C (or a
+			// terminal close, via SIGHUP) aborts a download cleanly instead of
+			// leaving the HTTP transfer orphaned.
+			ctx, stop := signal.NotifyContext(context.Background(), quitSignals...)
 			defer stop()
 
 			// Bound the metadata query so a blackholed connection (captive portal,

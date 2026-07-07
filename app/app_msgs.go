@@ -355,6 +355,12 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 		// logged inside KillInstance; the meaningful failure here is msg.err, which
 		// is surfaced below, so discard Kill's return rather than fight that modal.
 		_ = m.list.Kill()
+		// A quit that was deferred while this session was Loading (issue #268) can
+		// now proceed: the failed session is torn down and gone from the list, so
+		// handleQuit either exits (if nothing else is Loading) or keeps waiting.
+		if m.quitRequested {
+			return m.handleQuit()
+		}
 		return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 	}
 
@@ -385,6 +391,14 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 	// (see deliverReadyPrompts). Sending here races the agent's boot and lands
 	// keystrokes in the trust dialog instead of the input box.
 	m.menu.SetState(ui.StateDefault)
+
+	// A quit deferred while this session was Loading (issue #268) takes precedence
+	// over auto-opening it: the user asked to leave, so re-invoke handleQuit — it
+	// persists and exits once nothing is Loading, or keeps waiting if a sibling
+	// session is still starting — rather than dropping the user into an attach.
+	if m.quitRequested {
+		return m.handleQuit()
+	}
 
 	if m.shouldAutoOpen(msg.instance, msg.hadPrompt) {
 		// Drop straight into the new session, mirroring the KeyEnter attach path.

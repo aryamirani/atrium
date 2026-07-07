@@ -287,6 +287,12 @@ type home struct {
 	// confirmed. It is executed on the main loop and its returned message is fed
 	// back through Update so errors surface in the error box.
 	pendingConfirmAction tea.Cmd
+	// quitRequested records that the user asked to quit while a session was still
+	// Loading. handleQuit defers the exit (a Loading session isn't yet persisted,
+	// so quitting would drop it); handleInstanceStarted re-invokes handleQuit once
+	// the in-flight Start completes, which quits once nothing is Loading. Touched
+	// only on the Update goroutine, so it needs no synchronization.
+	quitRequested bool
 	// renameOverlay handles editing a session's display label
 	renameOverlay *overlay.RenameOverlay
 	// settingsOverlay is the in-TUI configuration panel. It edits appConfig in
