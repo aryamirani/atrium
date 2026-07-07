@@ -49,14 +49,22 @@ func newQuitTestHome(t *testing.T) *home {
 	cfg := config.DefaultConfig()
 	cfg.AutoAttach = &noAutoAttach
 
+	// A cancelled context so the transient-notice hide timers returned by
+	// handleInfoNotice / handleError resolve immediately (scheduleNoticeHide
+	// selects on ctx.Done()) instead of blocking each isQuit() call for the full
+	// errToastDuration.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
 	return &home{
-		ctx:          context.Background(),
+		ctx:          ctx,
 		state:        stateDefault,
 		appConfig:    cfg,
 		appState:     appState,
 		storage:      storage,
 		list:         list,
 		menu:         ui.NewMenu(),
+		errBox:       ui.NewErrBox(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane(context.Background())),
 	}
 }
@@ -88,6 +96,7 @@ func TestQuitWaitsForLoadingSessionThenExits(t *testing.T) {
 	_, cmd = h.Update(instanceStartedMsg{instance: inst})
 	assert.Equal(t, session.Running, inst.GetStatus())
 	assert.True(t, isQuit(cmd), "quit should complete once nothing is Loading")
+	assert.False(t, h.quitRequested, "the deferred quit is consumed, not left armed")
 }
 
 // Fix 2 regression guard: with nothing Loading, quit exits immediately.
@@ -161,4 +170,108 @@ func TestQuitOnSaveFailureCancelDoesNotQuit(t *testing.T) {
 	_, cmd := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	assert.Equal(t, stateDefault, h.state)
 	assert.False(t, isQuit(cmd), "cancelling must not quit")
+}
+
+// A deferred quit must not exit the app out from under an overlay the user opened
+// while the session was starting: instanceStartedMsg is dispatched regardless of
+// m.state, so quitting unconditionally would drop unsaved settings / a half-typed
+// rename / the new-session form. The deferred quit is dropped instead; an explicit
+// q from the list still exits.
+func TestDeferredQuitDoesNotExitFromOpenOverlay(t *testing.T) {
+	h := newQuitTestHome(t)
+	inst := addLoadingInstance(t, h, "loading-one")
+
+	require.False(t, isQuit(pressQ(t, h)))
+	require.True(t, h.quitRequested)
+
+	// The user navigates into an overlay (e.g. the settings panel) mid-startup.
+	h.state = stateSettings
+
+	_, cmd := h.Update(instanceStartedMsg{instance: inst})
+	assert.False(t, isQuit(cmd), "must not quit out from under an open overlay")
+	assert.False(t, h.quitRequested, "the deferred quit is dropped, not left armed")
+	assert.Equal(t, stateSettings, h.state, "the overlay stays open")
+	assert.Equal(t, session.Running, inst.GetStatus(), "the finished session is still brought up")
+}
+
+// If the save fails exactly when a deferred quit completes, the user must still
+// get the "Quit anyway?" escape hatch — not a dead-end error toast — and the quit
+// must not be silently stranded (leaving quitRequested armed to fire later).
+func TestDeferredQuitOnSaveFailureOpensConfirmModal(t *testing.T) {
+	h := newQuitTestHome(t)
+	inst := addLoadingInstance(t, h, "loading-one")
+
+	require.False(t, isQuit(pressQ(t, h)))
+	require.True(t, h.quitRequested)
+
+	// The data dir goes read-only before the in-flight start completes.
+	st, err := session.NewStorage(failingStore{})
+	require.NoError(t, err)
+	h.storage = st
+
+	_, cmd := h.Update(instanceStartedMsg{instance: inst})
+	assert.False(t, isQuit(cmd), "a save failure must not quit outright")
+	assert.Equal(t, stateConfirm, h.state, "it opens the quit-anyway confirm modal")
+	require.NotNil(t, h.confirmationOverlay)
+	assert.False(t, h.quitRequested, "the deferred quit is resolved, not stranded")
+
+	_, cmd = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	assert.True(t, isQuit(cmd), "confirming exits despite the save failure")
+}
+
+// A session whose Start hangs must not trap the user. Pressing quit a second time
+// while a session is still Loading escalates to a force-quit confirm that abandons
+// the in-flight start, so the TUI is never unquittable.
+func TestSecondQuitWhileLoadingOffersForceQuit(t *testing.T) {
+	h := newQuitTestHome(t)
+	_ = addLoadingInstance(t, h, "loading-one")
+
+	require.False(t, isQuit(pressQ(t, h)), "first quit defers")
+	require.True(t, h.quitRequested)
+	require.Equal(t, stateDefault, h.state)
+
+	// Second quit while still Loading -> a force-quit confirm modal.
+	require.False(t, isQuit(pressQ(t, h)), "second quit opens a confirm, not an outright exit")
+	assert.Equal(t, stateConfirm, h.state, "a force-quit confirm modal opens")
+	require.NotNil(t, h.confirmationOverlay)
+
+	_, cmd := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	assert.True(t, isQuit(cmd), "confirming abandons the starting session and exits")
+}
+
+// Cancelling the force-quit confirm keeps waiting: the quit stays armed and
+// completes normally once the session finally finishes starting.
+func TestForceQuitCancelKeepsWaiting(t *testing.T) {
+	h := newQuitTestHome(t)
+	inst := addLoadingInstance(t, h, "loading-one")
+
+	require.False(t, isQuit(pressQ(t, h)))
+	require.False(t, isQuit(pressQ(t, h)), "second quit opens the force-quit modal")
+	require.Equal(t, stateConfirm, h.state)
+
+	_, cmd := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	assert.False(t, isQuit(cmd), "cancelling force-quit does not exit")
+	assert.True(t, h.quitRequested, "still armed — the session is still starting")
+	assert.Equal(t, stateDefault, h.state)
+
+	_, cmd = h.Update(instanceStartedMsg{instance: inst})
+	assert.True(t, isQuit(cmd), "the still-armed quit completes when the start finishes")
+}
+
+// When a quit is deferred and one of several Loading sessions FAILS while a
+// sibling is still Loading, the start error must be surfaced (not swallowed by the
+// "finishing startup" notice) and the quit stays deferred.
+func TestDeferredQuitSurfacesStartErrorWhileSiblingLoads(t *testing.T) {
+	h := newQuitTestHome(t)
+	first := addLoadingInstance(t, h, "loading-first")
+	_ = addLoadingInstance(t, h, "loading-second")
+
+	require.False(t, isQuit(pressQ(t, h)))
+	require.True(t, h.quitRequested)
+
+	_, cmd := h.Update(instanceStartedMsg{instance: first, err: errors.New("worktree boom")})
+	assert.False(t, isQuit(cmd), "the surviving sibling keeps the quit deferred")
+	assert.True(t, h.quitRequested, "quit stays armed")
+	require.True(t, h.menu.HasNotice(), "a notice is shown")
+	assert.Contains(t, h.menu.NoticeText(), "worktree boom", "the start error is surfaced, not swallowed")
 }
