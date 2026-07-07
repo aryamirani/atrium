@@ -1,0 +1,182 @@
+package notify
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/ZviBaratz/atrium/cmd"
+	"github.com/ZviBaratz/atrium/config"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeExec records the commands Run receives and optionally signals each call so a
+// goroutine-dispatched Emit can be awaited deterministically.
+type fakeExec struct {
+	mu   sync.Mutex
+	cmds []*exec.Cmd
+	err  error
+	done chan struct{}
+}
+
+func (f *fakeExec) Run(c *exec.Cmd) error {
+	f.mu.Lock()
+	f.cmds = append(f.cmds, c)
+	f.mu.Unlock()
+	if f.done != nil {
+		f.done <- struct{}{}
+	}
+	return f.err
+}
+
+func (f *fakeExec) Output(*exec.Cmd) ([]byte, error) { return nil, nil }
+
+func (f *fakeExec) calls() []*exec.Cmd {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*exec.Cmd(nil), f.cmds...)
+}
+
+func TestEmitBellWritesBEL(t *testing.T) {
+	var buf bytes.Buffer
+	n := New(&buf, &fakeExec{})
+	n.Emit(config.NotificationsBell, "", "sess", EventFinished)
+	require.Equal(t, "\a", buf.String())
+}
+
+func TestEmitOffAndUnknownDoNothing(t *testing.T) {
+	var buf bytes.Buffer
+	fe := &fakeExec{}
+	n := New(&buf, fe)
+	n.Emit(config.NotificationsOff, "", "sess", EventFinished)
+	n.Emit("bogus", "", "sess", EventNeedsInput)
+	require.Empty(t, buf.String())
+	require.Empty(t, fe.calls())
+}
+
+func TestDesktopCommandUserCommandCarriesEnv(t *testing.T) {
+	n := New(&bytes.Buffer{}, &fakeExec{})
+	c := n.desktopCommand("notify-send \"$ATRIUM_SESSION\"", "my sess", EventNeedsInput)
+	require.Equal(t, []string{"sh", "-c", "notify-send \"$ATRIUM_SESSION\""}, c.Args)
+	require.Contains(t, c.Env, "ATRIUM_SESSION=my sess")
+	require.Contains(t, c.Env, "ATRIUM_STATUS=NeedsInput")
+	require.Contains(t, c.Env, "ATRIUM_EVENT=needs_input")
+}
+
+func TestDefaultCommandLinux(t *testing.T) {
+	n := New(&bytes.Buffer{}, &fakeExec{})
+	n.lookPath = func(name string) (string, error) {
+		if name == "notify-send" {
+			return "/usr/bin/notify-send", nil
+		}
+		return "", errors.New("not found")
+	}
+	c := n.defaultCommand("linux", "sess", EventFinished)
+	require.NotNil(t, c)
+	require.Equal(t, []string{"/usr/bin/notify-send", "Atrium", "sess finished"}, c.Args)
+}
+
+func TestDefaultCommandDarwinPrefersTerminalNotifier(t *testing.T) {
+	n := New(&bytes.Buffer{}, &fakeExec{})
+	n.lookPath = func(name string) (string, error) {
+		if name == "terminal-notifier" {
+			return "/opt/tn", nil
+		}
+		return "", errors.New("not found")
+	}
+	c := n.defaultCommand("darwin", "sess", EventNeedsInput)
+	require.NotNil(t, c)
+	require.Equal(t, []string{"/opt/tn", "-title", "Atrium", "-message", "sess needs input"}, c.Args)
+}
+
+func TestDefaultCommandDarwinFallsBackToOsascript(t *testing.T) {
+	n := New(&bytes.Buffer{}, &fakeExec{})
+	n.lookPath = func(name string) (string, error) {
+		if name == "osascript" {
+			return "/usr/bin/osascript", nil
+		}
+		return "", errors.New("not found")
+	}
+	c := n.defaultCommand("darwin", "se\"ss", EventFinished)
+	require.NotNil(t, c)
+	require.Equal(t, "/usr/bin/osascript", c.Args[0])
+	require.Equal(t, "-e", c.Args[1])
+	// Body is AppleScript-quoted with the embedded quote escaped.
+	require.Equal(t, `display notification "se\"ss finished" with title "Atrium"`, c.Args[2])
+}
+
+func TestDefaultCommandNoNotifierReturnsNil(t *testing.T) {
+	n := New(&bytes.Buffer{}, &fakeExec{})
+	n.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	require.Nil(t, n.defaultCommand("linux", "sess", EventFinished))
+}
+
+func TestEmitDesktopRunsUserCommand(t *testing.T) {
+	fe := &fakeExec{done: make(chan struct{}, 1)}
+	n := New(&bytes.Buffer{}, fe)
+	n.Emit(config.NotificationsDesktop, "true", "sess", EventFinished)
+	select {
+	case <-fe.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("desktop command was not run")
+	}
+	calls := fe.calls()
+	require.Len(t, calls, 1)
+	require.Equal(t, []string{"sh", "-c", "true"}, calls[0].Args)
+}
+
+func TestEmitDesktopErrorIsNonFatal(t *testing.T) {
+	fe := &fakeExec{err: errors.New("boom"), done: make(chan struct{}, 1)}
+	n := New(&bytes.Buffer{}, fe)
+	n.Emit(config.NotificationsDesktop, "false", "sess", EventNeedsInput)
+	select {
+	case <-fe.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("desktop command was not run")
+	}
+	// No panic, no bell written; the error is logged, not surfaced.
+}
+
+// TestEmitDesktopRunsRealCommandWithEnv exercises the whole desktop path end to end
+// through the real cmd.Executor: Emit → goroutine → `sh -c` → env propagation → a
+// process that writes what it received. This is the only test that proves the env
+// actually reaches the spawned command (the fake-executor tests only inspect the
+// built *exec.Cmd).
+func TestEmitDesktopRunsRealCommandWithEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	n := New(io.Discard, cmd.MakeExecutor())
+	script := "printf '%s|%s|%s' \"$ATRIUM_SESSION\" \"$ATRIUM_STATUS\" \"$ATRIUM_EVENT\" > " + out
+	n.Emit(config.NotificationsDesktop, script, "sess one", EventNeedsInput)
+
+	var data []byte
+	require.Eventually(t, func() bool {
+		b, err := os.ReadFile(out)
+		if err != nil {
+			return false
+		}
+		data = b
+		return len(b) > 0
+	}, 2*time.Second, 10*time.Millisecond, "the desktop command should run and write the file")
+	require.Equal(t, "sess one|NeedsInput|needs_input", string(data))
+}
+
+func TestEmitDesktopNoNotifierDoesNotRun(t *testing.T) {
+	fe := &fakeExec{}
+	n := New(&bytes.Buffer{}, fe)
+	n.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	n.Emit(config.NotificationsDesktop, "", "sess", EventFinished)
+	// Desktop dispatch is async but returns nil before touching the runner; give it
+	// a moment and confirm nothing ran.
+	time.Sleep(50 * time.Millisecond)
+	require.Empty(t, fe.calls())
+}

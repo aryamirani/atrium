@@ -1380,7 +1380,7 @@ func TestApplyMetadataResults(t *testing.T) {
 				model:    "claude-opus-4-8", modelOK: true,
 				mode: "plan", modeOK: true,
 			},
-		})
+		}, false)
 
 		require.Empty(t, cmds, "no queued prompts means no delivery commands")
 		assert.Equal(t, session.Ready, inst.GetStatus(), "PaneIdle must apply as Ready")
@@ -1400,7 +1400,7 @@ func TestApplyMetadataResults(t *testing.T) {
 		h.applyMetadataResults([]instanceMetaResult{
 			{instance: lost, state: tmux.PaneIdle, sessionLost: true},
 			{instance: paused, state: tmux.PaneIdle},
-		})
+		}, false)
 
 		assert.Equal(t, session.Running, lost.GetStatus(), "a lost session must not be applied (it awaits recovery)")
 		assert.Equal(t, session.Paused, paused.GetStatus(), "a paused session must not be resurrected")
@@ -1415,7 +1415,7 @@ func TestApplyMetadataResults(t *testing.T) {
 		// A first sweep establishes the model and permission mode.
 		h.applyMetadataResults([]instanceMetaResult{
 			{instance: inst, state: tmux.PaneIdle, model: "claude-opus-4-8", modelOK: true, mode: "plan", modeOK: true},
-		})
+		}, false)
 		require.Equal(t, "claude-opus-4-8", inst.ModelInfo())
 		require.Equal(t, "plan", inst.PermissionModeInfo())
 
@@ -1423,7 +1423,7 @@ func TestApplyMetadataResults(t *testing.T) {
 		// non-claude/unavailable/unchanged) must not clobber the established meta.
 		h.applyMetadataResults([]instanceMetaResult{
 			{instance: inst, state: tmux.PaneIdle, modelOK: false, modeOK: false},
-		})
+		}, false)
 		assert.Equal(t, "claude-opus-4-8", inst.ModelInfo(), "a not-OK model compute must retain the prior model")
 		assert.Equal(t, "plan", inst.PermissionModeInfo(), "a not-OK mode compute must retain the prior mode")
 	})

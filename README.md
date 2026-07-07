@@ -151,6 +151,36 @@ explicit `atrium update` command works regardless of this setting. Alongside
 the transient hint, a persistent `⇡` badge in the Sessions panel border shows
 the pending update (or restart) state until the next launch.
 
+#### Notifications
+
+Because each agent runs inside Atrium's own tmux server, an agent's own terminal
+bell never reaches you — so Atrium can emit its own signal when a **background**
+session finishes a turn or blocks on a prompt. `notifications` selects how:
+
+- `"off"` (default) — no notifications.
+- `"bell"` — rings the terminal bell once per edge on Atrium's own terminal.
+- `"desktop"` — fires a desktop notification. With `notify_command` unset, Atrium
+  uses a built-in per-OS notifier (`notify-send` on Linux, `terminal-notifier` or
+  `osascript` on macOS); a missing notifier is a silent no-op.
+
+The session you're currently on — the selected row, or one you're attached to —
+never notifies, so only agents you've navigated away from can interrupt you.
+
+```json
+{
+  "notifications": "desktop",
+  "notify_command": "notify-send \"Atrium\" \"$ATRIUM_SESSION $ATRIUM_STATUS\""
+}
+```
+
+`notify_command`, when set, runs via `sh -c` for each desktop notification with
+`$ATRIUM_SESSION` (the session's display name), `$ATRIUM_STATUS`
+(`Ready`/`NeedsInput`), and `$ATRIUM_EVENT` (`finished`/`needs_input`) in its
+environment — the session name rides in the environment, never interpolated into
+the command, so it can't break argument parsing. Use it for `terminal-notifier`,
+webhooks (`curl`), or any custom notifier. A failing command is logged, never
+fatal. Both settings are also editable live from the Settings panel (`,`).
+
 #### Profiles
 
 Profiles let you define multiple named program configurations and switch between them when creating a new session. When more than one profile is defined, the session creation overlay shows a profile picker that you can navigate with `←`/`→`.

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/session/git"
@@ -492,14 +493,35 @@ func collectMetadata(ctx context.Context, poll []*session.Instance, selected *se
 // metadata tick and the one-shot detach sweep. It deliberately does NOT recover lost
 // sessions or reschedule the tick — those stay with the periodic handler (recovery's
 // strike debounce must not be shortened by a same-resume double observation).
-func (m *home) applyMetadataResults(results []instanceMetaResult) []tea.Cmd {
+func (m *home) applyMetadataResults(results []instanceMetaResult, emit bool) []tea.Cmd {
+	// Read the notification mode once per batch: when off (the default) the per-instance
+	// status snapshots below are skipped entirely, so a disabled feature adds no work.
+	// The detach sweep passes emit=false, so returning to the list never replays a burst
+	// of edges that fired silently while the event loop was suspended by an attach.
+	mode := config.NotificationsOff
+	if emit {
+		mode = m.notificationsMode()
+	}
+	notifyOn := mode != config.NotificationsOff
 	for _, r := range results {
 		// Skip instances that were paused while metadata was being computed, or that
 		// were just recovered to Paused because their session died.
 		if r.sessionLost || r.instance.Paused() {
 			continue
 		}
+		// Snapshot the status and unread stamp just before ApplyPaneState so maybeNotify
+		// can detect the transition it drives (ApplyPaneState calls SetStatus, which
+		// overwrites both). Only taken when notifications are on.
+		var old session.Status
+		var prevUnreadAt time.Time
+		if notifyOn {
+			old = r.instance.GetStatus()
+			prevUnreadAt = r.instance.UnreadAt()
+		}
 		r.instance.ApplyPaneState(r.state)
+		if notifyOn {
+			m.maybeNotify(r.instance, old, prevUnreadAt, mode)
+		}
 		applyDiffStats(r.instance, r.diffStats)
 		r.instance.SetPRStatus(r.prStatus)
 		if r.modelOK {

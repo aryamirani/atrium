@@ -347,6 +347,33 @@ func newSettingRows(cfg *config.Config) []settingRow {
 			},
 		},
 		{
+			key: "notifications", section: "Behavior", label: "Notifications", kind: kindEnum,
+			description: "Signal a background session finishing or blocking: bell rings the terminal, desktop runs a notifier (Notify command, else notify-send / terminal-notifier / osascript). The selected and attached sessions stay silent.",
+			get:         func(c *config.Config) string { return c.GetNotifications() },
+			set: func(c *config.Config, v string) error {
+				c.Notifications = v
+				return nil
+			},
+			options: func(c *config.Config) []string {
+				return []string{config.NotificationsOff, config.NotificationsBell, config.NotificationsDesktop}
+			},
+		},
+		{
+			key: "notify_command", section: "Behavior", label: "Notify command", kind: kindText,
+			description: "Shell command run for each desktop notification, with $ATRIUM_SESSION, $ATRIUM_STATUS, $ATRIUM_EVENT in its environment. Empty uses a built-in per-OS notifier.",
+			get: func(c *config.Config) string {
+				if c.NotifyCommand == "" {
+					return "(built-in)"
+				}
+				return c.NotifyCommand
+			},
+			editGet: func(c *config.Config) string { return c.NotifyCommand },
+			set: func(c *config.Config, v string) error {
+				c.NotifyCommand = strings.TrimSpace(v)
+				return nil
+			},
+		},
+		{
 			key: "tmux_config_override", section: "Behavior", label: "Tmux config override", kind: kindText,
 			description: "Custom tmux config path.", applyNote: "affects new sessions",
 			get: func(c *config.Config) string {
