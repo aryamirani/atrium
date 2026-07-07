@@ -105,7 +105,7 @@ func TestSessionSort_KillReflectedInCanonicalOrder(t *testing.T) {
 	_ = b
 	l.SetSortMode("status")
 
-	l.KillInstance(l.items[1])
+	_ = l.KillInstance(l.items[1])
 	l.SetSortMode("creation")
 
 	require.Equal(t, []*session.Instance{a, c}, l.items, "killed session gone from canonical order")

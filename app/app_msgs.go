@@ -351,7 +351,10 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 	m.list.SelectInstance(msg.instance)
 
 	if msg.err != nil {
-		m.list.Kill()
+		// Tear down the session that failed to start. Any teardown error is already
+		// logged inside KillInstance; the meaningful failure here is msg.err, which
+		// is surfaced below, so discard Kill's return rather than fight that modal.
+		_ = m.list.Kill()
 		return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 	}
 

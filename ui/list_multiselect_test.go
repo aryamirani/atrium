@@ -94,7 +94,7 @@ func TestList_MarkedInstancesInViewDropsRemoved(t *testing.T) {
 	l.ToggleMark(a)
 	l.ToggleMark(b)
 
-	l.KillInstance(a) // a leaves the list while still in the marked set
+	_ = l.KillInstance(a) // a leaves the list while still in the marked set
 
 	got := l.MarkedInstancesInView()
 	require.Equal(t, []*session.Instance{b}, got, "a removed instance drops from the marked scope")

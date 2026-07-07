@@ -5,6 +5,7 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -687,10 +688,34 @@ func (t *Session) Close() error {
 
 	ctx, cancel := t.opContext()
 	defer cancel()
+	// Capture stderr so a kill-session failure can be classified: an already-dead
+	// session (external kill, crashed/absent server) is the teardown goal already
+	// met, not a failure to report. Anything else — notably a hung server that
+	// leaves the agent alive — must surface so the caller doesn't claim a clean
+	// kill.
+	var stderr bytes.Buffer
 	cmd := tmuxCommand(ctx, "kill-session", "-t", t.sanitizedName)
-	tc.Record("kill tmux session", t.cmdExec.Run(cmd))
+	cmd.Stderr = &stderr
+	if err := t.cmdExec.Run(cmd); err != nil && !sessionAlreadyGone(err, stderr.String()) {
+		tc.Record("kill tmux session", err)
+	}
 
 	return tc.Err()
+}
+
+// sessionAlreadyGone reports whether a kill-session failure just means the session
+// was already dead rather than a real teardown failure. tmux prints "can't find
+// session"/"session not found" when the session is gone and "no server running on
+// ..." when the whole server is down; both mean no live session remains, which is
+// exactly what Close aims for. The message can arrive on stderr (real tmux) or in
+// the error itself (test fakes), so check both. Anything unrecognized — a hung
+// server, a timeout — falls through as a real error so the caller can surface it;
+// tmux's messages are stable English, so the failure direction is the safe one.
+func sessionAlreadyGone(err error, stderr string) bool {
+	hay := strings.ToLower(err.Error() + " " + stderr)
+	return strings.Contains(hay, "no server running") ||
+		strings.Contains(hay, "session not found") ||
+		strings.Contains(hay, "can't find session")
 }
 
 // SetDetachedSize set the width and height of the session while detached. This makes the

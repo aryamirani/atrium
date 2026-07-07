@@ -539,19 +539,20 @@ func (l *List) rowNeedsUser(idx int, member func(*session.Instance) bool, groupC
 	return member(l.items[idx])
 }
 
-// Kill tears down the selected instance and removes it from the list.
-func (l *List) Kill() {
+// Kill tears down the selected instance and removes it from the list, returning
+// any teardown failure so the caller can surface what leaked.
+func (l *List) Kill() error {
 	if len(l.items) == 0 {
-		return
+		return nil
 	}
-	l.KillInstance(l.items[l.selectedIdx])
+	return l.KillInstance(l.items[l.selectedIdx])
 }
 
 // KillInstance tears down target and removes it from the list, keeping the
 // selection pointing at the same logical instance where possible. Unlike Kill,
 // target need not be the selected item — the in-session kill path (Ctrl+X) and
 // the auto-open path target a specific instance regardless of current selection.
-func (l *List) KillInstance(target *session.Instance) {
+func (l *List) KillInstance(target *session.Instance) error {
 	idx := -1
 	for i, item := range l.items {
 		if item == target {
@@ -560,7 +561,7 @@ func (l *List) KillInstance(target *session.Instance) {
 		}
 	}
 	if idx == -1 {
-		return
+		return nil
 	}
 
 	// Under an active view (sort mode or account grouping), drop the target from the
@@ -577,9 +578,13 @@ func (l *List) KillInstance(target *session.Instance) {
 		}()
 	}
 
-	// Kill the tmux session and clean up the worktree.
-	if err := target.Kill(); err != nil {
-		log.ErrorLog.Printf("could not kill instance: %v", err)
+	// Kill the tmux session and clean up the worktree. Still remove the row even
+	// when teardown fails — the instance is already gone from storage — but return
+	// the error so the caller can tell the user what leaked (a live tmux session
+	// or a leftover branch) instead of reporting a clean kill.
+	killErr := target.Kill()
+	if killErr != nil {
+		log.ErrorLog.Printf("could not kill instance: %v", killErr)
 	}
 
 	l.items = append(l.items[:idx], l.items[idx+1:]...)
@@ -593,6 +598,8 @@ func (l *List) KillInstance(target *session.Instance) {
 	// Removing an item can still shift the selection onto a now-hidden index (or
 	// off the end), so re-establish the navigable-selection invariant.
 	l.clampSelectionToNavigable()
+
+	return killErr
 }
 
 // Up selects the prev visible item in the list, wrapping at the top and skipping the hidden

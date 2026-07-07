@@ -126,7 +126,7 @@ func TestCollapse_IgnoredWhenDownToSingleRepo(t *testing.T) {
 
 	// Kill repoB, leaving only repoA.
 	l.SetSelectedInstance(1)
-	l.Kill()
+	_ = l.Kill()
 
 	out := l.String()
 	require.Contains(t, out, "alpha", "the lone surviving group must be visible")
@@ -160,7 +160,7 @@ func TestCollapsedRepos_PrunesVanishedRepos(t *testing.T) {
 	require.ElementsMatch(t, []string{"repoA", "repoB"}, l.CollapsedRepos())
 
 	l.SetSelectedInstance(1) // repoB
-	l.Kill()
+	_ = l.Kill()
 	require.Equal(t, []string{"repoA"}, l.CollapsedRepos(), "repoB's stale key is pruned")
 }
 
@@ -172,7 +172,7 @@ func TestKill_AnchorOfCollapsedGroupKeepsSelectionVisible(t *testing.T) {
 	require.True(t, l.Collapse()) // collapse repoA (2 members)
 
 	l.SetSelectedInstance(0) // anchor
-	l.Kill()
+	_ = l.Kill()
 	require.False(t, l.isHidden(l.selectedIdx), "selection must rest on a visible item after kill")
 }
 

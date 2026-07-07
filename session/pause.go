@@ -124,6 +124,10 @@ func (i *Instance) pause() error {
 		if tc.Record("commit changes", wt.CommitChanges(commitMsg)) {
 			return tc.Err()
 		}
+		// The metadata poll skips paused instances, so fold this WIP commit into
+		// the cached/persisted commit count now — otherwise the kill dialog would
+		// not warn before `branch -D` destroys its only ref.
+		i.noteAutoPauseCommit()
 	}
 
 	// Detach from tmux session instead of closing to preserve session output.
