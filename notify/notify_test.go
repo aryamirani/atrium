@@ -2,6 +2,7 @@ package notify
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -63,7 +64,7 @@ func TestEmitOffAndUnknownDoNothing(t *testing.T) {
 
 func TestDesktopCommandUserCommandCarriesEnv(t *testing.T) {
 	n := New(&bytes.Buffer{}, &fakeExec{})
-	c := n.desktopCommand("notify-send \"$ATRIUM_SESSION\"", "my sess", EventNeedsInput)
+	c := n.desktopCommand(context.Background(), "notify-send \"$ATRIUM_SESSION\"", "my sess", EventNeedsInput)
 	require.Equal(t, []string{"sh", "-c", "notify-send \"$ATRIUM_SESSION\""}, c.Args)
 	require.Contains(t, c.Env, "ATRIUM_SESSION=my sess")
 	require.Contains(t, c.Env, "ATRIUM_STATUS=NeedsInput")
@@ -78,7 +79,7 @@ func TestDefaultCommandLinux(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	c := n.defaultCommand("linux", "sess", EventFinished)
+	c := n.defaultCommand(context.Background(), "linux", "sess", EventFinished)
 	require.NotNil(t, c)
 	require.Equal(t, []string{"/usr/bin/notify-send", "Atrium", "sess finished"}, c.Args)
 }
@@ -91,7 +92,7 @@ func TestDefaultCommandDarwinPrefersTerminalNotifier(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	c := n.defaultCommand("darwin", "sess", EventNeedsInput)
+	c := n.defaultCommand(context.Background(), "darwin", "sess", EventNeedsInput)
 	require.NotNil(t, c)
 	require.Equal(t, []string{"/opt/tn", "-title", "Atrium", "-message", "sess needs input"}, c.Args)
 }
@@ -104,7 +105,7 @@ func TestDefaultCommandDarwinFallsBackToOsascript(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	c := n.defaultCommand("darwin", "se\"ss", EventFinished)
+	c := n.defaultCommand(context.Background(), "darwin", "se\"ss", EventFinished)
 	require.NotNil(t, c)
 	require.Equal(t, "/usr/bin/osascript", c.Args[0])
 	require.Equal(t, "-e", c.Args[1])
@@ -115,7 +116,7 @@ func TestDefaultCommandDarwinFallsBackToOsascript(t *testing.T) {
 func TestDefaultCommandNoNotifierReturnsNil(t *testing.T) {
 	n := New(&bytes.Buffer{}, &fakeExec{})
 	n.lookPath = func(string) (string, error) { return "", errors.New("not found") }
-	require.Nil(t, n.defaultCommand("linux", "sess", EventFinished))
+	require.Nil(t, n.defaultCommand(context.Background(), "linux", "sess", EventFinished))
 }
 
 func TestEmitDesktopRunsUserCommand(t *testing.T) {

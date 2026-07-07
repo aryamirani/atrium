@@ -7,6 +7,7 @@
 package notify
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,11 +15,18 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ZviBaratz/atrium/cmd"
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
 )
+
+// notifyCommandTimeout bounds a single desktop-notification command. A notification
+// is ephemeral and runs detached from the TUI, so the bound exists only to stop a
+// wedged notifier (a stuck dialog, a dead webhook socket) from leaking a process for
+// the app's lifetime — it is generous enough never to cut off a real notifier.
+const notifyCommandTimeout = 30 * time.Second
 
 // Event is the session transition that triggered a notification.
 type Event int
@@ -100,7 +108,9 @@ func (n *Notifier) bell() {
 // failure. A nil command means nothing to run (no command configured and no default
 // notifier on PATH — already logged).
 func (n *Notifier) desktop(command, session string, ev Event) {
-	c := n.desktopCommand(command, session, ev)
+	ctx, cancel := context.WithTimeout(context.Background(), notifyCommandTimeout)
+	defer cancel()
+	c := n.desktopCommand(ctx, command, session, ev)
 	if c == nil {
 		return
 	}
@@ -114,9 +124,9 @@ func (n *Notifier) desktop(command, session string, ev Event) {
 // session name rides in the environment (never interpolated into the argv), so it
 // can't break argument parsing or inject shell. Returns nil when no command is
 // configured and no default notifier is on PATH.
-func (n *Notifier) desktopCommand(command, session string, ev Event) *osexec.Cmd {
+func (n *Notifier) desktopCommand(ctx context.Context, command, session string, ev Event) *osexec.Cmd {
 	if command != "" {
-		c := osexec.Command("sh", "-c", command)
+		c := osexec.CommandContext(ctx, "sh", "-c", command)
 		c.Env = append(os.Environ(),
 			"ATRIUM_SESSION="+session,
 			"ATRIUM_STATUS="+ev.status(),
@@ -124,28 +134,28 @@ func (n *Notifier) desktopCommand(command, session string, ev Event) *osexec.Cmd
 		)
 		return c
 	}
-	return n.defaultCommand(runtime.GOOS, session, ev)
+	return n.defaultCommand(ctx, runtime.GOOS, session, ev)
 }
 
 // defaultCommand resolves a built-in desktop notifier for the given OS: notify-send
 // on Linux/BSD, terminal-notifier then osascript on macOS. goos is a parameter (not
 // runtime.GOOS directly) so the selection is testable on any host. Returns nil and
 // logs once when nothing suitable is on PATH.
-func (n *Notifier) defaultCommand(goos, session string, ev Event) *osexec.Cmd {
+func (n *Notifier) defaultCommand(ctx context.Context, goos, session string, ev Event) *osexec.Cmd {
 	const title = "Atrium"
 	body := ev.headline(session)
 	switch goos {
 	case "darwin":
 		if path, err := n.lookPath("terminal-notifier"); err == nil {
-			return osexec.Command(path, "-title", title, "-message", body)
+			return osexec.CommandContext(ctx, path, "-title", title, "-message", body)
 		}
 		if path, err := n.lookPath("osascript"); err == nil {
 			script := fmt.Sprintf("display notification %s with title %s", osaQuote(body), osaQuote(title))
-			return osexec.Command(path, "-e", script)
+			return osexec.CommandContext(ctx, path, "-e", script)
 		}
 	default: // linux and other freedesktop-notifier platforms
 		if path, err := n.lookPath("notify-send"); err == nil {
-			return osexec.Command(path, title, body)
+			return osexec.CommandContext(ctx, path, title, body)
 		}
 	}
 	n.warnOnce.Do(func() {
