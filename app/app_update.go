@@ -126,7 +126,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				cmds = append(cmds, m.surfaceLostRecoveries(recoveries))
 			}
-			cmds = append(cmds, m.applyMetadataResults(msg.results)...)
+			cmds = append(cmds, m.applyMetadataResults(msg.results, true)...)
 		}
 		m.metadataTick++
 		fullSweep := m.metadataTick%metadataFullSweepEvery == 0
@@ -146,7 +146,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.attachGen != m.attachGen {
 			return m, nil // captured before an attach ran; stale (see home.attachGen)
 		}
-		return m, tea.Batch(m.applyMetadataResults(msg.results)...)
+		return m, tea.Batch(m.applyMetadataResults(msg.results, false)...)
 	case instancePolledMsg:
 		// An off-cadence single-instance status refresh (selection change). Apply the state
 		// but do NOT reschedule the metadata tick — that chain is owned by
@@ -349,6 +349,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *home) finishBatch(cleanup []*session.Instance, hasFailures bool, notice, summary string) tea.Cmd {
 	for _, inst := range cleanup {
 		cleanupTerminalForInstance(m.tabbedWindow, inst)
+		m.forgetInstance(inst) // drop the removed session's notify/recovery bookkeeping
 	}
 	if !hasFailures {
 		return tea.Batch(m.handleInfoNotice(notice), m.instanceChanged())

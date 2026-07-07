@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"os"
 
+	"github.com/ZviBaratz/atrium/cmd"
 	"github.com/ZviBaratz/atrium/config"
+	"github.com/ZviBaratz/atrium/notify"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui"
 	"github.com/ZviBaratz/atrium/ui/theme"
@@ -37,6 +40,8 @@ func assembleHome(
 		errBox:       ui.NewErrBox(),
 		storage:      storage,
 		lostStrikes:  make(map[*session.Instance]int),
+		notifier:     notify.New(os.Stdout, cmd.MakeExecutor()),
+		notifySeen:   make(map[*session.Instance]*notifyState),
 		appConfig:    appConfig,
 		program:      program,
 		autoYes:      autoYes,

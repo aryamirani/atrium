@@ -237,6 +237,31 @@ func (c *Config) GetGroupMode() string {
 	}
 }
 
+// GetNotifications returns the normalized notification mode: NotificationsBell,
+// NotificationsDesktop, or NotificationsOff for a nil Config, an empty value, or
+// anything unrecognized — a typo must never silently start ringing bells or firing
+// desktop popups.
+func (c *Config) GetNotifications() string {
+	if c == nil {
+		return NotificationsOff
+	}
+	switch c.Notifications {
+	case NotificationsBell, NotificationsDesktop:
+		return c.Notifications
+	default:
+		return NotificationsOff
+	}
+}
+
+// GetNotifyCommand returns the configured desktop-notification command, or "" for a
+// nil Config or an unset value (the notifier then falls back to a per-OS default).
+func (c *Config) GetNotifyCommand() string {
+	if c == nil {
+		return ""
+	}
+	return c.NotifyCommand
+}
+
 // GetBranchPrefix returns the configured git-branch prefix (e.g. "zvi/"), or ""
 // for a nil Config. The list view strips this prefix from each session's branch
 // when rendering, since it repeats identically on every row and carries no

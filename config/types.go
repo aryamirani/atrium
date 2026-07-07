@@ -48,6 +48,23 @@ const (
 	GroupModeAccount = "account"
 )
 
+// Notifications modes (Config.Notifications). See GetNotifications for normalization.
+// Atrium emits its own out-of-band signal when a background session finishes a turn
+// or blocks on a prompt — an agent's own bell can't reach the user, since agents run
+// inside Atrium's dedicated tmux server and the TUI shows capture-pane content.
+const (
+	// NotificationsOff disables all notifications. The default — no surprise for
+	// existing users on upgrade.
+	NotificationsOff = "off"
+	// NotificationsBell rings the terminal bell (BEL) once per edge on the TUI's own
+	// stdout. Audible even when the user is alt-tabbed away.
+	NotificationsBell = "bell"
+	// NotificationsDesktop fires a desktop notification via an external command:
+	// Config.NotifyCommand if set, otherwise a built-in per-OS default (notify-send /
+	// terminal-notifier / osascript). A missing notifier is a silent no-op.
+	NotificationsDesktop = "desktop"
+)
+
 // Profile represents a named program configuration
 type Profile struct {
 	Name    string `json:"name"`
@@ -283,4 +300,15 @@ type Config struct {
 	// Auto-created sessions use the agent's default permission mode (skipping the form
 	// forgoes the Permissions chip), so enable this only if that default suits you.
 	SmartDispatchAuto *bool `json:"smart_dispatch_auto,omitempty"`
+	// Notifications selects how Atrium signals a background session finishing a turn
+	// or blocking on a prompt: "off" (default), "bell" (terminal BEL), or "desktop"
+	// (external notify command). Empty or unrecognized values normalize to "off"
+	// (GetNotifications). The selected and currently-attached sessions stay silent.
+	Notifications string `json:"notifications,omitempty"`
+	// NotifyCommand is an optional shell command run for each "desktop" notification.
+	// It runs via `sh -c` with $ATRIUM_SESSION (display name), $ATRIUM_STATUS
+	// ("Ready"/"NeedsInput"), and $ATRIUM_EVENT ("finished"/"needs_input") in the
+	// environment — the session name is passed as env, never interpolated, so it can
+	// never break argument parsing. Empty falls back to a built-in per-OS default.
+	NotifyCommand string `json:"notify_command,omitempty"`
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/hints"
 	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/notify"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/session/tmux"
 	"github.com/ZviBaratz/atrium/ui"
@@ -183,6 +184,15 @@ type home struct {
 	// lostStrikes counts consecutive ticks each instance has been seen with a dead
 	// tmux session, debouncing auto-recovery to Paused (see recoverLostInstances).
 	lostStrikes map[*session.Instance]int
+	// notifier emits the terminal bell / desktop notification when a background
+	// session finishes a turn or blocks on a prompt (see app_notify.go, config
+	// Notifications). nil disables notification (hand-built test homes).
+	notifier *notify.Notifier
+	// notifySeen tracks per-instance notification state (first-observation gate to
+	// suppress the startup replay of restored statuses, plus per-edge throttle
+	// timestamps). An instance absent from the map has not been observed yet, so its
+	// first status is never notified — only genuine later transitions are.
+	notifySeen map[*session.Instance]*notifyState
 	// metadataTick counts metadata poll cycles. Non-selected sessions are only fully
 	// swept every metadataFullSweepEvery ticks (see tickUpdateMetadataCmd); the counter
 	// drives that cadence.

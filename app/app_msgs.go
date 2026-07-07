@@ -357,6 +357,7 @@ func (m *home) handleInstanceStarted(msg instanceStartedMsg) (tea.Model, tea.Cmd
 		// logged inside KillInstance; the meaningful failure here is msg.err, which
 		// is surfaced below, so discard Kill's return rather than fight that modal.
 		_ = m.list.Kill()
+		m.forgetInstance(msg.instance) // the failed session is gone from the list; drop its bookkeeping
 		// A quit deferred while this session was Loading (issue #268): the failed
 		// session is torn down and gone from the list, so resume the quit if it's now
 		// safe. Surface the start error last either way — if the quit re-defers (a
