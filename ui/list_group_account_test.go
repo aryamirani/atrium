@@ -260,7 +260,7 @@ func TestGroupMode_KillInstanceKeepsClusteringAndCanonicalPersist(t *testing.T) 
 	require.Equal(t, []string{"api|work", "infra|work", "sideproj|personal"}, orderKeys(l))
 
 	target := l.items[0] // api|work, the first work-cluster entry
-	l.KillInstance(target)
+	_ = l.KillInstance(target)
 
 	// Removing api leaves canonical order sideproj,infra: personal now leads the
 	// first-appearance account order, so the cluster order flips relative to

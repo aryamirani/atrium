@@ -170,7 +170,7 @@ func TestBatchKill_SummaryNamesFailures(t *testing.T) {
 
 	got := msg.summary()
 
-	assert.Contains(t, got, "Killed 3 of 5 sessions. 2 could not be killed:")
+	assert.Contains(t, got, "Killed 3 of 5 sessions. 2 reported errors:")
 	assert.Contains(t, got, "api-fix — branch checked out in the main repo")
 	assert.Contains(t, got, "db — boom")
 }

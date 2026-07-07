@@ -88,6 +88,33 @@ func (i *Instance) clearCachedDirty() {
 	}
 }
 
+// noteAutoPauseCommit folds pause's auto-WIP commit into the cached commit count
+// so the kill dialog warns about the now-committed work. The metadata poll skips
+// paused instances, so without this the auto-commit stays invisible in cached and
+// persisted stats until a Resume. Creates the stats if none are cached yet (a
+// never-polled session about to be paused): the branch holds at least this commit.
+// Main-loop only, like clearCachedDirty/SetDiffStats.
+func (i *Instance) noteAutoPauseCommit() {
+	if i.diffStats == nil {
+		i.diffStats = &git.DiffStats{}
+	}
+	i.diffStats.Commits++
+}
+
+// noteAutoPauseUnwind reverses noteAutoPauseCommit's cached accounting when Resume
+// soft-resets the n auto-WIP commits back into pending changes: drop them from the
+// cached ahead-count and mark the tree dirty again. Without this the pause-bumped
+// count drifts above the real ahead-count after a resume — durably (and persisted)
+// for a session re-paused before the next poll, since the poll skips paused
+// instances. No-op when no stats are cached. Main-loop only, like noteAutoPauseCommit.
+func (i *Instance) noteAutoPauseUnwind(n int) {
+	if i.diffStats == nil || n <= 0 {
+		return
+	}
+	i.diffStats.Commits = max(0, i.diffStats.Commits-n)
+	i.diffStats.Dirty = true
+}
+
 // ComputePRStatus fetches the session branch's pull-request status off the main
 // thread (it may shell out to gh over the network). Returns nil for sessions
 // that cannot have a PR — not started, paused, or direct (no worktree/branch).

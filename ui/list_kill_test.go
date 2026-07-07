@@ -9,7 +9,7 @@ func TestKillInstanceRemovesTargetBeforeSelection(t *testing.T) {
 	l := newTestList("a", "b", "c")
 	l.SetSelectedInstance(2) // select "c"
 
-	l.KillInstance(l.GetInstances()[0]) // kill "a", before the selection
+	_ = l.KillInstance(l.GetInstances()[0]) // kill "a", before the selection
 
 	if got := l.NumInstances(); got != 2 {
 		t.Fatalf("expected 2 instances after kill, got %d", got)
@@ -24,7 +24,7 @@ func TestKillInstanceRemovesTargetAfterSelection(t *testing.T) {
 	l := newTestList("a", "b", "c")
 	l.SetSelectedInstance(1) // select "b"
 
-	l.KillInstance(l.GetInstances()[2]) // kill "c", after the selection
+	_ = l.KillInstance(l.GetInstances()[2]) // kill "c", after the selection
 
 	if got := l.NumInstances(); got != 2 {
 		t.Fatalf("expected 2 instances after kill, got %d", got)

@@ -242,7 +242,7 @@ func TestKillInstance_SelectsPreviousWhenLastRemoved(t *testing.T) {
 	l := newTestList("a", "b", "c")
 	l.SetSelectedInstance(2) // select the last item, "c"
 
-	l.KillInstance(l.items[2])
+	_ = l.KillInstance(l.items[2])
 
 	require.Equal(t, 1, l.selectedIdx, "removing the selected last item selects its neighbour")
 	require.Equal(t, "b", l.items[l.selectedIdx].Title, "selection lands on b, not a")

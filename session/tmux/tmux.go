@@ -5,6 +5,7 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -687,10 +688,51 @@ func (t *Session) Close() error {
 
 	ctx, cancel := t.opContext()
 	defer cancel()
-	cmd := tmuxCommand(ctx, "kill-session", "-t", t.sanitizedName)
-	tc.Record("kill tmux session", t.cmdExec.Run(cmd))
+	// Capture stderr so a kill-session failure can be classified: an already-dead
+	// session (external kill, crashed/absent server) is the teardown goal already
+	// met, not a failure to report. Anything else — notably a hung server that
+	// leaves the agent alive — must surface so the caller doesn't claim a clean
+	// kill.
+	var stderr bytes.Buffer
+	// "-t=" forces an exact-name match. A bare "-t" is a tmux prefix match, so
+	// killing an already-gone session could match and kill a *different* live
+	// session whose name this one is a prefix of (e.g. "sess" vs "sess2").
+	// DoesSessionExist uses "-t=" for exactly this reason.
+	cmd := tmuxCommand(ctx, "kill-session", fmt.Sprintf("-t=%s", t.sanitizedName))
+	cmd.Stderr = &stderr
+	if err := t.cmdExec.Run(cmd); err != nil && !sessionAlreadyGone(err, stderr.String()) {
+		// The error itself is usually just "exit status 1"; tmux's real diagnostic
+		// lands on stderr, so fold it in so the surfaced failure is legible.
+		tc.Record("kill tmux session", errWithStderr(err, stderr.String()))
+	}
 
 	return tc.Err()
+}
+
+// errWithStderr enriches a subprocess error with its stderr text when present.
+// A failed `tmux` run reports only "exit status 1" in the error while the useful
+// message ("server exited unexpectedly", …) is on stderr, so callers that surface
+// the error would otherwise show nothing actionable.
+func errWithStderr(err error, stderr string) error {
+	if s := strings.TrimSpace(stderr); s != "" {
+		return fmt.Errorf("%w: %s", err, s)
+	}
+	return err
+}
+
+// sessionAlreadyGone reports whether a kill-session failure just means the session
+// was already dead rather than a real teardown failure. tmux prints "can't find
+// session"/"session not found" when the session is gone and "no server running on
+// ..." when the whole server is down; both mean no live session remains, which is
+// exactly what Close aims for. The message can arrive on stderr (real tmux) or in
+// the error itself (test fakes), so check both. Anything unrecognized — a hung
+// server, a timeout — falls through as a real error so the caller can surface it;
+// tmux's messages are stable English, so the failure direction is the safe one.
+func sessionAlreadyGone(err error, stderr string) bool {
+	hay := strings.ToLower(err.Error() + " " + stderr)
+	return strings.Contains(hay, "no server running") ||
+		strings.Contains(hay, "session not found") ||
+		strings.Contains(hay, "can't find session")
 }
 
 // SetDetachedSize set the width and height of the session while detached. This makes the

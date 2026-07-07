@@ -539,7 +539,7 @@ func (msg batchKillDoneMsg) summary() string {
 	}
 	total := msg.killed + len(msg.failures)
 	var b strings.Builder
-	fmt.Fprintf(&b, "Killed %d of %d session%s. %d could not be killed:",
+	fmt.Fprintf(&b, "Killed %d of %d session%s. %d reported errors:",
 		msg.killed, total, plural(total), len(msg.failures))
 	for _, f := range msg.failures {
 		fmt.Fprintf(&b, "\n  • %s — %s", f.title, f.err.Error())
@@ -579,8 +579,18 @@ func (m *home) killInstances(insts []*session.Instance, message string) tea.Cmd 
 				res.failures = append(res.failures, killFailure{inst.Title, err})
 				continue
 			}
-			m.list.KillInstance(inst)
-			res.killed++
+			// KillInstance removes the row regardless of teardown outcome, so its
+			// preview terminal must be cleaned up either way. A teardown failure is
+			// recorded (naming what leaked) but does not count toward killed, so the
+			// "killed N" notice reflects only clean teardowns. The row and storage
+			// entry are already gone, so the message says so rather than implying the
+			// session survived.
+			if err := m.list.KillInstance(inst); err != nil {
+				res.failures = append(res.failures, killFailure{inst.Title,
+					fmt.Errorf("removed, but teardown was incomplete: %w", err)})
+			} else {
+				res.killed++
+			}
 			res.killedInstances = append(res.killedInstances, inst)
 		}
 		return res
@@ -645,6 +655,9 @@ func (m *home) killMarked() tea.Cmd {
 	}
 	m.exitVisualMode()
 	message := fmt.Sprintf("Kill %d marked session%s?", len(insts), plural(len(insts)))
+	if n := sessionsWithUnmergedWork(insts); n > 0 {
+		message += fmt.Sprintf(" (%d of %d have unmerged work)", n, len(insts))
+	}
 	return m.killInstances(insts, message)
 }
 
@@ -1156,6 +1169,36 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 	)
 }
 
+// killDataWarning returns a parenthetical suffix for the kill confirmation that
+// warns when killing would discard local work, or "" when the branch has nothing
+// unmerged. commits is the count of commits ahead of base — pause folds its
+// auto-WIP commit in via noteAutoPauseCommit, so a paused-then-dirty session reads
+// Dirty=false with commits>=1. Kill runs `git branch -D`, so these commits are
+// destroyed with no user-facing recovery path.
+func killDataWarning(dirty bool, commits int) string {
+	switch {
+	case dirty && commits > 0:
+		return fmt.Sprintf(" (has uncommitted changes and %d unmerged commit%s — deleting discards them)", commits, plural(commits))
+	case dirty:
+		return " (has uncommitted changes)"
+	case commits > 0:
+		return fmt.Sprintf(" (has %d unmerged commit%s — deleting discards them)", commits, plural(commits))
+	}
+	return ""
+}
+
+// sessionsWithUnmergedWork counts how many of insts carry uncommitted changes or
+// commits ahead of base, for the batch-kill confirmation's aggregate warning.
+func sessionsWithUnmergedWork(insts []*session.Instance) int {
+	n := 0
+	for _, inst := range insts {
+		if s := inst.GetDiffStats(); s != nil && (s.Dirty || s.Commits > 0) {
+			n++
+		}
+	}
+	return n
+}
+
 // confirmKill shows the kill-confirmation overlay for inst and stashes the
 // teardown action. inst need not be the selected instance: the in-session kill
 // key (Ctrl+X) and the auto-open path target a specific session regardless of
@@ -1196,14 +1239,19 @@ func (m *home) confirmKill(inst *session.Instance) tea.Cmd {
 			return err
 		}
 
-		// Then kill the instance
-		m.list.KillInstance(inst)
+		// Then kill the instance. The row and storage entry are gone regardless, but
+		// if teardown left something behind (a live tmux session or a leftover
+		// branch) name the session and surface what leaked instead of reporting a
+		// clean kill.
+		if err := m.list.KillInstance(inst); err != nil {
+			return fmt.Errorf("killed '%s' but teardown was incomplete: %w", inst.DisplayName(), err)
+		}
 		return instanceChangedMsg{}
 	}
 
 	message := fmt.Sprintf("Kill session '%s'?", inst.DisplayName())
-	if stats := inst.GetDiffStats(); stats != nil && stats.Dirty {
-		message += " (has uncommitted changes)"
+	if stats := inst.GetDiffStats(); stats != nil {
+		message += killDataWarning(stats.Dirty, stats.Commits)
 	}
 	cmd := m.confirmAction(message, killAction)
 	// Kill is the one destructive confirmation, so it alone wears the danger
