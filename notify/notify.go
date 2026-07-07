@@ -154,9 +154,18 @@ func (n *Notifier) defaultCommand(goos, session string, ev Event) *osexec.Cmd {
 	return nil
 }
 
-// osaQuote renders s as an AppleScript double-quoted string literal.
+// osaQuote renders s as an AppleScript double-quoted string literal. Backslash and
+// double-quote are escaped; any control character (newline, CR, tab, …) — which an
+// AppleScript string literal cannot contain and which a user-editable display name might
+// hold — is folded to a space so the generated one-line -e script stays valid.
 func osaQuote(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 	return "\"" + s + "\""
 }

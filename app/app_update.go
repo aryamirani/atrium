@@ -349,6 +349,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *home) finishBatch(cleanup []*session.Instance, hasFailures bool, notice, summary string) tea.Cmd {
 	for _, inst := range cleanup {
 		cleanupTerminalForInstance(m.tabbedWindow, inst)
+		m.forgetInstance(inst) // drop the removed session's notify/recovery bookkeeping
 	}
 	if !hasFailures {
 		return tea.Batch(m.handleInfoNotice(notice), m.instanceChanged())

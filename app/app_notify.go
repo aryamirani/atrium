@@ -63,7 +63,20 @@ func (m *home) maybeNotify(inst *session.Instance, old session.Status, prevUnrea
 		return // the user is already looking at this row
 	}
 	ev, ok := notifyEventFor(old, inst.GetStatus(), inst.UnreadAt().After(prevUnreadAt))
-	if !ok || st.throttled(ev) {
+	if !ok {
+		return
+	}
+	// A finished turn on a session with a queued or in-flight follow-up prompt is about
+	// to be auto-continued by deliverReadyPrompts in this same applyMetadataResults pass,
+	// so ringing "finished" would ping the user for work they explicitly queued to run
+	// unattended (and can't be told apart from a real finish that awaits them). The block
+	// edge is exempt: a blocked pane can't consume its queue — delivery needs an idle
+	// input box — so a NeedsInput session stays genuinely actionable. The final finish,
+	// once the queue has drained, still rings.
+	if ev == notify.EventFinished && (inst.Prompt() != "" || inst.PromptSending()) {
+		return
+	}
+	if st.throttled(ev) {
 		return
 	}
 	m.notifier.Emit(mode, m.appConfig.GetNotifyCommand(), inst.DisplayName(), ev)

@@ -221,3 +221,57 @@ func TestApplyMetadataResultsOffIsSilent(t *testing.T) {
 	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PaneIdle}}, true)
 	require.Empty(t, buf.String(), "notifications off emits nothing")
 }
+
+// TestApplyMetadataResultsFinishSuppressedWithQueuedPrompt covers the queued-follow-up
+// case: a background session that finishes a turn while a prompt is queued is about to be
+// auto-continued by deliverReadyPrompts, so the finish must not ring. Once the queue
+// drains, the next finishing turn does ring.
+func TestApplyMetadataResultsFinishSuppressedWithQueuedPrompt(t *testing.T) {
+	var buf bytes.Buffer
+	h, list := newNotifyHome(&buf)
+	target := notifyTarget(t, list)
+	target.QueuePrompt("next step")
+
+	// Observe it working (gate), then finish the turn: normally a bell, but a queued
+	// prompt is about to be delivered, so it stays silent.
+	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PaneWorking}}, true)
+	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PaneIdle}}, true)
+	require.Equal(t, session.Ready, target.GetStatus())
+	require.Empty(t, buf.String(), "a finish with a queued follow-up must not ring")
+
+	// Drain the queue and finish again: now genuinely idle-awaiting-the-user, so it rings.
+	target.ClearPrompt("next step")
+	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PaneWorking}}, true)
+	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PaneIdle}}, true)
+	require.Equal(t, "\a", buf.String(), "once the queue drains, the finishing turn rings")
+}
+
+// TestApplyMetadataResultsBlockNotSuppressedWithQueuedPrompt confirms the queued-prompt
+// exemption is finish-only: a blocked pane can't consume its queue, so a session that
+// blocks on a prompt still rings even with a follow-up queued.
+func TestApplyMetadataResultsBlockNotSuppressedWithQueuedPrompt(t *testing.T) {
+	var buf bytes.Buffer
+	h, list := newNotifyHome(&buf)
+	target := notifyTarget(t, list)
+	target.QueuePrompt("next step")
+
+	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PaneWorking}}, true)
+	h.applyMetadataResults([]instanceMetaResult{{instance: target, state: tmux.PanePromptManual}}, true)
+	require.Equal(t, session.NeedsInput, target.GetStatus())
+	require.Equal(t, "\a", buf.String(), "a blocked session rings even with a queued prompt")
+}
+
+// TestForgetInstanceDropsBookkeeping confirms a killed session's per-instance maps are
+// pruned, so its *session.Instance is not pinned in memory for the process lifetime.
+func TestForgetInstanceDropsBookkeeping(t *testing.T) {
+	inst := newNotifyInstance(t)
+	h := &home{
+		notifySeen:  map[*session.Instance]*notifyState{inst: {}},
+		lostStrikes: map[*session.Instance]int{inst: 2},
+	}
+	h.forgetInstance(inst)
+	_, seen := h.notifySeen[inst]
+	require.False(t, seen, "notifySeen entry is dropped so the killed instance can be GC'd")
+	_, striking := h.lostStrikes[inst]
+	require.False(t, striking, "lostStrikes entry is dropped too")
+}

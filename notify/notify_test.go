@@ -180,3 +180,13 @@ func TestEmitDesktopNoNotifierDoesNotRun(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.Empty(t, fe.calls())
 }
+
+func TestOsaQuote(t *testing.T) {
+	require.Equal(t, `"plain"`, osaQuote("plain"))
+	require.Equal(t, `"a\\b"`, osaQuote(`a\b`), "backslash is escaped")
+	require.Equal(t, `"a\"b"`, osaQuote(`a"b`), "double-quote is escaped")
+	// Control characters an AppleScript string literal can't hold (a display name is
+	// user-editable via rename) fold to spaces so the one-line script stays valid.
+	require.Equal(t, `"a b"`, osaQuote("a\nb"), "newline folds to a space")
+	require.Equal(t, `"a b c"`, osaQuote("a\tb\rc"), "tab and CR fold to spaces")
+}

@@ -547,6 +547,17 @@ func (msg batchKillDoneMsg) summary() string {
 	return b.String()
 }
 
+// forgetInstance drops the per-instance bookkeeping a removed session leaves behind: its
+// notify first-observation/throttle state and any lost-recovery strike count. Both maps
+// are keyed by *session.Instance, so without this a killed session would pin its Instance
+// object (and everything it references) in memory for the process lifetime. Every caller
+// runs on the main loop, where these maps are otherwise read and written, so the deletes
+// don't race (and delete on a nil map is a harmless no-op for hand-built test homes).
+func (m *home) forgetInstance(inst *session.Instance) {
+	delete(m.notifySeen, inst)
+	delete(m.lostStrikes, inst)
+}
+
 // killInstances tears down an explicit set of sessions behind a single count
 // confirmation — the batch counterpart of confirmKill, used by killMarked. Each
 // teardown reuses confirmKill's per-instance logic: it refuses only when the
@@ -1243,8 +1254,10 @@ func (m *home) confirmKill(inst *session.Instance) tea.Cmd {
 		// if teardown left something behind (a live tmux session or a leftover
 		// branch) name the session and surface what leaked instead of reporting a
 		// clean kill.
-		if err := m.list.KillInstance(inst); err != nil {
-			return fmt.Errorf("killed '%s' but teardown was incomplete: %w", inst.DisplayName(), err)
+		killErr := m.list.KillInstance(inst)
+		m.forgetInstance(inst) // the row is gone regardless of teardown outcome; drop its bookkeeping
+		if killErr != nil {
+			return fmt.Errorf("killed '%s' but teardown was incomplete: %w", inst.DisplayName(), killErr)
 		}
 		return instanceChangedMsg{}
 	}
