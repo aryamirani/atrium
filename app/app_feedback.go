@@ -3,6 +3,7 @@ package app
 // Error and transient-notice feedback for the home model.
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/ZviBaratz/atrium/log"
@@ -82,6 +83,70 @@ func (m *home) handleInfoNotice(text string) tea.Cmd {
 	}
 	m.menu.SetNotice(text, ui.NoticeInfo)
 	return m.scheduleNoticeHide()
+}
+
+// surfaceLostRecoveries makes lost-session recoveries visible instead of a silent
+// Running→Paused that looks like a user pause (#270). It picks one message by
+// priority: a failed recovery (most urgent) → an error the user must act on; a
+// crash within seconds of launch → a persistent modal naming the command, since a
+// typo'd program/profile would otherwise loop invisibly on every Resume; otherwise
+// a single batched, neutral toast for ordinary terminal deaths.
+func (m *home) surfaceLostRecoveries(recoveries []lostRecovery) tea.Cmd {
+	var parked []string
+	var failed, launchCrash *lostRecovery
+	for i := range recoveries {
+		switch r := &recoveries[i]; {
+		case r.err != nil:
+			failed = r
+		case r.launchCmd != "":
+			launchCrash = r
+		default:
+			parked = append(parked, r.title)
+		}
+	}
+	switch {
+	case failed != nil:
+		return m.handleError(fmt.Errorf("session %q could not be parked cleanly: %w — press r to resume or k to kill",
+			failed.title, failed.err))
+	case launchCrash != nil:
+		return m.showLaunchCrash(launchCrash)
+	case len(parked) == 1:
+		return m.handleInfoNotice(fmt.Sprintf("session %q terminal exited — parked as paused; press r to resume", parked[0]))
+	case len(parked) > 1:
+		return m.handleInfoNotice(fmt.Sprintf("%d sessions' terminals exited — parked as paused; press r to resume", len(parked)))
+	default:
+		return nil
+	}
+}
+
+// showLaunchCrash surfaces a crash-at-launch recovery as a persistent modal
+// naming the command. surfaceLostRecoveries runs on every background poll tick
+// regardless of m.state, so — like showInfo's own stateDefault guard and the
+// buffered release-notes/update notices — it must not switch to stateInfo while
+// an overlay (form, rename, confirm, prompt) owns the screen: that would clobber
+// the overlay and discard the user's in-progress input. When the screen is busy
+// it buffers the crash for the preview tick to flush once we are back at default.
+func (m *home) showLaunchCrash(lr *lostRecovery) tea.Cmd {
+	if m.state != stateDefault {
+		buffered := *lr
+		m.pendingLaunchCrash = &buffered
+		return nil
+	}
+	return m.showInfo(fmt.Sprintf(
+		"session %q exited moments after launch — parked as paused.\ncommand: %s\nfix the command, then press r to resume.",
+		lr.title, lr.launchCmd))
+}
+
+// flushPendingLaunchCrash opens a crash-at-launch modal that arrived while
+// another overlay owned the screen, once the screen is free. nil when there is
+// nothing buffered or an overlay is still up (mirrors flushPendingReleaseNotes).
+func (m *home) flushPendingLaunchCrash() tea.Cmd {
+	if m.pendingLaunchCrash == nil || m.state != stateDefault {
+		return nil
+	}
+	lr := m.pendingLaunchCrash
+	m.pendingLaunchCrash = nil
+	return m.showLaunchCrash(lr)
 }
 
 // scheduleNoticeHide stamps the just-shown toast with a fresh generation and
