@@ -21,9 +21,14 @@ import (
 // tells them apart. Claude Code itself knows the difference and emits it via hooks, so we
 // inject a tiny settings file (via --settings, merged with the user's own config) whose
 // UserPromptSubmit/PreToolUse hooks latch "working" and whose Stop hook — which fires once
-// at true end-of-turn, never between auto-accepted tool steps — latches "ready". The agent
-// writes a one-word state file that Poll reads as the primary signal, falling back to the
-// scrape classifier when the file is absent (non-claude agents, or before the first event).
+// at true end-of-turn, never between auto-accepted tool steps — latches "ready".
+//
+// Each hook re-invokes the atrium binary's hidden `hook` subcommand, which does a locked
+// read-modify-write of a structured state record (see hookstate.go): the working/ready
+// latch plus the SET of in-flight sub-agent ids, maintained by the SubagentStart/Stop
+// hooks. That set is what lets Poll tell a finished turn from one only waiting on a
+// background sub-agent (#290). Poll reads the record as the primary signal, falling back to
+// the scrape classifier when the file is absent (non-claude agents, or before the first event).
 //
 // Artifacts live under <configDir>/hooks/<sanitizedName>/ — outside the git worktree, so
 // they survive pause (worktree removal) and never pollute the agent's git status / diff.
@@ -156,24 +161,30 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// hookWriteCmd builds the shell one-liner a hook runs: atomically write word to stateFile.
-// The absolute path is baked in, so the hook needs no jq, no stdin parsing, and no env.
+// HookSubcommand is the hidden CLI verb the injected hooks invoke on the atrium binary
+// itself (main.go registers it). Exported so the command builder here and the subcommand
+// registration in main can't drift apart.
+const HookSubcommand = "hook"
+
+// executableFn resolves the running atrium binary's path; a var so tests can stub it
+// without spawning a real binary.
+var executableFn = os.Executable
+
+// hookEventCommand builds the shell command a Claude hook runs: it calls the atrium
+// binary's hidden `hook` subcommand, which does the locked read-modify-write of the
+// state record. The binary path and state-file path are baked in and single-quoted; the
+// event is a fixed literal (no quoting needed). The sub-agent events additionally read
+// their agent_id from the hook's stdin payload, which Claude pipes in — the command line
+// is identical, only the subcommand's stdin handling differs.
 //
-// The temp file is suffixed with "$$" (the hook shell's PID), so it is unique per invocation.
-// Agent teams fire many hooks concurrently — the parent session's injected --settings applies
-// to every subagent tool call — and a single shared temp made them race: the first `mv` won
-// and the rest failed with "cannot stat …/state.tmp", losing state writes (including the
-// final "ready") and stranding the file on "working". A per-process temp removes the
-// collision; the `mv` stays atomic and last-writer-wins, which is correct because racing
-// writers all write the same word.
-func hookWriteCmd(stateFile, word string) string {
-	// Single-quote the static prefix, then append a double-quoted "$$" so the shell expands
-	// it to the PID (single quotes would keep it literal). Result, e.g.:
-	//   printf 'ready' > '/dir/state.tmp.'"$$" && mv -f '/dir/state.tmp.'"$$" '/dir/state'
-	tmp := shellSingleQuote(stateFile+".tmp.") + `"$$"`
-	return "printf " + shellSingleQuote(word) +
-		" > " + tmp +
-		" && mv -f " + tmp + " " + shellSingleQuote(stateFile)
+// This replaces the Phase 1 printf one-liner: the in-flight SET needs a locked JSON
+// read-modify-write that shell can't do portably (macOS has no flock(1)), so every event
+// routes through the binary. Calling back into os.Executable() mirrors how the absolute
+// state path was already baked into the Phase 1 command.
+func hookEventCommand(binPath, stateFile, event string) string {
+	return shellSingleQuote(binPath) + " " + HookSubcommand +
+		" --event " + event +
+		" --state-file " + shellSingleQuote(stateFile)
 }
 
 type hookCommand struct {
@@ -192,18 +203,28 @@ type hookSettings struct {
 	Hooks map[string][]hookMatcherGroup `json:"hooks"`
 }
 
-// buildHookSettings marshals the settings.json content wiring the three status hooks.
-func buildHookSettings(stateFile string) ([]byte, error) {
-	work := hookCommand{Type: "command", Command: hookWriteCmd(stateFile, hookStateWorking)}
-	ready := hookCommand{Type: "command", Command: hookWriteCmd(stateFile, hookStateReady)}
+// buildHookSettings marshals the settings.json content wiring the status hooks. binPath
+// is the atrium binary each hook re-invokes (see hookEventCommand).
+func buildHookSettings(binPath, stateFile string) ([]byte, error) {
+	cmd := func(event string) hookCommand {
+		return hookCommand{Type: "command", Command: hookEventCommand(binPath, stateFile, event)}
+	}
 	s := hookSettings{Hooks: map[string][]hookMatcherGroup{
-		"UserPromptSubmit": {{Hooks: []hookCommand{work}}},
-		"PreToolUse":       {{Matcher: "*", Hooks: []hookCommand{work}}},
+		"UserPromptSubmit": {{Hooks: []hookCommand{cmd(HookEventWorking)}}},
+		"PreToolUse":       {{Matcher: "*", Hooks: []hookCommand{cmd(HookEventWorking)}}},
 		// Stop fires at a clean end-of-turn; StopFailure fires when the turn ends on an API
 		// error. Both mean the agent has stopped, so both latch "ready" — without StopFailure
 		// an errored turn would leave the file on "working" until the poller's time cap.
-		"Stop":        {{Hooks: []hookCommand{ready}}},
-		"StopFailure": {{Hooks: []hookCommand{ready}}},
+		"Stop":        {{Hooks: []hookCommand{cmd(HookEventReady)}}},
+		"StopFailure": {{Hooks: []hookCommand{cmd(HookEventReady)}}},
+		// Sub-agent lifecycle. These fire in the MAIN session under the injected --settings
+		// (verified by docs + a live probe on Claude 2.1.206), each carrying a matching
+		// agent_id, so they are the authoritative in-flight edges: add on start, discard on
+		// stop. Tracked as a SET (see hookstate.go) because unmatched Stops from nested agents
+		// would drive a ++/-- counter negative. A non-empty set at end-of-turn is what makes a
+		// background sub-agent read as pending rather than done (#290).
+		"SubagentStart": {{Hooks: []hookCommand{cmd(HookEventSubagentStart)}}},
+		"SubagentStop":  {{Hooks: []hookCommand{cmd(HookEventSubagentStop)}}},
 	}}
 	return json.MarshalIndent(s, "", "  ")
 }
@@ -217,6 +238,14 @@ func ensureHookSettings(sanitizedName, program string) (string, error) {
 	if !agent.Resolve(program).HookSupport || !claudeSupportsSettingsFlag() {
 		return "", nil
 	}
+	// The hooks re-invoke this very binary. If its path can't be resolved, skip injection
+	// (degrade to marker-only) rather than fail the launch — the same fail-open stance the
+	// --settings capability probe takes.
+	binPath, err := executableFn()
+	if err != nil {
+		log.InfoLog.Printf("status hooks disabled: cannot resolve atrium executable: %v", err)
+		return "", nil
+	}
 	dir, err := hookSessionDir(sanitizedName)
 	if err != nil {
 		return "", err
@@ -227,7 +256,7 @@ func ensureHookSettings(sanitizedName, program string) (string, error) {
 	stateFile := filepath.Join(dir, "state")
 	// A reused name must not read a prior incarnation's value before the first hook fires.
 	_ = os.Remove(stateFile)
-	data, err := buildHookSettings(stateFile)
+	data, err := buildHookSettings(binPath, stateFile)
 	if err != nil {
 		return "", err
 	}
@@ -238,29 +267,48 @@ func ensureHookSettings(sanitizedName, program string) (string, error) {
 	return settingsPath, nil
 }
 
-// readHookState returns the latched hook state word and true, or ("", false) when there is
-// no usable signal: an agent without hook support, or the file is absent/unreadable (hooks
-// not yet fired, hooks unsupported/disabled). Callers fall back to the scrape classifier
-// on false.
-func (t *Session) readHookState() (string, bool) {
-	if !t.adapter.HookSupport {
-		return "", false
-	}
+// HookStateFile returns the absolute path of this session's structured hook state file
+// (the working/ready latch plus the in-flight sub-agent set), or an error if the config
+// dir can't be resolved. Shared by the record reader and the watchdog's ClearInflight;
+// exported so it also names the canonical status-record location for diagnostics.
+func (t *Session) HookStateFile() (string, error) {
 	dir, err := hookSessionDir(t.snapshotName())
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "state"))
+	return filepath.Join(dir, "state"), nil
+}
+
+// readHookRecord returns this session's parsed hook state record and true, or (zero,
+// false) when there is no usable signal: an agent without hook support, or the file is
+// absent/unreadable/unparseable (hooks not yet fired, hooks unsupported/disabled). The
+// read is lock-free — UpdateHookState's atomic rename guarantees a whole record — so it
+// stays cheap on the 500ms poll path. Callers fall back to the scrape classifier on false.
+func (t *Session) readHookRecord() (hookRecord, bool) {
+	if !t.adapter.HookSupport {
+		return hookRecord{}, false
+	}
+	path, err := t.HookStateFile()
 	if err != nil {
-		return "", false
+		return hookRecord{}, false
 	}
-	switch strings.TrimSpace(string(b)) {
-	case hookStateWorking:
-		return hookStateWorking, true
-	case hookStateReady:
-		return hookStateReady, true
+	return readHookRecordFile(path)
+}
+
+// ClearInflight empties this session's in-flight sub-agent set via the same locked update
+// path the hooks use. The watchdog calls it when a session has sat "pending" past its cap
+// (a SubagentStop that never fired left the set stuck non-empty): clearing the set is the
+// deterministic latch-clear that lets the poller commit the session to idle without
+// re-entering pending on the next tick (#46 anti-oscillation). A no-op for non-hook agents.
+func (t *Session) ClearInflight() error {
+	if !t.adapter.HookSupport {
+		return nil
 	}
-	return "", false
+	path, err := t.HookStateFile()
+	if err != nil {
+		return err
+	}
+	return UpdateHookState(path, HookEventResetInflight, "")
 }
 
 // cleanupHookSession removes a session's hook artifacts. Called from Close on kill; missing

@@ -48,7 +48,7 @@ func forceSettingsFlag(t *testing.T, supported bool) {
 }
 
 func TestBuildHookSettings(t *testing.T) {
-	data, err := buildHookSettings("/abs/dir/state")
+	data, err := buildHookSettings("/abs/bin/atrium", "/abs/dir/state")
 	require.NoError(t, err)
 
 	var parsed struct {
@@ -62,37 +62,47 @@ func TestBuildHookSettings(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(data, &parsed), "settings must be valid JSON")
 
-	for _, ev := range []string{"UserPromptSubmit", "PreToolUse", "Stop", "StopFailure"} {
+	// Every event wires exactly one command that re-invokes the atrium binary's hook
+	// subcommand with the state path baked in.
+	allEvents := []string{"UserPromptSubmit", "PreToolUse", "Stop", "StopFailure", "SubagentStart", "SubagentStop"}
+	require.Len(t, parsed.Hooks, len(allEvents), "no unexpected events wired")
+	for _, ev := range allEvents {
 		require.Len(t, parsed.Hooks[ev], 1, "event %s has one matcher group", ev)
 		require.Len(t, parsed.Hooks[ev][0].Hooks, 1, "event %s has one command", ev)
 		require.Equal(t, "command", parsed.Hooks[ev][0].Hooks[0].Type)
 		require.Contains(t, parsed.Hooks[ev][0].Hooks[0].Command, "/abs/dir/state",
 			"the absolute state path is baked into the command for %s", ev)
+		require.Contains(t, parsed.Hooks[ev][0].Hooks[0].Command, "/abs/bin/atrium",
+			"the hook re-invokes the atrium binary for %s", ev)
+		require.Contains(t, parsed.Hooks[ev][0].Hooks[0].Command, HookSubcommand,
+			"the hook uses the %q subcommand for %s", HookSubcommand, ev)
 	}
 	// PreToolUse matches all tools; the matcher-less events omit it.
 	require.Equal(t, "*", parsed.Hooks["PreToolUse"][0].Matcher)
 	require.Empty(t, parsed.Hooks["UserPromptSubmit"][0].Matcher)
 	require.Empty(t, parsed.Hooks["Stop"][0].Matcher)
 	require.Empty(t, parsed.Hooks["StopFailure"][0].Matcher)
-	// The working/ready words land on the right events. Stop fires at a clean turn-end and
-	// StopFailure at an API-error turn-end; both mean "no longer working", so both write ready.
-	require.Contains(t, parsed.Hooks["UserPromptSubmit"][0].Hooks[0].Command, hookStateWorking)
-	require.Contains(t, parsed.Hooks["PreToolUse"][0].Hooks[0].Command, hookStateWorking)
-	require.Contains(t, parsed.Hooks["Stop"][0].Hooks[0].Command, hookStateReady)
-	require.Contains(t, parsed.Hooks["StopFailure"][0].Hooks[0].Command, hookStateReady)
+	// Each event carries the right --event verb. Stop/StopFailure both latch ready (a clean
+	// and an API-error turn-end); the sub-agent lifecycle drives the in-flight set.
+	require.Contains(t, parsed.Hooks["UserPromptSubmit"][0].Hooks[0].Command, HookEventWorking)
+	require.Contains(t, parsed.Hooks["PreToolUse"][0].Hooks[0].Command, HookEventWorking)
+	require.Contains(t, parsed.Hooks["Stop"][0].Hooks[0].Command, HookEventReady)
+	require.Contains(t, parsed.Hooks["StopFailure"][0].Hooks[0].Command, HookEventReady)
+	require.Contains(t, parsed.Hooks["SubagentStart"][0].Hooks[0].Command, HookEventSubagentStart)
+	require.Contains(t, parsed.Hooks["SubagentStop"][0].Hooks[0].Command, HookEventSubagentStop)
 }
 
-// The hook write must use a per-invocation temp file: agent teams fire many PreToolUse hooks
-// concurrently (the parent session's injected --settings applies to every tool call), and a
-// single shared temp made them race — the first mv won and the rest failed with "cannot stat
-// …/state.tmp", losing state writes (including the final "ready") and stranding the file on
-// "working". A "$$"-suffixed temp is unique per hook process, so the writes can't collide.
-func TestHookWriteCmdUsesUniqueTemp(t *testing.T) {
-	cmd := hookWriteCmd("/abs/dir/state", hookStateReady)
-	require.Contains(t, cmd, "$$",
-		"temp file must be per-process unique (shell PID) so concurrent hooks don't clobber a shared temp")
-	require.Contains(t, cmd, "/abs/dir/state", "the final destination is still the state file")
-	require.Contains(t, cmd, hookStateReady, "the word being written is baked in")
+// The hook command re-invokes the atrium binary (never a shell printf), single-quoting the
+// binary and state paths so paths with spaces survive the shell, and passing the event as a
+// plain --event flag. Routing through the binary is what lets the in-flight SET be maintained
+// by a locked JSON read-modify-write that portable shell can't do (macOS has no flock(1)).
+func TestHookEventCommand(t *testing.T) {
+	cmd := hookEventCommand("/abs/bin/atrium", "/abs/dir/state", HookEventSubagentStart)
+	require.Contains(t, cmd, "'/abs/bin/atrium'", "the atrium binary path is single-quoted")
+	require.Contains(t, cmd, "'/abs/dir/state'", "the state file path is single-quoted")
+	require.Contains(t, cmd, HookSubcommand, "invokes the hook subcommand")
+	require.Contains(t, cmd, "--event "+HookEventSubagentStart, "carries the event verb")
+	require.NotContains(t, cmd, "printf", "no longer a shell printf")
 }
 
 func TestEnsureHookSettingsClaude(t *testing.T) {
@@ -128,32 +138,32 @@ func TestEnsureHookSettingsSkips(t *testing.T) {
 	require.Empty(t, p, "no --settings support → no hooks")
 }
 
-func TestReadHookState(t *testing.T) {
+func TestReadHookRecord(t *testing.T) {
 	c := "x"
 	s := hookPollSession(t, "claude", &c)
 
-	_, ok := s.readHookState()
+	_, ok := s.readHookRecord()
 	require.False(t, ok, "absent file → no signal")
 
 	writeHookState(t, s, hookStateWorking)
-	st, ok := s.readHookState()
+	rec, ok := s.readHookRecord()
 	require.True(t, ok)
-	require.Equal(t, hookStateWorking, st)
+	require.Equal(t, hookStateWorking, rec.State)
 
 	writeHookState(t, s, "  "+hookStateReady+"\n") // surrounding whitespace tolerated
-	st, ok = s.readHookState()
+	rec, ok = s.readHookRecord()
 	require.True(t, ok)
-	require.Equal(t, hookStateReady, st)
+	require.Equal(t, hookStateReady, rec.State)
 
 	writeHookState(t, s, "garbage")
-	_, ok = s.readHookState()
+	_, ok = s.readHookRecord()
 	require.False(t, ok, "unknown word → no signal")
 
 	// A non-claude program never consults a hook file even if one is present.
 	c2 := "x"
 	a := hookPollSession(t, "aider", &c2)
 	writeHookState(t, a, hookStateWorking)
-	_, ok = a.readHookState()
+	_, ok = a.readHookRecord()
 	require.False(t, ok)
 }
 

@@ -14,7 +14,10 @@
 // entire signal (see suggestion.go).
 package agent
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Key is the canonical short identifier of a supported agent CLI. It is stable
 // across releases (unlike DisplayName) and safe to key UI glyphs or config on.
@@ -151,6 +154,14 @@ type Adapter struct {
 	// tmux's idleConfirmTicks). Raise it for an agent prone to long between-turns
 	// gaps on a slow/loaded host, where the default cap can report a false idle.
 	IdleConfirmTicks int
+
+	// PendingWatchdog overrides the wall-clock cap a session may sit "pending" (main
+	// turn ended, but sub-agents still recorded in flight) before the poller
+	// force-reconciles it to done even though the pane is alive — the alive-but-stuck
+	// backstop for a SubagentStop that never fired (#290). 0 means "use the package
+	// default" (session.defaultPendingWatchdog). Generous by design: a background
+	// sub-agent legitimately runs long, and tmux liveness carries the common failure.
+	PendingWatchdog time.Duration
 
 	// Prompts are tried in order; the first match classifies the pane as a
 	// blocking prompt.

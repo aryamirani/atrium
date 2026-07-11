@@ -43,6 +43,12 @@ const (
 	// (a tool-permission y/n prompt with AutoYes off). Appended last so previously
 	// serialized Status values keep their meaning.
 	NeedsInput
+	// Pending is when the main turn has ended but the agent still has background
+	// sub-agents in flight — it is not done, it will resume on its own (#290). It must
+	// render distinctly from Ready ("done, needs you"). Appended after NeedsInput so
+	// previously serialized Status values keep their meaning; a restored Pending is
+	// overwritten by reattach's synthetic Running and re-derived on the first poll.
+	Pending
 )
 
 // String renders a Status as a short lowercase word for logs and the status-history
@@ -60,6 +66,8 @@ func (s Status) String() string {
 		return "paused"
 	case NeedsInput:
 		return "needs-input"
+	case Pending:
+		return "pending"
 	default:
 		return "unknown"
 	}
@@ -99,6 +107,10 @@ func StatusUrgency(s Status, unread bool) int {
 		}
 		return 2
 	case Running:
+		return 3
+	case Pending:
+		// Still working (a background sub-agent is finishing), so it wants the user's
+		// attention no more than Running does — rank it alongside, not above, Running.
 		return 3
 	case Loading:
 		return 4
@@ -1048,9 +1060,11 @@ func (i *Instance) PollNow() tmux.PaneState {
 // NeedsInput even under AutoYes — its auto-answer is destructive (claude's plan approval:
 // Enter accepts the plan AND enables auto-accept). PaneGate (a startup/trust screen) also
 // surfaces NeedsInput and is never auto-tapped, with the awaitingSetup flag set so the row
-// shows a setup hint. PaneUnknown (an unreadable or not-yet-started pane) and PaneDead (the
-// session is gone) both leave the status untouched: a dead session is recovered to Paused
-// separately, debounced by the metadata loop's recoverLostInstances, not from here.
+// shows a setup hint. PanePending (main turn ended, background sub-agents still in flight)
+// maps to the Pending status via applyPending, which also runs the wall-clock watchdog.
+// PaneUnknown (an unreadable or not-yet-started pane) and PaneDead (the session is gone)
+// both leave the status untouched: a dead session is recovered to Paused separately,
+// debounced by the metadata loop's recoverLostInstances, not from here.
 func (i *Instance) ApplyPaneState(state tmux.PaneState) (tapped bool) {
 	// A startup gate is never auto-tapped (even under AutoYes): auto-accepting a
 	// folder-trust or new-MCP screen is exactly the unsafe action we refuse. Every
@@ -1076,6 +1090,9 @@ func (i *Instance) ApplyPaneState(state tmux.PaneState) (tapped bool) {
 	case tmux.PaneIdle:
 		i.setAwaitingSetup(false)
 		i.SetStatus(Ready)
+	case tmux.PanePending:
+		i.setAwaitingSetup(false)
+		i.applyPending()
 	case tmux.PaneUnknown, tmux.PaneDead:
 	}
 	return false

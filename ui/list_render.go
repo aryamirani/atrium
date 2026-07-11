@@ -88,7 +88,12 @@ func fmtAge(t time.Time) string {
 // the color-coded glyph carries the signal on its own.
 func (r *InstanceRenderer) stateGlyph(i *session.Instance, th *theme.Theme) (glyph string, color lipgloss.Color) {
 	switch i.GetStatus() {
-	case session.Running, session.Loading:
+	case session.Running, session.Loading, session.Pending:
+		// Pending (main turn ended, but a background sub-agent is still in flight — #290)
+		// shares the working spinner: the session is doing autonomous work, so it must read
+		// as "busy," never as the green "done" glyph the user would mistake for finished.
+		// That satisfies the hard requirement (pending ≠ done); a richer pending-specific
+		// cue is Phase 3.
 		return r.spinner.View(), th.Palette.Working
 	case session.Ready:
 		// Unread (the agent finished a turn the user hasn't visited) keeps the
