@@ -166,9 +166,15 @@ func shellSingleQuote(s string) string {
 // registration in main can't drift apart.
 const HookSubcommand = "hook"
 
-// executableFn resolves the running atrium binary's path; a var so tests can stub it
-// without spawning a real binary.
-var executableFn = os.Executable
+// resolvedBinPath is the running atrium binary's path, resolved ONCE at package load and
+// reused for the process's whole life — mirroring daemon.selfPath (#104). ensureHookSettings
+// bakes this path into every session's injected settings.json hooks and runs on each session
+// create and pause→resume, i.e. repeatedly over a long-lived TUI. os.Executable is a live
+// readlink of /proc/self/exe on Linux, so after `atrium update` swaps the binary in place a
+// fresh call reports the now-deleted old inode (".../atrium (deleted)"); a session started or
+// resumed after such a swap would bake that dead path in and every one of its hooks would
+// fail to exec. Resolving here, before any in-process update can run, keeps the path valid.
+var resolvedBinPath, resolvedBinPathErr = os.Executable()
 
 // hookEventCommand builds the shell command a Claude hook runs: it calls the atrium
 // binary's hidden `hook` subcommand, which does the locked read-modify-write of the
@@ -241,7 +247,7 @@ func ensureHookSettings(sanitizedName, program string) (string, error) {
 	// The hooks re-invoke this very binary. If its path can't be resolved, skip injection
 	// (degrade to marker-only) rather than fail the launch — the same fail-open stance the
 	// --settings capability probe takes.
-	binPath, err := executableFn()
+	binPath, err := resolvedBinPath, resolvedBinPathErr
 	if err != nil {
 		log.InfoLog.Printf("status hooks disabled: cannot resolve atrium executable: %v", err)
 		return "", nil
