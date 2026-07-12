@@ -11,9 +11,10 @@ import (
 //
 // A query is split on whitespace into terms that are combined with AND. Each term
 // is either a predicate over cached instance state (status:, dirty, behind[:expr],
-// pr:) or a plain substring matched against DisplayName/Branch. Predicate values
-// are matched by case-insensitive prefix so the list narrows progressively as the
-// user types rather than blinking empty mid-word (see the package tests).
+// pr:, account:, note:) or a plain substring matched against DisplayName, Branch,
+// or the session note. Predicate values are matched by case-insensitive prefix so
+// the list narrows progressively as the user types rather than blinking empty
+// mid-word (see the package tests).
 type Filter struct {
 	terms []term
 }
@@ -29,6 +30,7 @@ var statusNames = map[Status]string{
 	Loading:    "loading",
 	Paused:     "paused",
 	NeedsInput: "needsinput",
+	Pending:    "pending",
 }
 
 // ParseFilter compiles query into a Filter. It never fails: an unparseable
@@ -70,6 +72,8 @@ func parseTerm(tok string) term {
 		return prTerm(strings.TrimPrefix(tok, "pr:"))
 	case strings.HasPrefix(tok, "account:"):
 		return accountTerm(strings.TrimPrefix(tok, "account:"))
+	case strings.HasPrefix(tok, "note:"):
+		return noteTerm(strings.TrimPrefix(tok, "note:"))
 	default:
 		return substringTerm(tok)
 	}
@@ -177,11 +181,25 @@ func accountTerm(value string) term {
 	}
 }
 
-// substringTerm matches a plain (lowercased) substring against DisplayName or
-// Branch, preserving the original filter's fields and case-insensitivity.
+// substringTerm matches a plain (lowercased) substring against DisplayName,
+// Branch, or the session note.
 func substringTerm(q string) term {
 	return func(i *Instance) bool {
 		return strings.Contains(strings.ToLower(i.DisplayName()), q) ||
-			strings.Contains(strings.ToLower(i.Branch), q)
+			strings.Contains(strings.ToLower(i.Branch), q) ||
+			strings.Contains(strings.ToLower(i.Note()), q)
+	}
+}
+
+// noteTerm matches the session note by case-insensitive prefix, mirroring
+// accountTerm. An empty value is a no-op (matches every session) so a
+// mid-typed "note:" never blinks the list empty. Unlike accountTerm and
+// prTerm there is deliberately no "none" sentinel for un-noted sessions: notes
+// are freeform prose (a note could legitimately start with the word "none"), so
+// "note:none" prefix-matches such a note rather than being swallowed to mean
+// "no note".
+func noteTerm(value string) term {
+	return func(i *Instance) bool {
+		return strings.HasPrefix(strings.ToLower(i.Note()), value)
 	}
 }
