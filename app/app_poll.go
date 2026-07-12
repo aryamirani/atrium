@@ -265,16 +265,19 @@ const promptDeliveryTimeout = 60 * time.Second
 // inside AwaitingInput, not the box check, that keep its "❯ 1. …" selector out.)
 //
 // Normally we also wait for the pane to leave PaneWorking to avoid the post-trust
-// "loading" transition window. But a chatty agent that writes continuously on boot can
-// stay PaneWorking indefinitely and stall the first message forever; once the prompt has
-// been queued longer than promptDeliveryTimeout we drop only that busy check. A zero
-// queuedAt disables the timeout (the prompt was queued without a timestamp), falling back
-// to the strict idle-pane requirement.
+// "loading" transition window. PanePending is held the same as PaneWorking: the main turn
+// has ended but a background sub-agent is still in flight (#290), so although the input box
+// is idle and typable, delivering now would interleave a new turn with the still-running one
+// — a zero-clock follow-up must wait for the sub-agent to finish. But a chatty agent that
+// writes continuously on boot can stay PaneWorking indefinitely and stall the first message
+// forever; once the prompt has been queued longer than promptDeliveryTimeout we drop only
+// that busy check. A zero queuedAt disables the timeout (the prompt was queued without a
+// timestamp), falling back to the strict idle-pane requirement.
 func promptDeliveryReady(state tmux.PaneState, awaitingInput bool, queuedAt, now time.Time) bool {
 	if !awaitingInput {
 		return false
 	}
-	if state != tmux.PaneWorking {
+	if state != tmux.PaneWorking && state != tmux.PanePending {
 		return true
 	}
 	return !queuedAt.IsZero() && now.Sub(queuedAt) > promptDeliveryTimeout
