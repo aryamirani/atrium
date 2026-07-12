@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui/theme"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,9 +54,29 @@ func TestRender_PendingElapsedSuffix(t *testing.T) {
 	require.NoError(t, err)
 	inst.SetStatus(session.Pending)
 
-	out := r.Render(inst, 0, false, false)
+	// Strip styling: the separator and the value are separately-styled segments, so the
+	// "· 0s" cue is only contiguous once the interposed ANSI codes are removed.
+	out := ansi.Strip(r.Render(inst, 0, false, false))
 	require.Contains(t, out, theme.Current().Glyphs.Pending, "pending row shows the still Pending glyph")
 	require.Contains(t, out, "· 0s", "pending row shows the elapsed suffix (0s just after entering pending)")
+}
+
+// At a width too narrow to keep any of the name, the elapsed cue's separator is a
+// collapsible sepSeg, so it drops out instead of dangling: the line-1 gutter degrades to
+// "◐ 0s", never "◐  · 0s" with an orphaned separator and no name.
+func TestRender_PendingElapsed_SeparatorCollapsesWhenNameStarved(t *testing.T) {
+	t.Cleanup(theme.Set("unicode"))
+	s := spinner.New()
+	r := &InstanceRenderer{spinner: &s}
+	r.setWidth(10) // too narrow to keep the name → the name flex empties
+
+	inst, err := session.NewInstance(session.InstanceOptions{Title: "a-very-long-session-name", Path: ".", Program: "echo"})
+	require.NoError(t, err)
+	inst.SetStatus(session.Pending)
+
+	line1 := ansi.Strip(strings.SplitN(r.Render(inst, 0, false, false), "\n", 2)[0])
+	require.Contains(t, line1, "0s", "the elapsed value survives even when the name is starved")
+	require.NotContains(t, line1, " · ", "the orphaned separator collapses instead of dangling")
 }
 
 func TestFmtPendingElapsed(t *testing.T) {
