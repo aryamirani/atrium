@@ -28,6 +28,13 @@ const (
 	PanePromptManual
 	// PaneIdle means the agent has settled with nothing pending.
 	PaneIdle
+	// PanePending means the main turn ended (the hook latched "ready") but the agent still
+	// has background sub-agents recorded in flight — it will resume on its own when they
+	// report back. Distinct from PaneIdle so the row isn't mislabeled "done" during that
+	// window (#290). Only ever raised by the structured hook record (ready + a non-empty
+	// in-flight set); a live busy marker still outranks it as PaneWorking. Runtime-only,
+	// never persisted.
+	PanePending
 	// PaneDead means the tmux session no longer exists. Distinct from PaneUnknown
 	// (a transient read failure of a live session): the metadata loop flags only a
 	// PaneDead session for lost-session recovery. Runtime-only, never persisted.
@@ -273,22 +280,41 @@ func (t *Session) Poll() PaneState {
 	if hasMarker {
 		// The marker is absent. The hook state file is authoritative for *idle*: a
 		// clean turn-end (Stop) or an API-error turn-end (StopFailure) latches "ready", so we
-		// commit idle at once. Any other value — still "working", or no file yet — is NOT
-		// trusted to hold working (that latch caused the oscillation); instead the
-		// marker-absent grace below holds working only briefly, gated on how long the marker
-		// has actually been gone, then commits idle and stays there.
-		if hookState, ok := t.readHookState(); ok && hookState == hookStateReady {
+		// commit idle at once — UNLESS a background sub-agent is still recorded in flight, in
+		// which case the turn only looks finished (Stop fired while the child runs) and we
+		// surface PanePending instead, so the row isn't mislabeled done (#290). Any other
+		// value — still "working", or no file yet — is NOT trusted to hold working (that latch
+		// caused the oscillation); instead the marker-absent grace below holds working only
+		// briefly, gated on how long the marker has actually been gone, then commits idle.
+		if rec, ok := t.readHookRecord(); ok && rec.State == hookStateReady {
 			t.monitor.idleStreak = 0
+			if len(rec.Inflight) > 0 {
+				t.monitor.lastReported = PanePending
+				t.monitor.logSignal(name, "hook ready + subagents in flight → pending")
+				return PanePending
+			}
+			// Ready with an empty set is a genuine end-of-turn. Known residual: a background
+			// sub-agent's SubagentStop drains the set a beat before the resuming main turn
+			// latches "working", so there is a sub-tick {ready, empty} window that reads here
+			// as idle. A 500ms poll rarely lands in it, and it self-corrects the very next tick
+			// (the working edge → the grace below → working), so it is left to the deferred
+			// freshness layer rather than adding a hold-pending latch (#46 risk) in v1.
 			t.monitor.lastReported = PaneIdle
 			t.monitor.logSignal(name, "hook ready → idle")
 			return PaneIdle
 		}
 		t.monitor.idleStreak++
-		if t.monitor.lastReported == PaneWorking && t.monitor.idleStreak < t.idleConfirmCap() {
+		if (t.monitor.lastReported == PaneWorking || t.monitor.lastReported == PanePending) &&
+			t.monitor.idleStreak < t.idleConfirmCap() {
 			// A brief marker-absent gap after real work (auto-accept turn boundary, model
-			// spin-up). Hold working. idleStreak grows monotonically while the marker is
-			// gone, so once it caps we commit idle and the absence of a marker keeps us there
-			// — no churn-driven re-raise.
+			// spin-up) — or right after PanePending, when a session that was waiting on a
+			// background sub-agent resumes: a working hook (UserPromptSubmit/PreToolUse) latches
+			// "working" and the in-flight set drains a beat before the busy marker repaints, so
+			// without holding here that sub-tick gap would commit PaneIdle → a false "done" (and
+			// a false #289 "finished" ding) at every sub-agent resume. We only get here once the
+			// hook is no longer "ready" (a working edge fired = the agent is doing something), so
+			// holding working is honest. Still bounded by idleConfirmCap, so it can never relatch
+			// working (#46) — once the cap is hit the absent marker keeps us idle.
 			t.monitor.logSignal(name, "marker-absent grace → working")
 			return PaneWorking
 		}
@@ -382,15 +408,21 @@ func (t *Session) PollNow() PaneState {
 		t.monitor.logSignal(name, "marker → working")
 		return PaneWorking
 	}
-	if hookState, ok := t.readHookState(); ok {
-		if hookState == hookStateWorking {
+	if rec, ok := t.readHookRecord(); ok {
+		switch {
+		case rec.State == hookStateWorking:
 			t.monitor.lastReported = PaneWorking
 			t.monitor.logSignal(name, "refresh hook working → working")
 			return PaneWorking
+		case rec.State == hookStateReady && len(rec.Inflight) > 0:
+			t.monitor.lastReported = PanePending
+			t.monitor.logSignal(name, "refresh hook ready + subagents in flight → pending")
+			return PanePending
+		default:
+			t.monitor.lastReported = PaneIdle
+			t.monitor.logSignal(name, "hook ready → idle")
+			return PaneIdle
 		}
-		t.monitor.lastReported = PaneIdle
-		t.monitor.logSignal(name, "hook ready → idle")
-		return PaneIdle
 	}
 	if len(t.adapter.BusyMarkers) == 0 {
 		// No level signal and no hook file; defer to the tick loop's content-change path.

@@ -14,6 +14,7 @@ func TestStatus_String(t *testing.T) {
 		Loading:    "loading",
 		Paused:     "paused",
 		NeedsInput: "needs-input",
+		Pending:    "pending",
 		Status(99): "unknown",
 	} {
 		require.Equal(t, want, s.String())

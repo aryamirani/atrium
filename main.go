@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+
 	"github.com/ZviBaratz/atrium/app"
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/daemon"
@@ -255,6 +257,26 @@ var (
 		},
 	}
 
+	hookEventArg     string
+	hookStateFileArg string
+	hookEventCmd     = &cobra.Command{
+		Use:    tmux.HookSubcommand,
+		Short:  "Internal: record a Claude Code hook event into a session's status file",
+		Hidden: true,
+		// Invoked by the injected Claude Code settings.json hooks (see
+		// session/tmux/hooks.go), once per hook event, to maintain the structured
+		// status record — the working/ready latch plus the set of in-flight sub-agent
+		// ids that distinguishes a finished turn from one still waiting on a background
+		// sub-agent (#290). It runs the locked read-modify-write that shell can't do
+		// portably, then exits. Best-effort by contract: a hook must never fail or stall
+		// the agent, so this always exits 0 and reads stdin only for the sub-agent events
+		// that carry an agent_id.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runHookEvent(hookStateFileArg, hookEventArg, os.Stdin)
+			return nil
+		},
+	}
+
 	doctorCmd = &cobra.Command{
 		Use:   "doctor",
 		Short: "Check installed agent CLIs against Atrium's verified heuristic versions",
@@ -282,6 +304,36 @@ func shouldLaunchDaemonOnExit(autoYesFlag bool) bool {
 	return autoYesFlag || config.LoadConfig().AutoYes
 }
 
+// runHookEvent applies one Claude Code hook event to a session's status file. It is the
+// body of the hidden `hook` subcommand. Best-effort: a missing arg is a silent no-op, and
+// an update error is surfaced to stderr (which Claude captures for its own hook logs) but
+// never propagated — the caller always exits 0 so a hook can't disturb the agent.
+func runHookEvent(stateFile, event string, stdin io.Reader) {
+	if stateFile == "" || event == "" {
+		return
+	}
+	var agentID string
+	if tmux.HookEventReadsAgentID(event) {
+		agentID = parseSubagentID(stdin)
+	}
+	if err := tmux.UpdateHookState(stateFile, event, agentID); err != nil {
+		fmt.Fprintf(os.Stderr, "atrium hook: %v\n", err)
+	}
+}
+
+// parseSubagentID pulls the agent_id out of a SubagentStart/Stop hook's stdin payload.
+// Best-effort: an absent, empty, or unparseable payload yields "", which applyHookEvent
+// treats as "can't track this one" (skipped) rather than corrupting the in-flight set.
+func parseSubagentID(stdin io.Reader) string {
+	var payload struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(stdin).Decode(&payload); err != nil {
+		return ""
+	}
+	return payload.AgentID
+}
+
 func init() {
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
@@ -303,12 +355,16 @@ func init() {
 		"Only check whether a newer release exists; do not install it")
 	rootCmd.AddCommand(updateCmd)
 
+	hookEventCmd.Flags().StringVar(&hookEventArg, "event", "", "hook event name (internal)")
+	hookEventCmd.Flags().StringVar(&hookStateFileArg, "state-file", "", "session status file path (internal)")
+
 	profilesCmd.AddCommand(profilesDetectCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
 	rootCmd.AddCommand(profilesCmd)
 	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(hookEventCmd)
 }
 
 func main() {

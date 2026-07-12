@@ -325,6 +325,25 @@ func TestPromptDeliveryReady(t *testing.T) {
 			queuedAt:      time.Time{},
 			want:          true,
 		},
+		{
+			// PanePending = the main turn ended but a background sub-agent is still in flight
+			// (#290). The input box is idle/typable so awaiting-input is true, yet a zero-clock
+			// follow-up must wait for the sub-agent to finish rather than interleave a new turn.
+			name:          "PanePending holds a zero-clock follow-up",
+			state:         tmux.PanePending,
+			awaitingInput: true,
+			queuedAt:      time.Time{},
+			want:          false,
+		},
+		{
+			// A stale startup prompt still force-delivers on PanePending, exactly as on
+			// PaneWorking — the 60s valve is the last resort against a boot that never idles.
+			name:          "PanePending force-delivers a stale startup prompt past timeout",
+			state:         tmux.PanePending,
+			awaitingInput: true,
+			queuedAt:      stale,
+			want:          true,
+		},
 	}
 
 	for _, tt := range tests {

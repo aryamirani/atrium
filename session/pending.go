@@ -1,0 +1,87 @@
+package session
+
+import (
+	"time"
+
+	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/session/agent"
+)
+
+// Pending reconciliation (#290 Phase 2).
+//
+// A session enters Pending when the poller sees the hook record latched "ready" with a
+// non-empty in-flight sub-agent set: the main turn ended, but background work is still
+// outstanding. Pending is advisory — it must never become a permanently-stuck row — so it
+// is reconciled in a strict, load-bearing priority order:
+//
+//  1. Explicit terminal status, gated on the set being empty. A Stop with the set empty is
+//     the ONLY thing that yields done/idle (handled in poll.go: ready+empty → PaneIdle →
+//     Ready). A Stop with the set non-empty is Pending, never done. Never inferred from
+//     silence or a stale pane.
+//  2. Wall-clock watchdog (this file). A session held Pending past a generous, agent-tunable
+//     cap is force-reconciled to done EVEN IF the pane is still alive — the alive-but-stuck
+//     case, where a SubagentStop never fired so the set never drained. Checked before
+//     liveness precisely because liveness would answer "alive → keep waiting" and never time
+//     it out. The cap is generous because a background sub-agent legitimately runs long;
+//     liveness (below) carries the common, fast failure.
+//  3. Liveness. A dead tmux pane is caught by Poll's has-session check (→ PaneDead →
+//     recoverLostInstances → Paused) before the record is ever read, so a crash mid-sub-agent
+//     can't strand a Pending row. This needs no code here — it is the existing machinery.
+//  4. Freshness (working_stale / heartbeat / keepalive) — deferred in v1.
+//
+// Two invariants keep this free of the #46 oscillation: "done" is only ever an explicit
+// ready with an empty set (never inferred), and the watchdog's reconciliation
+// DETERMINISTICALLY clears the stuck set (ClearInflight) so the next poll sees ready+empty
+// → idle and stays there, instead of re-classifying ready+non-empty → Pending and flapping.
+
+// defaultPendingWatchdog is the wall-clock cap a session may sit Pending before the
+// watchdog force-reconciles it to done. Deliberately generous: this backstops only the
+// rare alive-but-stuck case (a SubagentStop that never fired on a still-live pane) — tmux
+// liveness already catches the common dead-pane failure within a couple of ticks — so the
+// cap is tuned so a legitimately long-running background sub-agent never trips it (a false
+// "done" is worse than a row that reads "busy" a while longer). A var, not a const, so
+// tests can shrink it. Agents may override via agent.Adapter.PendingWatchdog.
+var defaultPendingWatchdog = 30 * time.Minute
+
+// pendingWatchdogCap is this instance's Pending cap: the agent's override when set,
+// otherwise the package default. Mirrors idleConfirmCap's adapter-override pattern.
+func (i *Instance) pendingWatchdogCap() time.Duration {
+	if d := agent.Resolve(i.Program).PendingWatchdog; d > 0 {
+		return d
+	}
+	return defaultPendingWatchdog
+}
+
+// applyPending maps a PanePending poll onto the instance's status, running the wall-clock
+// watchdog. On entry (status not yet Pending) it just latches Pending, resetting
+// statusChangedAt so the cap measures pending-duration and not the prior state's age. On a
+// subsequent poll where the session has been Pending longer than its cap, it reconciles:
+// clear the stuck in-flight set (the deterministic latch-clear that prevents re-entry), then
+// commit Ready. The commit flags unread like any real completion, so a session that was
+// stuck pending surfaces as finished-and-unseen rather than silently vanishing.
+func (i *Instance) applyPending() {
+	if i.pendingExpired() {
+		if ts := i.tmux(); ts != nil {
+			// Clear the set before committing done so the next poll reads ready+empty → idle
+			// and stays (the anti-oscillation clear). A persistent clear failure (broken FS)
+			// degrades to a bounded re-reconcile — the row flips back to Pending next poll and
+			// the watchdog retries a cap later — never a permanently-stuck row.
+			if err := ts.ClearInflight(); err != nil {
+				log.WarningLog.Printf("pending watchdog: failed to clear in-flight set for %q: %v", i.Title, err)
+			}
+		}
+		i.SetStatus(Ready)
+		log.InfoLog.Printf("pending watchdog: %q held pending past %s, reconciled to ready", i.Title, i.pendingWatchdogCap())
+		return
+	}
+	i.SetStatus(Pending)
+}
+
+// pendingExpired reports whether the instance has been continuously Pending longer than
+// its watchdog cap. Gated on the CURRENT status already being Pending: on the tick that
+// first enters Pending the status is still the prior state (with an older statusChangedAt
+// that must not be mistaken for a long pending hold), so the watchdog can only fire once
+// the session has actually been Pending across at least one poll.
+func (i *Instance) pendingExpired() bool {
+	return i.GetStatus() == Pending && time.Since(i.StatusChangedAt()) > i.pendingWatchdogCap()
+}
