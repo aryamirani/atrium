@@ -47,10 +47,16 @@ var claude = &Adapter{
 	VerifiedVersion:  "2.1.207",
 	DriftGranularity: GranularityMinor,
 
-	// The footer renders e.g. "✻ Cogitating… (5s · esc to interrupt)" below the
-	// input box for the whole turn, including silent tool calls.
+	// The below-box footer renders "esc to interrupt" while working — but only when the
+	// 2.1.207 responsive hint area has room; contextual chips (a PR link, "ctrl+t to hide
+	// tasks", background "N shell"/"N monitor", "↓ to manage") crowd it out on a busy
+	// foreground turn. It stays a valid positive marker for the states that still show it.
 	BusyMarkers:  []string{"esc to interrupt"},
 	MarkerWindow: 0, // status hints render below the input box border
+
+	// The above-box spinner status line ("<glyph> <Gerund>… (<elapsed> · …)") survives the
+	// footer reflow and proves work even when "esc to interrupt" is crowded out (spinner.go).
+	LiveSpinner: claudeSpinnerWorking,
 
 	Prompts: []PromptMatcher{
 		// The tool-permission dialog's decline option.

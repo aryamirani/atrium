@@ -147,6 +147,17 @@ type Adapter struct {
 	// *above* the input box, where the footer anchor never looks.
 	MarkerWindow int
 
+	// LiveSpinner is a structural busy signal complementing BusyMarkers: a func that
+	// reports whether the pane shows an animating status spinner. It exists for a marker
+	// that no fixed substring can express and that renders *above* the input box (outside
+	// footerRegion) — claude's "<glyph> <Gerund>… (<elapsed> · …)" status line, whose
+	// glyph and gerund vary. Unlike a below-box substring marker it is NOT structurally
+	// guaranteed to be live chrome (the transcript tail can quote the same signature), so
+	// the poller trusts it only while the pane is animating, never as a standalone latch.
+	// nil for agents without such a spinner. Receives the full cleaned content (it does
+	// its own windowing). See session/agent/spinner.go.
+	LiveSpinner func(content string) bool
+
 	// IdleConfirmTicks overrides the poller's working→idle safety cap for this
 	// agent: the number of consecutive marker-absent (or, for markerless agents,
 	// unchanged-while-churning) poll ticks after which the pane is committed to
