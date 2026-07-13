@@ -531,8 +531,9 @@ func (m *home) drainStarts(timeout time.Duration) bool {
 //   - signal shutdown + partial/failed  -> torn down, rebinding its children to a
 //     WithoutCancel context first so Kill's git/tmux teardown isn't insta-killed
 //     by the cancelled lifecycle context;
-//   - force-quit                        -> torn down (ctx still live, no rebind):
-//     the user chose to abandon it, so clean it up rather than leave it orphaned.
+//   - ctx still live                     -> torn down (no rebind; Kill works as-is):
+//     the force-quit abandon, or a rare non-signal event-loop error from p.Run().
+//     Either way, clean it up rather than leave it orphaned.
 //
 // If the drain times out a Start is still running; touching it would race the
 // goroutine, so it is left as-is — the same orphan the force-quit path produced
@@ -569,7 +570,8 @@ func (m *home) reconcileInFlightStarts(ctx context.Context) {
 				log.WarningLog.Printf("shutdown: teardown of in-flight session %q: %v", inst.Title, err)
 			}
 		default:
-			// Force-quit abandon: ctx is still live, so Kill's teardown works as-is.
+			// Ctx still live: the force-quit abandon, or a rare non-signal event-loop
+			// error from p.Run(). Kill's teardown works as-is, no rebind needed.
 			if err := inst.Kill(); err != nil {
 				log.WarningLog.Printf("force-quit: teardown of in-flight session %q: %v", inst.Title, err)
 			}
