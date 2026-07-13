@@ -121,3 +121,18 @@ func TestHideNotice_StaleGenerationIgnored(t *testing.T) {
 	h.Update(hideErrMsg{gen: h.noticeGen})
 	assert.False(t, h.menu.HasNotice(), "the matching hide clears the notice")
 }
+
+// With the hint bar off, the missing-program warning must land on the errBox row
+// rather than vanish — it goes through the same flashNotice fallback (#287).
+func TestWarnMissingProgram_HintBarOffFallsBackToErrRow(t *testing.T) {
+	h := newCreateFormHome(t)
+	off := false
+	h.appConfig.HintBar = &off
+
+	cmd := h.warnMissingProgram("definitely-not-a-real-program")
+
+	require.NotNil(t, cmd, "the warning schedules its own hide")
+	assert.True(t, h.errBox.HasContent(), "the warning must claim the errBox row")
+	assert.True(t, h.errBox.HasError(), "a missing-program warning is error-level")
+	assert.False(t, h.menu.HasNotice())
+}
