@@ -93,6 +93,8 @@ func splashTestVariants() map[string]splashVariant {
 		"fbm":     splashVariantFBM,
 		"braille": splashVariantBraille,
 		"flow":    splashVariantFlow,
+		"julia":   splashVariantJulia,
+		"mandala": splashVariantMandala,
 	}
 }
 
@@ -253,6 +255,51 @@ func TestSplashBrailleVariantOutput(t *testing.T) {
 		}
 	}
 	require.True(t, sawBraille, "the faint band must produce braille dots")
+}
+
+// TestSplashFractalRange checks both fractal evaluators' output contract
+// over a spread of positions and phases: raw value and hue helper in [0,1].
+func TestSplashFractalRange(t *testing.T) {
+	for name, at := range map[string]func(dx, dy, phase float64) (float64, float64){
+		"julia":   splashJuliaAt,
+		"mandala": splashMandalaAt,
+	} {
+		for i := 0; i < 600; i++ {
+			dx := (float64(i%60) - 30) * 1.37
+			dy := (float64(i/60) - 5) * 2.9
+			phase := float64(i%23) * 1.7
+			v, aux := at(dx, dy, phase)
+			require.GreaterOrEqualf(t, v, 0.0, "%s val at (%f,%f,p%f)", name, dx, dy, phase)
+			require.LessOrEqualf(t, v, 1.0, "%s val at (%f,%f,p%f)", name, dx, dy, phase)
+			require.GreaterOrEqualf(t, aux, 0.0, "%s aux at (%f,%f,p%f)", name, dx, dy, phase)
+			require.LessOrEqualf(t, aux, 1.0, "%s aux at (%f,%f,p%f)", name, dx, dy, phase)
+		}
+	}
+}
+
+// TestSplashBloom checks the bloom's structural properties: it only ever
+// brightens (additive), it spreads a bright spike into its neighborhood, and
+// it leaves an all-dark buffer untouched (nothing above the threshold).
+func TestSplashBloom(t *testing.T) {
+	const w, h = 11, 9
+	dark := splashField{vals: make([]float64, w*h)}
+	splashBloom(dark, w, h)
+	for i, v := range dark.vals {
+		require.Zerof(t, v, "dark cell %d must stay dark", i)
+	}
+
+	spike := splashField{vals: make([]float64, w*h)}
+	center := (h/2)*w + w/2
+	spike.vals[center] = 1.0
+	before := append([]float64(nil), spike.vals...)
+	splashBloom(spike, w, h)
+	for i, v := range spike.vals {
+		require.GreaterOrEqualf(t, v, before[i], "bloom must never darken (cell %d)", i)
+		require.LessOrEqual(t, v, 1.0)
+	}
+	require.Greater(t, spike.vals[center-1], 0.0, "bloom must spread to the left neighbor")
+	require.Greater(t, spike.vals[center+w], 0.0, "bloom must spread to the row below")
+	require.Zero(t, spike.vals[0], "bloom must not reach the far corner")
 }
 
 // flowTestField builds a 5×5 buffer from a linear function of (col, row) and

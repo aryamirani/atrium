@@ -41,7 +41,21 @@ const (
 	// band stroked in gradient-oriented line glyphs (─ ╱ │ ╲) — filament
 	// edges read as drawn streamlines.
 	splashVariantFlow
+	// splashVariantJulia ("d") is an animated Julia set with orbit-trap
+	// luminance and bloom — the fractal morphs continuously as its c
+	// parameter orbits.
+	splashVariantJulia
+	// splashVariantMandala ("e") is a log-polar fBm kaleidoscope centered on
+	// the wordmark — a 2N-fold rosette of the ridged noise field with a slow
+	// infinite zoom, rotation, and bloom.
+	splashVariantMandala
 )
+
+// isFractal groups the escape/trap-based variants, which share bloom, a wide
+// contrast window, and the structure-locked hue mix.
+func (v splashVariant) isFractal() bool {
+	return v == splashVariantJulia || v == splashVariantMandala
+}
 
 // splashDefaultVariant is what production renders when no override is set.
 const splashDefaultVariant = splashVariantFBM
@@ -60,6 +74,10 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 		return splashVariantBraille
 	case "c":
 		return splashVariantFlow
+	case "d", "julia":
+		return splashVariantJulia
+	case "e", "mandala":
+		return splashVariantMandala
 	}
 	return splashDefaultVariant
 })
@@ -104,6 +122,15 @@ const (
 	fbmHueSwirl     = 0.35
 	fbmHueWarp      = 0.30
 	fbmHueWarpScale = 2.0 // normalizes |q| (max ~0.71) toward [0,1]
+
+	// Fractal variants: a wide contrast window (the trap glow is already
+	// contrasty) and a hue mix dominated by the structure helper (escape
+	// depth / fold depth), so color bands follow the fractal's geometry.
+	fractalContrastLo = 0.12
+	fractalContrastHi = 0.88
+	fractalHueRadial  = 0.25
+	fractalHueSwirl   = 0.15
+	fractalHueAux     = 0.60
 
 	// ditherAmp is the dither amplitude in glyph-index steps. MUST stay
 	// < 1.0: that is what guarantees a fully-dark cell (lit=0) still rounds
@@ -279,10 +306,15 @@ func splashFBMBody(x, y, phase float64) float64 {
 // angle and add the warp magnitude (their aux) for layered gas-cloud hues.
 func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float64, nColors int) int {
 	var colorT float64
-	if variant == splashVariantLegacy {
+	switch {
+	case variant == splashVariantLegacy:
 		swirl := 0.5 + 0.5*math.Sin(aux+dRaw*colorSwirlF-phase*colorSwirlSpeed)
 		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
-	} else {
+	case variant.isFractal():
+		theta := math.Atan2(dy, dx)
+		swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
+		colorT = clamp01(fractalHueRadial*(dRaw/maxD) + fractalHueSwirl*swirl + fractalHueAux*aux)
+	default:
 		theta := math.Atan2(dy, dx)
 		swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
 		colorT = clamp01(fbmHueRadial*(dRaw/maxD) + fbmHueSwirl*swirl + fbmHueWarp*aux)
@@ -391,10 +423,16 @@ func splashEvalField(w, h int, cx, cyFocal, phase float64, at func(dx, dy, phase
 // as a point function (not just a buffer fill) so sub-cell techniques can
 // re-sample the same field at finer positions.
 func splashFieldAt(v splashVariant) func(dx, dy, phase float64) (val, aux float64) {
-	if v == splashVariantLegacy {
+	switch v {
+	case splashVariantLegacy:
 		return splashLegacyAt
+	case splashVariantJulia:
+		return splashJuliaAt
+	case splashVariantMandala:
+		return splashMandalaAt
+	default:
+		return splashFBMAt
 	}
-	return splashFBMAt
 }
 
 // splashLegacyAt is the PR #314 sum-of-sines plasma, evaluated at one point:
@@ -446,6 +484,9 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 
 	at := splashFieldAt(variant)
 	fld := splashEvalField(w, h, cx, cyFocal, phase, at)
+	if variant.isFractal() {
+		splashBloom(fld, w, h)
+	}
 
 	lut := splashLUTFor(pal)
 	nColors := len(lut.styles)
@@ -456,12 +497,18 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	starMax := len(starRampR) - 1
 	// Slow global brightness swell (breathing), computed once per frame.
 	breathe := 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
-	// Per-variant Pass-2 behavior: the legacy field keeps its wider contrast
+	// Per-variant Pass-2 behavior: the legacy field keeps its wide contrast
 	// window and no dither (it stays a faithful baseline); noise variants get
-	// the narrower fBm window plus IGN dithering.
+	// the narrower fBm window, fractals a wide one (trap glow is already
+	// contrasty); both get dithering.
 	contrastLo, contrastHi := splashContrastLo, splashContrastHi
 	dither := false
-	if variant != splashVariantLegacy {
+	switch {
+	case variant == splashVariantLegacy:
+	case variant.isFractal():
+		contrastLo, contrastHi = fractalContrastLo, fractalContrastHi
+		dither = true
+	default:
 		contrastLo, contrastHi = fbmContrastLo, fbmContrastHi
 		dither = true
 	}
