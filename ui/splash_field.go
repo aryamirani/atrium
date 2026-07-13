@@ -182,21 +182,24 @@ func splashFlowGlyph(vals []float64, w, h, row, col int) (rune, bool) {
 // 1,2,3,7 run down the left column, dots 4,5,6,8 down the right.
 var brailleBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}}
 
-// splashBrailleMask re-samples the field at the 8 dot centers of one cell and
-// halftones each into a braille dot. dx/dy are the cell's focal-relative
+// splashBrailleMask re-samples the fBm field at the 8 dot centers of one cell
+// and halftones each into a braille dot. dx/dy are the cell's focal-relative
 // aspect-corrected center; a dot column step is 0.5 cell and a dot row step
-// is 0.5 aspect units (cellAspect/4). The cell's envelope (vignette × radial
-// × breathe) scales every dot, and the per-dot dither runs at sub-cell
-// resolution so dot patterns stay granular. A zero mask means "render a
-// space" — bare U+2800 is never emitted (some fonts draw it as eight hollow
-// circles).
-func splashBrailleMask(col, row int, dx, dy, phase float64, at func(dx, dy, phase float64) (float64, float64), lo, hi, envelope float64) uint8 {
+// is 0.5 aspect units (cellAspect/4). The warp vector is evaluated once for
+// the cell and shared by all 8 dots (it is constant at cell scale — see
+// splashFBMWarpAt); the cell's envelope (vignette × radial × breathe) scales
+// every dot, and the per-dot dither runs at sub-cell resolution so dot
+// patterns stay granular. A zero mask means "render a space" — bare U+2800
+// is never emitted (some fonts draw it as eight hollow circles).
+func splashBrailleMask(col, row int, dx, dy, phase, lo, hi, envelope float64) uint8 {
+	qx, qy, _ := splashFBMWarpAt(dx, dy, phase)
+	wx, wy := warpAmp*qx, warpAmp*qy
 	var mask uint8
 	for sy := 0; sy < 4; sy++ {
 		suby := dy + (float64(sy)-1.5)*0.5
 		for sx := 0; sx < 2; sx++ {
 			subx := dx + (float64(sx)-0.5)*0.5
-			raw, _ := at(subx, suby, phase)
+			raw := splashFBMBody(subx+wx, suby+wy, phase)
 			subLit := smoothstep(lo, hi, raw) * envelope
 			if subLit > splashDither(2*col+sx, 4*row+sy)*brailleHalftoneScale {
 				mask |= brailleBit[sy][sx]
@@ -211,13 +214,13 @@ func splashBrailleMask(col, row int, dx, dy, phase float64, at func(dx, dy, phas
 // together with the per-octave domain rotation below — is what animates the
 // field without 3D noise.
 var (
-	seedOct    = [fbmOctaves]uint32{0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35}
-	octDrift   = [fbmOctaves][2]float64{{0.050, 0.030}, {-0.040, 0.065}, {0.075, -0.050}}
-	fbmLacun   = [fbmOctaves - 1]float64{2.01, 2.02} // detuned off 2.0 (IQ: avoids octave self-alignment)
-	warpDrift  = [2]float64{0.022, -0.018}
-	seedWarpX  = uint32(0x27D4EB2F)
-	seedWarpY  = uint32(0x165667B1)
-	seedStar   = uint32(0x2545F491)
+	seedOct   = [fbmOctaves]uint32{0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35}
+	octDrift  = [fbmOctaves][2]float64{{0.050, 0.030}, {-0.040, 0.065}, {0.075, -0.050}}
+	fbmLacun  = [fbmOctaves - 1]float64{2.01, 2.02} // detuned off 2.0 (IQ: avoids octave self-alignment)
+	warpDrift = [2]float64{0.022, -0.018}
+	seedWarpX = uint32(0x27D4EB2F)
+	seedWarpY = uint32(0x165667B1)
+	seedStar  = uint32(0x2545F491)
 )
 
 // splashFBMAt evaluates the domain-warped fBm field at one point: a warp
@@ -227,14 +230,28 @@ var (
 // are blended with a weak ring anchored on the wordmark. Returns the raw
 // value in [0,1] and the normalized warp magnitude (the hue helper).
 func splashFBMAt(dx, dy, phase float64) (val, qLen float64) {
+	qx, qy, qq := splashFBMWarpAt(dx, dy, phase)
+	return splashFBMBody(dx+warpAmp*qx, dy+warpAmp*qy, phase), clamp01(qq * fbmHueWarpScale)
+}
+
+// splashFBMWarpAt evaluates the animated warp vector: two decorrelated noise
+// fields (offsets advected by phase) plus the roil perturbation. Split from
+// the body so sub-cell refinement can reuse one warp per cell — the warp
+// varies over ~1/warpFreq ≈ 28 cells, so it is constant within a cell for
+// all visual purposes, and it is the more expensive half of the field.
+func splashFBMWarpAt(dx, dy, phase float64) (qx, qy, qq float64) {
 	wxn, wyn := dx*warpFreq, dy*warpFreq
-	qx := splashValNoise(wxn+warpDrift[0]*phase, wyn, seedWarpX) - 0.5
-	qy := splashValNoise(wxn, wyn+warpDrift[1]*phase, seedWarpY) - 0.5
-	qq := math.Hypot(qx, qy)
+	qx = splashValNoise(wxn+warpDrift[0]*phase, wyn, seedWarpX) - 0.5
+	qy = splashValNoise(wxn, wyn+warpDrift[1]*phase, seedWarpY) - 0.5
+	qq = math.Hypot(qx, qy)
 	qx += roilAmp * math.Sin(roilT1*phase+qq*roilQ1)
 	qy += roilAmp * math.Sin(roilT2*phase+qq*roilQ2)
-	x, y := dx+warpAmp*qx, dy+warpAmp*qy
+	return qx, qy, qq
+}
 
+// splashFBMBody is the fBm-plus-ring stack, evaluated at an already-warped
+// point.
+func splashFBMBody(x, y, phase float64) float64 {
 	sum, norm, amp := 0.0, 0.0, 1.0
 	fx, fy := x*fieldFreq, y*fieldFreq
 	for o := 0; o < fbmOctaves; o++ {
@@ -252,7 +269,7 @@ func splashFBMAt(dx, dy, phase float64) (val, qLen float64) {
 	}
 	n := sum / norm
 	ring := 0.5 + 0.5*math.Sin(math.Hypot(x, y)*ringFreq-phase)
-	return clamp01((1-ringWeight)*n + ringWeight*ring), clamp01(qq * fbmHueWarpScale)
+	return clamp01((1-ringWeight)*n + ringWeight*ring)
 }
 
 // splashColorIdx maps a cell to its gradient stop. The hue swirls across the
@@ -273,6 +290,13 @@ func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float6
 	return clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
 }
 
+// splashCellHash is latticeVal for integer cell coordinates. Pane dimensions
+// bound col/row (braille sub-cells at most quadruple them), so the narrowing
+// cannot overflow in practice.
+func splashCellHash(col, row int, seed uint32) float64 {
+	return latticeVal(int32(col), int32(row), seed) //nolint:gosec // G115: cell coords are pane-bounded
+}
+
 // splashDither is the per-cell quantization dither in [0,1): plain hash
 // (white) noise off the integer lattice hash. White noise was chosen over
 // interleaved gradient noise deliberately — IGN is linear along a row (slope
@@ -281,7 +305,7 @@ func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float6
 // character-cell scale. Deliberately frame-free: a time term would make
 // faint zones boil at the push rate.
 func splashDither(col, row int) float64 {
-	return latticeVal(int32(col), int32(row), seedDither)
+	return splashCellHash(col, row, seedDither)
 }
 
 // splashHash is a deterministic 32-bit lattice hash: seed, y, and x are folded
@@ -471,7 +495,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 				if variant == splashVariantBraille && lit < brailleBandHi {
 					// Faint gas: refine to sub-cell braille dots instead of a
 					// (coarse) ramp glyph; bright cores keep the solid ramp.
-					if mask := splashBrailleMask(col, row, dx, dy, phase, at, contrastLo, contrastHi, envelope); mask != 0 {
+					if mask := splashBrailleMask(col, row, dx, dy, phase, contrastLo, contrastHi, envelope); mask != 0 {
 						ch = rune(0x2800) | rune(mask)
 						idx = splashColorIdx(variant, fld.aux[cell], dx, dy, dRaw, phase, maxD, nColors)
 					}

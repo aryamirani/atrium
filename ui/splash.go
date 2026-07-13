@@ -272,7 +272,7 @@ func flushSplashRun(sb, run *strings.Builder, styleIdx int, lut *splashLUT) {
 // behind it. Built on the integer lattice hash: exact on every architecture,
 // unlike the sin-fract hash it replaced.
 func starHash(col, row int) float64 {
-	return latticeVal(int32(col), int32(row), seedStar)
+	return splashCellHash(col, row, seedStar)
 }
 
 // overlayAt composites fg over bg (the ripple field) at cell (placeX, placeY),
