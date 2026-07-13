@@ -19,8 +19,10 @@ import (
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session/tmux"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -279,22 +281,49 @@ var (
 
 	doctorCmd = &cobra.Command{
 		Use:   "doctor",
-		Short: "Check installed agent CLIs against Atrium's verified heuristic versions",
-		Long: "Probes installed agent CLIs (claude, codex, gemini, aider) and reports whether each\n" +
-			"one's version has drifted past the version Atrium's pane-classification heuristics were\n" +
-			"verified against. Drift means a session's status (busy / needs-input / idle) may be\n" +
-			"misread; re-verify the matcher strings in session/agent/registry.go.",
+		Short: "Check Atrium's core dependencies (tmux, git, gh) and agent CLI heuristic versions",
+		Long: "Reports two sections. Core dependencies probes tmux, git, and gh: tmux and git are\n" +
+			"required (a missing one exits nonzero so scripts/CI can gate); gh is optional, needed\n" +
+			"only for push/PR flows, and its authentication is reported but never fatal. Agent\n" +
+			"heuristics probes installed agent CLIs (claude, codex, gemini, aider) and reports whether\n" +
+			"each one's version has drifted past the version Atrium's pane-classification heuristics\n" +
+			"were verified against; drift means a session's status may be misread (re-verify the\n" +
+			"matcher strings in session/agent/registry.go).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log.Initialize(false)
 			defer log.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
-			defer cancel()
-			fmt.Print(doctor.Render(doctor.CheckInstalled(ctx)))
+			// Give each section its own probe budget off a fresh context: the core-dep
+			// probes include a networked `gh auth status` that can be slow, and sharing
+			// one deadline would let it eat into the agent probes' budget and spuriously
+			// time them out.
+			depsCtx, cancelDeps := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
+			defer cancelDeps()
+			deps := doctor.CheckDeps(depsCtx, runtime.GOOS, ghAuthChecker)
+			fmt.Print(doctor.RenderDeps(deps))
+			fmt.Println()
+
+			agentCtx, cancelAgents := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
+			defer cancelAgents()
+			fmt.Print(doctor.Render(doctor.CheckInstalled(agentCtx)))
+			if doctor.MissingRequired(deps) {
+				// Nonzero exit for CI/scripts. The root command already sets
+				// SilenceErrors/SilenceUsage, so main() prints just this message to
+				// stderr (no "Error:"/usage noise over the report rendered above).
+				return fmt.Errorf("missing required dependency (see the hints above; run `atrium doctor` after installing)")
+			}
 			return nil
 		},
 	}
 )
+
+// ghAuthChecker reports whether gh is authenticated, for the doctor core-deps
+// probe. It runs `gh auth status` under the same short probe budget; any nonzero
+// exit (not logged in, misconfigured) counts as unauthenticated. gh is optional,
+// so this never fails the command — it only downgrades gh's reported state.
+func ghAuthChecker(ctx context.Context) error {
+	return exec.CommandContext(ctx, "gh", "auth", "status").Run()
+}
 
 // shouldLaunchDaemonOnExit reports whether the autoyes daemon should take over
 // when the TUI exits. It re-reads the persisted config rather than reusing the

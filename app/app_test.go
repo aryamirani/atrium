@@ -31,6 +31,11 @@ func TestMain(m *testing.M) {
 	// Initialize the logger before any tests run
 	log.Initialize(false)
 
+	// Pin the new-session tmux pre-flight to "present" for the whole app suite so
+	// create-form tests don't depend on whether the CI host has tmux on PATH. The
+	// guard's own test overrides this seam to simulate a missing tmux.
+	tmuxAvailable = func() error { return nil }
+
 	exitCode := testutil.SandboxHomeMain(m)
 
 	log.Close()
