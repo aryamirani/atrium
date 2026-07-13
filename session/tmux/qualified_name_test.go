@@ -10,6 +10,7 @@ import (
 
 	cmd2 "github.com/ZviBaratz/atrium/cmd"
 	"github.com/ZviBaratz/atrium/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,9 +92,7 @@ func TestRenameAdoptsCallerSuppliedSessionName(t *testing.T) {
 // (self-skips without tmux), including a rename moving one session to a new
 // qualified name while the other stays reachable.
 func TestQualifiedSessionsCoexistOnSocket(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	testutil.RequireTmux(t)
 
 	title := fmt.Sprintf("Same-%d", rand.Int31())
 	a := NewSessionWithName(context.Background(), QualifiedSessionName("repoA", title), title, "sleep 300")

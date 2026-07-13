@@ -24,6 +24,11 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Turn a missing-tmux skip into a hard failure so the real-tmux regression
+    # guards (internal/testutil.RequireTmux) can never silently re-skip if the
+    # tmux install below breaks. See issue #274.
+    env:
+      ATRIUM_CI_REQUIRE_TMUX: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +43,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # The real-tmux regression guards (see internal/testutil.RequireTmux, #274)
+      # must actually run in CI, not self-skip — GitHub runners ship no tmux. With
+      # ATRIUM_CI_REQUIRE_TMUX=1 set at the job level, a missing tmux hard-fails,
+      # so this install going dark can't silently re-skip the guards. Skip the
+      # (network-touching) install if a runner image already ships tmux.
+      - name: Install tmux
+        run: |
+          if command -v tmux >/dev/null 2>&1; then
+            echo "tmux already present: $(tmux -V)"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install tmux
+          else
+            sudo apt-get update && sudo apt-get install -y tmux
+          fi
 
       - name: go vet
         run: go vet ./...
@@ -79,6 +99,10 @@ jobs:
   race:
     name: Race detector
     runs-on: ubuntu-latest
+    # See the test job: make a missing tmux hard-fail so the real-tmux guards
+    # can't silently re-skip under -race. Issue #274.
+    env:
+      ATRIUM_CI_REQUIRE_TMUX: '1'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -87,6 +111,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Install tmux
+        run: |
+          if command -v tmux >/dev/null 2>&1; then
+            echo "tmux already present: $(tmux -V)"
+          else
+            sudo apt-get update && sudo apt-get install -y tmux
+          fi
 
       # -shuffle=on surfaces test-order coupling; -race catches data races.
       - name: Test with race detector
