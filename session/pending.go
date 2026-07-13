@@ -27,7 +27,11 @@ import (
 //  3. Liveness. A dead tmux pane is caught by Poll's has-session check (→ PaneDead →
 //     recoverLostInstances → Paused) before the record is ever read, so a crash mid-sub-agent
 //     can't strand a Pending row. This needs no code here — it is the existing machinery.
-//  4. Freshness (working_stale / heartbeat / keepalive) — deferred in v1.
+//  4. Freshness (heartbeat). A hook heartbeat now HOLDS working while fresh (poll.go, #311),
+//     but only for the empty-set case — it never reconciles Pending and never declares
+//     done/dead (that stays with 1–3 above). So it does not affect this order: a non-empty
+//     set is still Pending regardless of heartbeat freshness. `working_stale`/keepalive
+//     remain unbuilt (the animation-gated spinner already covers a long silent tool).
 //
 // Two invariants keep this free of the #46 oscillation: "done" is only ever an explicit
 // ready with an empty set (never inferred), and the watchdog's reconciliation

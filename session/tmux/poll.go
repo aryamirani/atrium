@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ZviBaratz/atrium/log"
 )
@@ -138,6 +139,25 @@ const (
 	idleConfirmTicks = 6
 )
 
+// heartbeatTTL is how long a hook heartbeat (LastHeartbeat) is trusted to HOLD working
+// after the last working edge fired (#311). It is deliberately short — not sized to span
+// the longest legit tool call, because the animation-gated live spinner already covers a
+// long silent tool (Claude's elapsed timer ticks throughout). It only needs to bridge the
+// normal gap between consecutive tool events so an active turn reads Working even when both
+// the below-box marker and the above-box spinner are absent/reworded; a hang then self-heals
+// within roughly this window (heartbeat goes stale → the bounded grace commits idle).
+const heartbeatTTL = 30 * time.Second
+
+// heartbeatFresh reports whether rec's heartbeat is within heartbeatTTL of now. A zero
+// timestamp (a Phase-1 bare-word file, or a record written before the field existed) is
+// never fresh, so those degrade to the scrape fallback rather than falsely holding working.
+func heartbeatFresh(rec hookRecord, now time.Time) bool {
+	if rec.LastHeartbeat == 0 {
+		return false
+	}
+	return now.Sub(time.Unix(rec.LastHeartbeat, 0)) < heartbeatTTL
+}
+
 // idleConfirmCap returns the working→idle safety cap for this session's agent:
 // the adapter's IdleConfirmTicks when it sets one (> 0), otherwise the package
 // default idleConfirmTicks. The override exists so a slow agent prone to long
@@ -264,11 +284,12 @@ func (t *Session) Poll() PaneState {
 		return state
 	}
 
-	// A live busy marker is the one positive proof of work, and the only signal that raises
-	// working. Confining it to the adapter's marker region keeps it reliable even under a
-	// multi-agent team selector. Raising only on the marker is what kills the
-	// flicker: a stuck state file or an idle repaint can never flip the indicator back to
-	// working once it has settled to idle — only the marker returning can.
+	// A live busy marker is the strongest positive proof of work. Confining it to the adapter's
+	// marker region keeps it reliable even under a multi-agent team selector. The marker is what
+	// kills the #46 flicker: a stuck state file or an idle repaint can never flip the indicator
+	// back to working once it has settled to idle. Two bounded signals below can also hold or
+	// raise working without the marker — the animation-gated live spinner (#308) and a fresh
+	// hook heartbeat (#311) — each guarded so it self-heals to idle instead of latching stuck.
 	hasMarker := len(t.adapter.BusyMarkers) > 0 || t.adapter.LiveSpinner != nil
 	if len(t.adapter.BusyMarkers) > 0 && t.markerWorking(content) {
 		t.monitor.idleStreak = 0
@@ -321,14 +342,33 @@ func (t *Session) Poll() PaneState {
 				return PanePending
 			}
 			// Empty set. "ready" (a clean/errored turn-end) is a genuine idle; commit at once.
-			// Any other latch value ("working", or no state yet) is NOT trusted to hold working
-			// on its own (that bare latch caused the #46 oscillation) — fall through to the
-			// bounded marker-absent grace below.
+			// This is the sole "done" authority (Igor's rule: never inferred) and outranks the
+			// heartbeat hold below, so an explicit turn-end always beats a heartbeat still fresh
+			// from the PostToolUse just before Stop.
 			if rec.State == hookStateReady {
 				t.monitor.idleStreak = 0
 				t.monitor.lastReported = PaneIdle
 				t.monitor.logSignal(name, "hook ready → idle")
 				return PaneIdle
+			}
+			// Version-independent corroborating freshness (#311). We are here with a record, an
+			// empty in-flight set, and a non-"ready" latch (a working edge fired). A hook that
+			// fired within heartbeatTTL proves the MAIN turn is live — read from Atrium's own
+			// hook file, not scraped — so hold working even when the below-box marker is crowded
+			// out AND the above-box spinner is absent/reworded. This is HOLD-ONLY and self-healing:
+			//   - It never declares done/dead; ready+empty (above), tmux liveness (PaneDead, before
+			//     the record is read), and the pending watchdog remain the only authorities on those.
+			//   - A stale/zero heartbeat — a crashed writer, or a Phase-1 bare-word file — does
+			//     nothing here and falls through to the bounded grace, so the #46 stuck-file guard
+			//     (TestPollStuckWorkingFileDoesNotFlicker) still self-heals to idle.
+			// Gated on the empty set (handled above) so a BACKGROUND sub-agent's own PreToolUse
+			// bump can't mask Pending as Working (#290). No animation gate: unlike the scraped
+			// spinner, the hook file can't be a stale scrollback quote, so freshness IS the heal.
+			if heartbeatFresh(rec, time.Now()) {
+				t.monitor.idleStreak = 0
+				t.monitor.lastReported = PaneWorking
+				t.monitor.logSignal(name, "hook heartbeat fresh → working")
+				return PaneWorking
 			}
 		}
 		t.monitor.idleStreak++
