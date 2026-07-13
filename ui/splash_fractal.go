@@ -30,6 +30,14 @@ const (
 	juliaBandAmp = 0.62   // band peak brightness (trap filaments top out above it)
 	juliaHueF    = 0.07   // hue ping-pong frequency along the escape depth
 	juliaHueSpd  = 0.010
+	// juliaPhase0 offsets the whole animation so frame 0 opens on its
+	// "emptiest" state — scanned for minimum lit mass over the first c-orbit.
+	// Launch fullness turns out to be dominated by the equipotential bands'
+	// drift phase (the c shape barely moves it), so the offset shifts the
+	// entire clock rather than the c angle: sparse filigree first, the pane
+	// fills as the bands drift in.
+	// Scanned minimum: lit fraction ~0.40 here vs ~0.92 at raw phase 0.
+	juliaPhase0 = 20.0
 )
 
 // splashJuliaAt evaluates the Julia field at one point. The hue helper
@@ -37,6 +45,9 @@ const (
 // never seam-wraps), making color bands follow the fractal's equipotential
 // geometry rather than plain radius.
 func splashJuliaAt(dx, dy, phase float64) (val, aux float64) {
+	// Launch on the scanned-for "emptiest" point of the animation (see
+	// juliaPhase0); everything animates forward from there.
+	phase += juliaPhase0
 	rot := phase * juliaRotSpd
 	cr, sr := math.Cos(rot), math.Sin(rot)
 	zx := (dx*cr - dy*sr) * juliaScale
