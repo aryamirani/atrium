@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"time"
 )
 
 // Structured hook state (#290 Phase 2).
@@ -51,12 +52,22 @@ func HookEventReadsAgentID(event string) bool {
 	return event == HookEventSubagentStart || event == HookEventSubagentStop
 }
 
-// hookRecord is the on-disk hook state: the working/ready latch plus the set of
-// currently in-flight sub-agent ids. Written atomically by UpdateHookState, read
-// lock-free by the poller (rename atomicity protects it from a torn read).
+// hookRecord is the on-disk hook state: the working/ready latch, the set of currently
+// in-flight sub-agent ids, and a heartbeat timestamp. Written atomically by
+// UpdateHookState, read lock-free by the poller (rename atomicity protects it from a torn
+// read).
 type hookRecord struct {
 	State    string   `json:"state,omitempty"`
 	Inflight []string `json:"inflight,omitempty"`
+	// LastHeartbeat is the unix-second wall-clock time the working latch was last set (any
+	// UserPromptSubmit/PreToolUse/PostToolUse edge). The poller trusts it only as a
+	// version-independent FRESHNESS signal that HOLDS working (never as a "done"/"dead"
+	// authority — those stay with ready+empty, tmux liveness, and the watchdog): a hook that
+	// fired within heartbeatTTL proves the main turn is live without scraping the pane (#311).
+	// A crashed/killed writer stops bumping it, so it goes stale and the hold releases —
+	// preserving the #46 no-stuck-latch guarantee. Zero (a Phase-1 bare-word file, or a
+	// record predating this field) reads as stale, so those degrade to the scrape fallback.
+	LastHeartbeat int64 `json:"heartbeat,omitempty"`
 }
 
 // UpdateHookState applies one hook event to the record at stateFile under an exclusive
@@ -73,18 +84,24 @@ func UpdateHookState(stateFile, event, agentID string) error {
 	defer unlock()
 
 	rec, _ := readHookRecordFile(stateFile) // zero record on a missing/corrupt file
-	applyHookEvent(&rec, event, agentID)
+	applyHookEvent(&rec, event, agentID, time.Now().Unix())
 	return writeHookRecordAtomic(stateFile, rec)
 }
 
-// applyHookEvent mutates rec in place for one event. Unknown events are ignored (a
-// forward-compat no-op). A sub-agent event with an empty agent_id is skipped: we can't
-// key the set without an id, and adding "" would strand a phantom member the matching
-// Stop could never discard — the watchdog/liveness backstop covers the untracked agent.
-func applyHookEvent(rec *hookRecord, event, agentID string) {
+// applyHookEvent mutates rec in place for one event; now is the unix-second wall-clock time
+// used to stamp the heartbeat on a working edge. Unknown events are ignored (a forward-compat
+// no-op). A sub-agent event with an empty agent_id is skipped: we can't key the set without
+// an id, and adding "" would strand a phantom member the matching Stop could never discard —
+// the watchdog/liveness backstop covers the untracked agent.
+func applyHookEvent(rec *hookRecord, event, agentID string, now int64) {
 	switch event {
 	case HookEventWorking:
 		rec.State = hookStateWorking
+		// Bump the heartbeat only on a working edge (UserPromptSubmit/PreToolUse/PostToolUse).
+		// ready must NOT bump it, or a still-fresh heartbeat from the PostToolUse just before
+		// Stop could mask a clean turn-end; the poller resolves that via ready+empty anyway,
+		// but keeping ready heartbeat-free keeps the record honest (#311).
+		rec.LastHeartbeat = now
 	case HookEventReady:
 		rec.State = hookStateReady
 	case HookEventSubagentStart:
