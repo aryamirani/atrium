@@ -38,7 +38,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		menuHeight = 1
 	}
 	errHeight := 0
-	if m.errBox.HasError() {
+	if m.errBox.HasContent() {
 		errHeight = 1
 	}
 	contentHeight := max(1, msg.Height-menuHeight-errHeight)
