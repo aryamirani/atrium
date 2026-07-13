@@ -39,7 +39,7 @@ const (
 	rippleFreq2 = 0.31  // second ring octave (drifts at a different rate)
 	rippleFreq3 = 0.14  // slow ring that pulses the angular petals
 	petalCount  = 6.0   // even → rotationally symmetric petals, no directional lean
-	rippleWarp  = 2.6   // domain-warp amplitude in cells: wavy, organic rings
+	rippleWarp  = 3.6   // domain-warp amplitude in cells: wavy, organic filaments
 	rippleWarpF = 0.055 // domain-warp spatial frequency
 	// isoFreq/isoSpeed drive three plane waves 120° apart (iso*Cos/Sin below);
 	// their directions sum to zero, so the fine texture shimmers isotropically
@@ -59,9 +59,21 @@ const (
 	// instead of hard-clipping into a rectangle.
 	edgeVignetteFrac = 0.16
 	// radialDim is how much the field dims from the wordmark (core) out to the
-	// farthest corner — gentle, so the field still fills the pane but stays
-	// anchored on the wordmark.
-	radialDim = 0.30
+	// farthest corner — enough to read as a glow emanating from ATRIUM while the
+	// field still reaches the edges.
+	radialDim = 0.42
+
+	// Contrast curve applied to intensity: values below Lo fade toward blank,
+	// above Hi saturate — so bright ridges read as filaments against darker
+	// voids instead of a uniform mid-tone wash, and the top of the ramp is used.
+	splashContrastLo = 0.20
+	splashContrastHi = 0.86
+	// Color mixing: how much the gradient follows radius vs. a slow angular
+	// swirl. A lower radius weight makes the hue wander so the field reads as a
+	// multi-hued nebula rather than one flat band.
+	colorRadialMix  = 0.50
+	colorSwirlF     = 0.045
+	colorSwirlSpeed = 0.30
 
 	// splashRamp maps intensity to a glyph, light→heavy. Index 0 (space) is
 	// "nothing here"; every glyph is terminal-width 1 (downsample-safe). A longer
@@ -241,12 +253,19 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 					0.40*math.Sin(d*rippleFreq3-phase*0.5)*math.Cos(theta*petalCount) +
 					isoWeight*tex
 				intensity := clamp01((v/rippleAmp + 1) * 0.5)
+				// Contrast: push mid-tones apart so bright ridges read as filaments
+				// against darker voids, and the bright end of the ramp gets used.
+				intensity = smoothstep(splashContrastLo, splashContrastHi, intensity)
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
 				radial := 1 - radialDim*clamp01(dRaw/maxD)
 				lit := intensity * edgeX * edgeY * radial
 				if g := clampInt(int(lit*float64(maxGlyph)), 0, maxGlyph); g > 0 {
 					ch = ramp[g]
-					idx = clampInt(int((dRaw/maxD)*float64(nColors-1)), 0, nColors-1)
+					// Hue swirls across the field (radius + a slow angular sweep)
+					// so the gradient reads as a drifting multi-hued nebula.
+					swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
+					colorT := clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
+					idx = clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
 				}
 			}
 
