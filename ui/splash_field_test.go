@@ -2,6 +2,8 @@ package ui
 
 import (
 	"math"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -82,10 +84,133 @@ func TestSplashValNoiseAnchorsLattice(t *testing.T) {
 	}
 }
 
+// splashTestVariants enumerates every variant for contract loops, with names
+// for failure messages.
+func splashTestVariants() map[string]splashVariant {
+	return map[string]splashVariant{
+		"legacy": splashVariantLegacy,
+		"fbm":    splashVariantFBM,
+	}
+}
+
+// TestSplashVariantsContract loops every variant through the core field
+// contract: determinism, exact w×h bounds, frame-to-frame animation, and
+// fully-blank first/last rows (the edge vignette's by-construction guarantee,
+// which dithering and any Pass-1 processing must never break).
+func TestSplashVariantsContract(t *testing.T) {
+	pal := splashTestPalette()
+	w, h := 80, 30
+	for name, v := range splashTestVariants() {
+		a := renderSplashField(w, h, 5, pal, centeredClearing(h, 20, 4), v)
+		b := renderSplashField(w, h, 5, pal, centeredClearing(h, 20, 4), v)
+		require.Equalf(t, a, b, "%s: same inputs must render identically", name)
+		next := renderSplashField(w, h, 6, pal, centeredClearing(h, 20, 4), v)
+		require.NotEqualf(t, a, next, "%s: consecutive frames must differ", name)
+
+		lines := stripLines(a)
+		require.Lenf(t, lines, h, "%s: line count", name)
+		for i, l := range lines {
+			require.Equalf(t, w, len([]rune(l)), "%s: line %d width", name, i)
+		}
+		require.Equalf(t, strings.Repeat(" ", w), lines[0], "%s: top row must be blank", name)
+		require.Equalf(t, strings.Repeat(" ", w), lines[h-1], "%s: bottom row must be blank", name)
+	}
+}
+
+// TestSplashDitherBlankFloor locks the invariant that makes dithering safe
+// under the vignette: with ditherAmp < 1 glyph step, a fully-dark cell
+// (lit = 0) must quantize to glyph 0 for every cell position, so dither can
+// never light a blank border row.
+func TestSplashDitherBlankFloor(t *testing.T) {
+	require.Less(t, ditherAmp, 1.0, "ditherAmp must stay below one glyph step")
+	maxGlyph := len([]rune(splashRamp)) - 1
+	for row := 0; row < 60; row++ {
+		for col := 0; col < 200; col++ {
+			gf := 0*float64(maxGlyph) + (splashDither(col, row)-0.5)*ditherAmp
+			require.Zerof(t, clampInt(int(gf), 0, maxGlyph),
+				"dark cell at (%d,%d) must stay blank", col, row)
+		}
+	}
+}
+
+// TestSplashDitherDistribution sanity-checks the dither noise: values in
+// [0,1), roughly centered (so dithering is unbiased — it breaks banding
+// without brightening or darkening the field on average).
+func TestSplashDitherDistribution(t *testing.T) {
+	sum, n := 0.0, 0
+	for row := 0; row < 40; row++ {
+		for col := 0; col < 120; col++ {
+			v := splashDither(col, row)
+			require.GreaterOrEqual(t, v, 0.0)
+			require.Less(t, v, 1.0)
+			sum += v
+			n++
+		}
+	}
+	require.InDelta(t, 0.5, sum/float64(n), 0.02, "dither must be unbiased")
+}
+
+// TestSplashFBMAtRange checks the fBm field evaluator's output contract over
+// a spread of positions and phases: raw value and hue helper both in [0,1].
+func TestSplashFBMAtRange(t *testing.T) {
+	for i := 0; i < 600; i++ {
+		dx := (float64(i%60) - 30) * 1.37
+		dy := (float64(i/60) - 5) * 2.9
+		phase := float64(i%17) * 1.3
+		v, q := splashFBMAt(dx, dy, phase)
+		require.GreaterOrEqualf(t, v, 0.0, "val at (%f,%f,p%f)", dx, dy, phase)
+		require.LessOrEqualf(t, v, 1.0, "val at (%f,%f,p%f)", dx, dy, phase)
+		require.GreaterOrEqualf(t, q, 0.0, "qLen at (%f,%f,p%f)", dx, dy, phase)
+		require.LessOrEqualf(t, q, 1.0, "qLen at (%f,%f,p%f)", dx, dy, phase)
+	}
+}
+
+// TestRenderSplashFieldConcurrent guards the two-panes case (preview and
+// terminal both render the splash) and any future buffer pooling: concurrent
+// renders of the same frame must all be byte-identical.
+func TestRenderSplashFieldConcurrent(t *testing.T) {
+	pal := splashTestPalette()
+	want := renderSplashField(80, 30, 9, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
+	var wg sync.WaitGroup
+	mismatch := make(chan string, 8)
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				if got := renderSplashField(80, 30, 9, pal, centeredClearing(30, 20, 4), splashDefaultVariant); got != want {
+					select {
+					case mismatch <- "concurrent render diverged":
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(mismatch)
+	require.Empty(t, <-mismatch)
+}
+
 func BenchmarkSplashValNoise(b *testing.B) {
 	var sink float64
 	for i := 0; i < b.N; i++ {
 		sink += splashValNoise(float64(i)*0.13, float64(i%97)*0.29, 0x9E3779B9)
 	}
 	_ = sink
+}
+
+// BenchmarkRenderSplashVariants tracks the ≤3ms/frame budget per variant at
+// the reference 80×30 pane (checked manually; never a timed assertion).
+func BenchmarkRenderSplashVariants(b *testing.B) {
+	pal := splashTestPalette()
+	for name, v := range splashTestVariants() {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = renderSplashField(80, 30, i, pal, centeredClearing(30, 20, 4), v)
+			}
+		})
+	}
 }

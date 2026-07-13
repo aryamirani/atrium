@@ -9,7 +9,6 @@ package ui
 // it; every other empty state keeps the plain FallbackBanner.
 
 import (
-	"math"
 	"strings"
 	"sync"
 
@@ -268,12 +267,12 @@ func flushSplashRun(sb, run *strings.Builder, styleIdx int, lut *splashLUT) {
 	run.Reset()
 }
 
-// starHash is a cheap deterministic per-cell pseudo-random value in [0,1) — the
-// classic sin-fract hash — so the starfield is fixed in place (and snapshot-
-// stable) while the plasma drifts behind it.
+// starHash is a deterministic per-cell pseudo-random value in [0,1), so the
+// starfield is fixed in place (and snapshot-stable) while the plasma drifts
+// behind it. Built on the integer lattice hash: exact on every architecture,
+// unlike the sin-fract hash it replaced.
 func starHash(col, row int) float64 {
-	s := math.Sin(float64(col)*12.9898+float64(row)*78.233) * 43758.5453
-	return s - math.Floor(s)
+	return latticeVal(int32(col), int32(row), seedStar)
 }
 
 // overlayAt composites fg over bg (the ripple field) at cell (placeX, placeY),

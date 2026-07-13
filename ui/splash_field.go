@@ -30,10 +30,13 @@ const (
 	// splashVariantLegacy is the PR #314 sum-of-sines plasma — the comparison
 	// baseline while the noise-based variants are tuned.
 	splashVariantLegacy splashVariant = iota
+	// splashVariantFBM is the domain-warped fBm nebula ("a"): organic,
+	// non-repeating filaments instead of periodic rings, with IGN dithering.
+	splashVariantFBM
 )
 
 // splashDefaultVariant is what production renders when no override is set.
-const splashDefaultVariant = splashVariantLegacy
+const splashDefaultVariant = splashVariantFBM
 
 // splashActiveVariant resolves the variant once per process: the dev-only
 // ATRIUM_SPLASH_VARIANT env override, else the default. Only splashScene
@@ -43,9 +46,121 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 	switch os.Getenv("ATRIUM_SPLASH_VARIANT") {
 	case "legacy":
 		return splashVariantLegacy
+	case "a":
+		return splashVariantFBM
 	}
 	return splashDefaultVariant
 })
+
+// The domain-warped fBm field ("a" and its derivatives). Frequencies are per
+// aspect-corrected cell; drifts are noise-units per phase-unit (phase advances
+// driftPerFrame per pushed frame, ~0.9/s at the 5 Hz push).
+const (
+	fieldFreq  = 0.10 // base octave frequency → ~10-cell features
+	fbmOctaves = 3
+	fbmGain    = 0.55 // amplitude falloff per octave
+	// fbmRidged0 folds octave 0 into a ridge (n → 1−|2n−1|): bright filament
+	// crests instead of soft blobs — the legacy field's charm, kept.
+	fbmRidged0 = true
+
+	warpFreq = 0.035 // spatial frequency of the warp vector field
+	warpAmp  = 9.0   // warp displacement reach in cells
+
+	// The IQ-style "roil": a small sinusoidal perturbation of the warp vector
+	// whose phase varies with |q|, so animation churns the gas in place
+	// instead of sliding the whole texture (the wallpaper failure mode).
+	roilAmp = 0.05
+	roilT1  = 0.27
+	roilT2  = 0.23
+	roilQ1  = 4.1
+	roilQ2  = 4.3
+
+	// A weak warped ring term keeps the field reading as emanating from the
+	// wordmark (0 = pure free-form nebula).
+	ringWeight = 0.25
+	ringFreq   = 0.35
+
+	// fBm concentrates values near 0.5, so its contrast window is narrower
+	// than the legacy sum-of-sines one.
+	fbmContrastLo = 0.36
+	fbmContrastHi = 0.64
+
+	// Hue mix: radius + angular swirl (as legacy) + the warp-vector magnitude
+	// — IQ's nebula-coloring trick, a free Pass-1 byproduct that gives the
+	// gas layered color structure. Weights are clamped after summing.
+	fbmHueRadial    = 0.50
+	fbmHueSwirl     = 0.35
+	fbmHueWarp      = 0.30
+	fbmHueWarpScale = 2.0 // normalizes |q| (max ~0.71) toward [0,1]
+
+	// ditherAmp is the dither amplitude in glyph-index steps. MUST stay
+	// < 1.0: that is what guarantees a fully-dark cell (lit=0) still rounds
+	// to glyph 0, which keeps the vignette's border rows blank.
+	ditherAmp = 0.9
+)
+
+// seedDither keys the per-cell dither noise (distinct from every field seed).
+const seedDither uint32 = 0x94D049BB
+
+// Lattice seeds (arbitrary distinct odd constants) and drift vectors: each
+// octave and each warp component drifts in its own direction/speed, which —
+// together with the per-octave domain rotation below — is what animates the
+// field without 3D noise.
+var (
+	seedOct    = [fbmOctaves]uint32{0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35}
+	octDrift   = [fbmOctaves][2]float64{{0.050, 0.030}, {-0.040, 0.065}, {0.075, -0.050}}
+	fbmLacun   = [fbmOctaves - 1]float64{2.01, 2.02} // detuned off 2.0 (IQ: avoids octave self-alignment)
+	warpDrift  = [2]float64{0.022, -0.018}
+	seedWarpX  = uint32(0x27D4EB2F)
+	seedWarpY  = uint32(0x165667B1)
+	seedStar   = uint32(0x2545F491)
+)
+
+// splashFBMAt evaluates the domain-warped fBm field at one point: a warp
+// vector q from two decorrelated noise fields (advected and roiled by phase)
+// displaces the sample point, then 3 fBm octaves — ridged crest first,
+// per-octave rotated by the exact Pythagorean matrix (0.8, 0.6; −0.6, 0.8) —
+// are blended with a weak ring anchored on the wordmark. Returns the raw
+// value in [0,1] and the normalized warp magnitude (the hue helper).
+func splashFBMAt(dx, dy, phase float64) (val, qLen float64) {
+	wxn, wyn := dx*warpFreq, dy*warpFreq
+	qx := splashValNoise(wxn+warpDrift[0]*phase, wyn, seedWarpX) - 0.5
+	qy := splashValNoise(wxn, wyn+warpDrift[1]*phase, seedWarpY) - 0.5
+	qq := math.Hypot(qx, qy)
+	qx += roilAmp * math.Sin(roilT1*phase+qq*roilQ1)
+	qy += roilAmp * math.Sin(roilT2*phase+qq*roilQ2)
+	x, y := dx+warpAmp*qx, dy+warpAmp*qy
+
+	sum, norm, amp := 0.0, 0.0, 1.0
+	fx, fy := x*fieldFreq, y*fieldFreq
+	for o := 0; o < fbmOctaves; o++ {
+		n := splashValNoise(fx+octDrift[o][0]*phase, fy+octDrift[o][1]*phase, seedOct[o])
+		if o == 0 && fbmRidged0 {
+			n = 1 - math.Abs(2*n-1)
+		}
+		sum += amp * n
+		norm += amp
+		amp *= fbmGain
+		if o < fbmOctaves-1 {
+			lac := fbmLacun[o]
+			fx, fy = lac*(0.8*fx+0.6*fy), lac*(-0.6*fx+0.8*fy)
+		}
+	}
+	n := sum / norm
+	ring := 0.5 + 0.5*math.Sin(math.Hypot(x, y)*ringFreq-phase)
+	return clamp01((1-ringWeight)*n + ringWeight*ring), clamp01(qq * fbmHueWarpScale)
+}
+
+// splashDither is the per-cell quantization dither in [0,1): plain hash
+// (white) noise off the integer lattice hash. White noise was chosen over
+// interleaved gradient noise deliberately — IGN is linear along a row (slope
+// ≈3.556 mod 1), so in sparse zones it lights cells in a mechanical
+// period-2 lattice, while white-noise clumping reads as organic gas grain at
+// character-cell scale. Deliberately frame-free: a time term would make
+// faint zones boil at the push rate.
+func splashDither(col, row int) float64 {
+	return latticeVal(int32(col), int32(row), seedDither)
+}
 
 // splashHash is a deterministic 32-bit lattice hash: seed, y, and x are folded
 // in through *nested* avalanche passes (lowbias32-style mixer at each level).
@@ -113,17 +228,28 @@ type splashField struct {
 // color gradient use in Pass 2. Buffers are per-call allocations; at splash
 // sizes (19 KB at 80×30) that is cheaper than any pooling would be worth.
 func splashEvalField(w, h int, cx, cyFocal, phase float64, v splashVariant) splashField {
+	at := splashFieldAt(v)
 	f := splashField{vals: make([]float64, w*h), aux: make([]float64, w*h)}
 	i := 0
 	for row := 0; row < h; row++ {
 		dy := (float64(row) - cyFocal) * cellAspect
 		for col := 0; col < w; col++ {
 			dx := float64(col) - cx
-			f.vals[i], f.aux[i] = splashLegacyAt(dx, dy, phase)
+			f.vals[i], f.aux[i] = at(dx, dy, phase)
 			i++
 		}
 	}
 	return f
+}
+
+// splashFieldAt returns the per-point field evaluator for a variant. Exposed
+// as a point function (not just a buffer fill) so sub-cell techniques can
+// re-sample the same field at finer positions.
+func splashFieldAt(v splashVariant) func(dx, dy, phase float64) (val, aux float64) {
+	if v == splashVariantLegacy {
+		return splashLegacyAt
+	}
+	return splashFBMAt
 }
 
 // splashLegacyAt is the PR #314 sum-of-sines plasma, evaluated at one point:
@@ -184,6 +310,15 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	starMax := len(starRampR) - 1
 	// Slow global brightness swell (breathing), computed once per frame.
 	breathe := 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
+	// Per-variant Pass-2 behavior: the legacy field keeps its wider contrast
+	// window and no dither (it stays a faithful baseline); noise variants get
+	// the narrower fBm window plus IGN dithering.
+	contrastLo, contrastHi := splashContrastLo, splashContrastHi
+	dither := false
+	if variant != splashVariantLegacy {
+		contrastLo, contrastHi = fbmContrastLo, fbmContrastHi
+		dither = true
+	}
 
 	var sb strings.Builder
 	var run strings.Builder
@@ -206,16 +341,33 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 				dRaw := math.Hypot(dx, dy)
 				// Contrast: push mid-tones apart so bright ridges read as
 				// filaments against darker voids.
-				intensity := smoothstep(splashContrastLo, splashContrastHi, fld.vals[cell])
+				intensity := smoothstep(contrastLo, contrastHi, fld.vals[cell])
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
 				radial := 1 - radialDim*clamp01(dRaw/maxD)
 				lit := intensity * edgeX * edgeY * radial * breathe
-				if g := clampInt(int(lit*float64(maxGlyph)), 0, maxGlyph); g > 0 {
+				gf := lit * float64(maxGlyph)
+				if dither {
+					// Sub-step dither in glyph-index space: kills banding on
+					// smooth gradients. Amplitude < 1 step, so lit=0 stays glyph 0
+					// (the blank-border invariant).
+					gf += (splashDither(col, row) - 0.5) * ditherAmp
+				}
+				if g := clampInt(int(gf), 0, maxGlyph); g > 0 {
 					ch = ramp[g]
 					// Hue swirls across the field (radius + a slow angular sweep)
 					// so the gradient reads as a drifting multi-hued nebula.
-					swirl := 0.5 + 0.5*math.Sin(fld.aux[cell]+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-					colorT := clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
+					var colorT float64
+					if variant == splashVariantLegacy {
+						// aux is the warped angle its swirl has always used.
+						swirl := 0.5 + 0.5*math.Sin(fld.aux[cell]+dRaw*colorSwirlF-phase*colorSwirlSpeed)
+						colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
+					} else {
+						// Noise variants: the same radial+swirl wander, plus the
+						// warp magnitude (aux) for layered gas-cloud hues.
+						theta := math.Atan2(dy, dx)
+						swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
+						colorT = clamp01(fbmHueRadial*(dRaw/maxD) + fbmHueSwirl*swirl + fbmHueWarp*fld.aux[cell])
+					}
 					idx = clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
 				}
 				// Starfield on top: a fixed, twinkling point can light even a void
