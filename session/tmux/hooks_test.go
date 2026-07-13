@@ -63,8 +63,10 @@ func TestBuildHookSettings(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &parsed), "settings must be valid JSON")
 
 	// Every event wires exactly one command that re-invokes the atrium binary's hook
-	// subcommand with the state path baked in.
-	allEvents := []string{"UserPromptSubmit", "PreToolUse", "Stop", "StopFailure", "SubagentStart", "SubagentStop"}
+	// subcommand with the state path baked in. PostToolUse re-latches working (#311): it
+	// bumps the heartbeat at each tool boundary so an active turn holds working between tools
+	// even when the below-box marker is crowded out and the above-box spinner is reworded.
+	allEvents := []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SubagentStart", "SubagentStop"}
 	require.Len(t, parsed.Hooks, len(allEvents), "no unexpected events wired")
 	for _, ev := range allEvents {
 		require.Len(t, parsed.Hooks[ev], 1, "event %s has one matcher group", ev)
@@ -77,15 +79,18 @@ func TestBuildHookSettings(t *testing.T) {
 		require.Contains(t, parsed.Hooks[ev][0].Hooks[0].Command, HookSubcommand,
 			"the hook uses the %q subcommand for %s", HookSubcommand, ev)
 	}
-	// PreToolUse matches all tools; the matcher-less events omit it.
+	// PreToolUse and PostToolUse match all tools; the matcher-less events omit it.
 	require.Equal(t, "*", parsed.Hooks["PreToolUse"][0].Matcher)
+	require.Equal(t, "*", parsed.Hooks["PostToolUse"][0].Matcher)
 	require.Empty(t, parsed.Hooks["UserPromptSubmit"][0].Matcher)
 	require.Empty(t, parsed.Hooks["Stop"][0].Matcher)
 	require.Empty(t, parsed.Hooks["StopFailure"][0].Matcher)
 	// Each event carries the right --event verb. Stop/StopFailure both latch ready (a clean
-	// and an API-error turn-end); the sub-agent lifecycle drives the in-flight set.
+	// and an API-error turn-end); UserPromptSubmit/PreToolUse/PostToolUse latch working (and
+	// bump the heartbeat); the sub-agent lifecycle drives the in-flight set.
 	require.Contains(t, parsed.Hooks["UserPromptSubmit"][0].Hooks[0].Command, HookEventWorking)
 	require.Contains(t, parsed.Hooks["PreToolUse"][0].Hooks[0].Command, HookEventWorking)
+	require.Contains(t, parsed.Hooks["PostToolUse"][0].Hooks[0].Command, HookEventWorking)
 	require.Contains(t, parsed.Hooks["Stop"][0].Hooks[0].Command, HookEventReady)
 	require.Contains(t, parsed.Hooks["StopFailure"][0].Hooks[0].Command, HookEventReady)
 	require.Contains(t, parsed.Hooks["SubagentStart"][0].Hooks[0].Command, HookEventSubagentStart)
