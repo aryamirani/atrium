@@ -14,7 +14,8 @@ var spinnerRule = strings.Repeat("─", 40)
 // crowdedSpinnerPane reproduces the 2.1.207 bug pane: a live spinner status line above
 // the box (elapsed seconds parameterized so the pane can animate across ticks), a task
 // line, then the input box, then a reflowed footer that has crowded "esc to interrupt"
-// out with contextual chips. footer lets a test vary the below-box hint area.
+// out with contextual chips. secs parameterizes the elapsed timer so a test can advance
+// it across ticks to make the pane animate (or hold it fixed to simulate a frozen frame).
 func crowdedSpinnerPane(secs int) string {
 	return strings.Join([]string{
 		"● Opening the PR now.",
