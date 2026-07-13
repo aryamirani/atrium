@@ -33,7 +33,7 @@ func (t *Session) Rename(newWindowName, newSessionName string) error {
 			}
 			// The window name is cosmetic (the conf disables auto-rename); log on failure
 			// but don't abort an otherwise-successful rename.
-			if err := t.cmdExec.Run(tmuxCommand(ctx, "rename-window", "-t", newSanitized, newWindowName)); err != nil {
+			if err := t.cmdExec.Run(tmuxCommand(ctx, "rename-window", "-t", newSanitized, sanitizeWindowName(newWindowName))); err != nil {
 				log.ErrorLog.Printf("failed to rename tmux window to %q: %v", newWindowName, err)
 			}
 		}

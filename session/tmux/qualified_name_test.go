@@ -31,6 +31,27 @@ func TestSanitizeNameSegment(t *testing.T) {
 	}
 }
 
+// sanitizeWindowName must strip exactly the runes tmux forbids in a window name
+// (colon and dot, its target-spec separators). tmux >= 3.7 hard-rejects a
+// new-session/rename-window -n containing them ("invalid window name"), which is
+// what broke the terminal pane's "term: <title>" window on macOS CI (#305).
+// Spaces and other punctuation must survive — the name is a cosmetic label.
+func TestSanitizeWindowName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"term: legacy-reap", "term_ legacy-reap"}, // the #305 case
+		{"plain", "plain"},
+		{"Fix Bug", "Fix Bug"}, // spaces are allowed in window names
+		{"v1.2.3", "v1_2_3"},
+		{"fix: parse.error", "fix_ parse_error"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		require.Equal(t, c.want, sanitizeWindowName(c.in), "input %q", c.in)
+		require.NotContains(t, sanitizeWindowName(c.in), ":", "input %q", c.in)
+		require.NotContains(t, sanitizeWindowName(c.in), ".", "input %q", c.in)
+	}
+}
+
 // The qualified form prefixes the brand and joins the sanitized group and title
 // segments, so same-titled sessions in different repos get distinct names.
 func TestQualifiedSessionName(t *testing.T) {

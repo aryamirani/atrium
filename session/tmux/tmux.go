@@ -179,6 +179,24 @@ func SanitizeNameSegment(s string) string {
 	return strings.ReplaceAll(s, ".", "_") // tmux replaces all . with _
 }
 
+// windowNameForbidRegex matches the characters tmux forbids in a window name.
+// tmux >= 3.7 hard-rejects `new-session`/`rename-window` -n values containing a
+// colon or dot (its target-spec separators — WINDOW_NAME_FORBID ":." in tmux.h)
+// with "invalid window name: ...", where older tmux silently accepted them. Since
+// the failed new-session never registers a session, Start's existence poll then
+// times out — the whole terminal pane fails to open on tmux 3.7+ (#305).
+var windowNameForbidRegex = regexp.MustCompile(`[:.]`)
+
+// sanitizeWindowName makes a human-readable label safe as a tmux window name by
+// replacing each forbidden rune with '_' — exactly what tmux's own clean_name
+// would do once check_name passed. The window name is cosmetic (the managed conf
+// disables allow-rename/automatic-rename and blanks the window-status field), so
+// this substitution is never user-visible; it only keeps session startup working
+// across tmux versions. Applied at every -n boundary (new-session, rename-window).
+func sanitizeWindowName(s string) string {
+	return windowNameForbidRegex.ReplaceAllString(s, "_")
+}
+
 // toSanitizedName converts an instance title into the legacy (unqualified)
 // managed tmux session name: the sanitized title with the active brand prefix
 // (see Prefix) applied. New sessions get repo-qualified names via
@@ -362,7 +380,7 @@ func (t *Session) start(workDir string, program string) error {
 	// window the human-readable title (the conf disables auto-rename).
 	// The pty client outlives this call, so it runs under the bare base context
 	// (killed on app shutdown), never a per-op timeout.
-	args := []string{"new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", t.windowName}
+	args := []string{"new-session", "-d", "-s", t.sanitizedName, "-c", workDir, "-n", sanitizeWindowName(t.windowName)}
 	if t.configDir != "" {
 		// -e sets a session-scoped env var independent of the persistent server
 		// env (which froze CLAUDE_CONFIG_DIR unset at server start). It must
