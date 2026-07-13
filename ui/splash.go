@@ -27,23 +27,32 @@ const (
 	cellAspect = 2.0
 
 	// driftPerFrame is the outward phase advance per animation frame. Small, so
-	// the rings breathe slowly rather than strobe.
-	driftPerFrame = 0.18
+	// the rings breathe slowly rather than strobe (paired with the 10Hz push in
+	// handlePreviewTick for smooth motion).
+	driftPerFrame = 0.09
 
-	// The field is a small sum of sines evaluated per cell: domain-warped
-	// concentric rings + an angular petal term + a diagonal plane wave + a slow
-	// spiral. Together they read as an organic plasma rather than plain rings,
-	// for a handful of extra trig calls per cell.
+	// The field is a small sum of sines evaluated per cell: two domain-warped
+	// concentric ring octaves + rotationally-symmetric petals + an isotropic
+	// fine texture. Every term is direction-free (radial, or a set of plane waves
+	// whose directions cancel), so the plasma reads rich but never skewed.
 	rippleFreq1 = 0.55  // primary ring spacing
-	rippleFreq2 = 0.30  // secondary interference band (drifts at a different rate)
-	rippleArms  = 5.0   // angular tendrils modulating the secondary band
-	rippleWarp  = 3.2   // domain-warp amplitude in cells: makes rings wavy/organic
+	rippleFreq2 = 0.31  // second ring octave (drifts at a different rate)
+	rippleFreq3 = 0.14  // slow ring that pulses the angular petals
+	petalCount  = 6.0   // even → rotationally symmetric petals, no directional lean
+	rippleWarp  = 2.6   // domain-warp amplitude in cells: wavy, organic rings
 	rippleWarpF = 0.055 // domain-warp spatial frequency
-	planeFreqX  = 0.090 // diagonal plane-wave frequencies (adds plasma texture)
-	planeFreqY  = 0.060
-	spiralArms  = 3.0 // slow rotating spiral arm count
+	// isoFreq/isoSpeed drive three plane waves 120° apart (iso*Cos/Sin below);
+	// their directions sum to zero, so the fine texture shimmers isotropically
+	// with no diagonal grain — the fix for the field looking skewed.
+	isoFreq   = 0.13
+	isoSpeed  = 0.8
+	isoWeight = 0.20
+	iso1Cos   = -0.5
+	iso1Sin   = 0.8660254037844386
+	iso2Cos   = -0.5
+	iso2Sin   = -0.8660254037844386
 	// rippleAmp is the sum of the term weights below; normalizes v into [0,1].
-	rippleAmp = 1.0 + 0.5 + 0.35 + 0.30
+	rippleAmp = 1.0 + 0.55 + 0.40 + 3*isoWeight
 
 	// edgeVignetteFrac is the fraction of each dimension over which the full-bleed
 	// field fades to black at the pane border, so it softens into the edges
@@ -55,8 +64,9 @@ const (
 	radialDim = 0.30
 
 	// splashRamp maps intensity to a glyph, light→heavy. Index 0 (space) is
-	// "nothing here"; every glyph is terminal-width 1 (downsample-safe).
-	splashRamp = " .·:*oO0"
+	// "nothing here"; every glyph is terminal-width 1 (downsample-safe). A longer
+	// ramp gives finer density steps, so gradients read smooth instead of banded.
+	splashRamp = " .·:;+=*oO0@"
 
 	// splashLUTSize is the number of gradient color stops from core to rim.
 	splashLUTSize = 20
@@ -217,14 +227,19 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 				// warped radius drives the ring pattern, so the rings ripple
 				// organically while the color gradient stays clean.
 				dRaw := math.Hypot(dx, dy)
-				wx := dx + rippleWarp*math.Sin(dy*rippleWarpF+phase*0.5)
+				wx := dx + rippleWarp*math.Sin(dy*rippleWarpF-phase*0.4)
 				wy := dy + rippleWarp*math.Sin(dx*rippleWarpF-phase*0.4)
 				d := math.Hypot(wx, wy)
 				theta := math.Atan2(wy, wx)
+				// Isotropic fine texture: three plane waves 120° apart, whose
+				// directions cancel — detail without a diagonal grain.
+				tex := math.Sin(dx*isoFreq-phase*isoSpeed) +
+					math.Sin((dx*iso1Cos+dy*iso1Sin)*isoFreq-phase*isoSpeed) +
+					math.Sin((dx*iso2Cos+dy*iso2Sin)*isoFreq-phase*isoSpeed)
 				v := math.Sin(d*rippleFreq1-phase) +
-					0.5*math.Sin(d*rippleFreq2-phase*0.6+theta*rippleArms) +
-					0.35*math.Sin(dx*planeFreqX-dy*planeFreqY-phase*0.9) +
-					0.30*math.Sin(theta*spiralArms+d*0.15+phase*0.5)
+					0.55*math.Sin(d*rippleFreq2-phase*0.7) +
+					0.40*math.Sin(d*rippleFreq3-phase*0.5)*math.Cos(theta*petalCount) +
+					isoWeight*tex
 				intensity := clamp01((v/rippleAmp + 1) * 0.5)
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
 				radial := 1 - radialDim*clamp01(dRaw/maxD)
