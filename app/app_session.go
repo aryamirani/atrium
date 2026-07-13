@@ -25,6 +25,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// tmuxAvailable is the tmux-presence seam for the new-session pre-flight guards
+// (the create-form gate and the smart-dispatch auto-create path). A package var
+// (matching the detectAgents/checkDrift idiom) so tests inject a missing-tmux
+// verdict without touching PATH.
+var tmuxAvailable = tmux.Available
+
 // cycleTarget returns the sibling to re-attach when an in-session cycle key
 // (Ctrl+PgUp/PgDn) ended the attach, or nil for a normal detach. Cycling stays
 // inside Atrium's model — each hop is a real detach+attach, correctly sized via the
@@ -238,6 +244,12 @@ func (m *home) handleSmartDispatchSubmit(line string) tea.Cmd {
 // smart_dispatch_auto deliberately trades away the per-session permission choice the
 // form's Permissions chip would otherwise offer.
 func (m *home) autoDispatch(res PrefillResult) (tea.Cmd, bool) {
+	// Missing tmux would fail this session async with the raw exec error (this path
+	// bypasses the form's pre-flight guard). Decline the auto-dispatch so the caller
+	// falls through to openCreateFormSeeded, whose guard shows the friendly message.
+	if tmuxAvailable() != nil {
+		return nil, false
+	}
 	valid, direct, _ := targetValidity(m.ctx, res.Path)
 	if !valid {
 		return nil, false
@@ -792,6 +804,15 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 	if limit := m.appConfig.GetMaxSessions(); limit > 0 && m.list.NumInstances() >= limit {
 		return m.handleError(
 			fmt.Errorf("you can't create more than %d sessions (max_sessions in config.json)", limit))
+	}
+
+	// Refuse to open the form when tmux is missing: every session runs inside tmux,
+	// so creation would fail anyway — but only after the user filled in the form and
+	// a worktree was built and rolled back. Bailing here (all create paths route
+	// through this function) shows one actionable message up front; the wide sentinel
+	// routes through handleError to the persistent info modal.
+	if err := tmuxAvailable(); err != nil {
+		return m.handleError(err)
 	}
 
 	// On the first bare n/N open after a restart, rebuild a crash-persisted draft into
