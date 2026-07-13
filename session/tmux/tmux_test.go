@@ -303,6 +303,9 @@ func TestHasUpdatedCapturesWhenSessionAlive(t *testing.T) {
 // pollers must report "not alive" and stop capturing, instead of running capture-pane
 // and getting "exit status 1" on every tick.
 func TestSessionDeathStopsProbing(t *testing.T) {
+	// Intentionally a plain skip, NOT testutil.RequireTmux: this test is
+	// -skip'd by name in CI (local-only/flaky even with tmux; see build.yml),
+	// so it must never hard-fail under ATRIUM_CI_REQUIRE_TMUX=1. Don't convert.
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
