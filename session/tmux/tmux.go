@@ -298,6 +298,16 @@ func (t *Session) baseContext() context.Context {
 	return context.Background()
 }
 
+// SetBaseContext rebinds the lifecycle context this session's tmux subprocesses
+// derive from. baseCtx is normally creation-fixed and read lock-free, so this is
+// ONLY safe on a quiescent session with no in-flight op — specifically shutdown
+// reconciliation (#282), where app.Run swaps a cancelled ctx for one built with
+// context.WithoutCancel so Close's `kill-session` isn't insta-killed by the
+// cancellation and can actually terminate the tmux session.
+func (t *Session) SetBaseContext(ctx context.Context) {
+	t.baseCtx = ctx
+}
+
 // opContext returns a tmuxOpTimeout-capped context for a short tmux operation
 // (capture-pane, send-keys, kill-session, has-session). Callers must invoke the
 // returned cancel once the subprocess has finished.

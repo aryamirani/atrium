@@ -241,6 +241,16 @@ func (g *Worktree) Cleanup() error {
 		tc.Record("check worktree path", err)
 	}
 
+	// Prune stale worktree registrations before deleting the branch. If a prior
+	// partial teardown removed the worktree *directory* but left its admin files
+	// behind — e.g. Setup's fallback ran under a cancelled shutdown context (#282),
+	// where `git worktree remove` and this prune both failed — git still reports
+	// the branch as "used by worktree at <gone path>" and refuses `branch -D`.
+	// Pruning first clears that registration so the deletion below can succeed; in
+	// the normal path `git worktree remove` already dropped the registration, so
+	// this is a no-op.
+	tc.Add(g.Prune())
+
 	// Delete the branch using git CLI, but skip if this is a pre-existing branch
 	if !g.isExistingBranch {
 		if _, err := g.runGitCommand(g.repoPath, "branch", "-D", g.branchName); err != nil {
@@ -250,9 +260,6 @@ func (g *Worktree) Cleanup() error {
 			}
 		}
 	}
-
-	// Prune the worktree to clean up any remaining references
-	tc.Add(g.Prune())
 
 	return tc.Err()
 }

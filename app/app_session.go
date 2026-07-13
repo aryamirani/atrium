@@ -1117,7 +1117,13 @@ func (m *home) startNewSession(title, path string, direct bool, program, branch,
 	instance.SetStatus(session.Loading)
 	finalizer()
 
+	// Track the in-flight Start so app.Run can join it during shutdown/force-quit
+	// reconciliation (#282). Add here on the Update goroutine so it happens-before
+	// app.Run's wait; Done fires when the goroutine returns, whether or not Bubble
+	// Tea delivered the resulting message.
+	m.startWG.Add(1)
 	startCmd := func() tea.Msg {
+		defer m.startWG.Done()
 		err := instance.Start(true)
 		return instanceStartedMsg{instance: instance, err: err, hadPrompt: prompt != ""}
 	}
