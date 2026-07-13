@@ -31,8 +31,12 @@ const (
 	// baseline while the noise-based variants are tuned.
 	splashVariantLegacy splashVariant = iota
 	// splashVariantFBM is the domain-warped fBm nebula ("a"): organic,
-	// non-repeating filaments instead of periodic rings, with IGN dithering.
+	// non-repeating filaments instead of periodic rings, with dithering.
 	splashVariantFBM
+	// splashVariantBraille ("b") is the fBm nebula with its faint zones
+	// refined to 2×4 sub-cell braille dots — much finer gradation in the
+	// thin gas, while bright cores keep the solid ramp.
+	splashVariantBraille
 )
 
 // splashDefaultVariant is what production renders when no override is set.
@@ -48,6 +52,8 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 		return splashVariantLegacy
 	case "a":
 		return splashVariantFBM
+	case "b":
+		return splashVariantBraille
 	}
 	return splashDefaultVariant
 })
@@ -102,6 +108,51 @@ const (
 // seedDither keys the per-cell dither noise (distinct from every field seed).
 const seedDither uint32 = 0x94D049BB
 
+// The braille faint band (variant "b"): cells whose lit intensity falls below
+// brailleBandHi are re-sampled at their 8 sub-cell dot centers instead of
+// taking a ramp glyph.
+const (
+	brailleBandHi = 0.34
+	// brailleHalftoneScale maps a sub-cell's lit value to its dot-firing
+	// odds: a dot fires when subLit > dither·scale, so the expected dot
+	// count rises linearly with intensity (a halftone) instead of snapping
+	// all 8 dots on at once — all-or-nothing thresholding made the faint
+	// band read *denser* than the midtones (walls of ⣿). Chosen above
+	// brailleBandHi so a cell at the band top lights ~4–5 of its 8 dots,
+	// matching the visual weight of the ramp glyph it hands over to. A
+	// fully dark sub-cell (subLit = 0) can never fire: the comparison is
+	// strict and dither is non-negative.
+	brailleHalftoneScale = 0.6
+)
+
+// brailleBit maps sub-cell (sy, sx) to its dot bit in U+2800..U+28FF: dots
+// 1,2,3,7 run down the left column, dots 4,5,6,8 down the right.
+var brailleBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}}
+
+// splashBrailleMask re-samples the field at the 8 dot centers of one cell and
+// halftones each into a braille dot. dx/dy are the cell's focal-relative
+// aspect-corrected center; a dot column step is 0.5 cell and a dot row step
+// is 0.5 aspect units (cellAspect/4). The cell's envelope (vignette × radial
+// × breathe) scales every dot, and the per-dot dither runs at sub-cell
+// resolution so dot patterns stay granular. A zero mask means "render a
+// space" — bare U+2800 is never emitted (some fonts draw it as eight hollow
+// circles).
+func splashBrailleMask(col, row int, dx, dy, phase float64, at func(dx, dy, phase float64) (float64, float64), lo, hi, envelope float64) uint8 {
+	var mask uint8
+	for sy := 0; sy < 4; sy++ {
+		suby := dy + (float64(sy)-1.5)*0.5
+		for sx := 0; sx < 2; sx++ {
+			subx := dx + (float64(sx)-0.5)*0.5
+			raw, _ := at(subx, suby, phase)
+			subLit := smoothstep(lo, hi, raw) * envelope
+			if subLit > splashDither(2*col+sx, 4*row+sy)*brailleHalftoneScale {
+				mask |= brailleBit[sy][sx]
+			}
+		}
+	}
+	return mask
+}
+
 // Lattice seeds (arbitrary distinct odd constants) and drift vectors: each
 // octave and each warp component drifts in its own direction/speed, which —
 // together with the per-octave domain rotation below — is what animates the
@@ -149,6 +200,24 @@ func splashFBMAt(dx, dy, phase float64) (val, qLen float64) {
 	n := sum / norm
 	ring := 0.5 + 0.5*math.Sin(math.Hypot(x, y)*ringFreq-phase)
 	return clamp01((1-ringWeight)*n + ringWeight*ring), clamp01(qq * fbmHueWarpScale)
+}
+
+// splashColorIdx maps a cell to its gradient stop. The hue swirls across the
+// field (radius + a slow angular sweep) so the gradient reads as a drifting
+// multi-hued nebula. Legacy keeps its original formula, where aux is the
+// warped angle its swirl has always used; noise variants use the unwarped
+// angle and add the warp magnitude (their aux) for layered gas-cloud hues.
+func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float64, nColors int) int {
+	var colorT float64
+	if variant == splashVariantLegacy {
+		swirl := 0.5 + 0.5*math.Sin(aux+dRaw*colorSwirlF-phase*colorSwirlSpeed)
+		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
+	} else {
+		theta := math.Atan2(dy, dx)
+		swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
+		colorT = clamp01(fbmHueRadial*(dRaw/maxD) + fbmHueSwirl*swirl + fbmHueWarp*aux)
+	}
+	return clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
 }
 
 // splashDither is the per-cell quantization dither in [0,1): plain hash
@@ -227,8 +296,7 @@ type splashField struct {
 // aspect-corrected coordinates (dx, dy) — the same frame the envelopes and
 // color gradient use in Pass 2. Buffers are per-call allocations; at splash
 // sizes (19 KB at 80×30) that is cheaper than any pooling would be worth.
-func splashEvalField(w, h int, cx, cyFocal, phase float64, v splashVariant) splashField {
-	at := splashFieldAt(v)
+func splashEvalField(w, h int, cx, cyFocal, phase float64, at func(dx, dy, phase float64) (float64, float64)) splashField {
 	f := splashField{vals: make([]float64, w*h), aux: make([]float64, w*h)}
 	i := 0
 	for row := 0; row < h; row++ {
@@ -299,7 +367,8 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	marginY := math.Max(1, float64(h)*edgeVignetteFrac)
 	phase := float64(frame) * driftPerFrame
 
-	fld := splashEvalField(w, h, cx, cyFocal, phase, variant)
+	at := splashFieldAt(variant)
+	fld := splashEvalField(w, h, cx, cyFocal, phase, at)
 
 	lut := splashLUTFor(pal)
 	nColors := len(lut.styles)
@@ -344,31 +413,27 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 				intensity := smoothstep(contrastLo, contrastHi, fld.vals[cell])
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
 				radial := 1 - radialDim*clamp01(dRaw/maxD)
-				lit := intensity * edgeX * edgeY * radial * breathe
-				gf := lit * float64(maxGlyph)
-				if dither {
-					// Sub-step dither in glyph-index space: kills banding on
-					// smooth gradients. Amplitude < 1 step, so lit=0 stays glyph 0
-					// (the blank-border invariant).
-					gf += (splashDither(col, row) - 0.5) * ditherAmp
-				}
-				if g := clampInt(int(gf), 0, maxGlyph); g > 0 {
-					ch = ramp[g]
-					// Hue swirls across the field (radius + a slow angular sweep)
-					// so the gradient reads as a drifting multi-hued nebula.
-					var colorT float64
-					if variant == splashVariantLegacy {
-						// aux is the warped angle its swirl has always used.
-						swirl := 0.5 + 0.5*math.Sin(fld.aux[cell]+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-						colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
-					} else {
-						// Noise variants: the same radial+swirl wander, plus the
-						// warp magnitude (aux) for layered gas-cloud hues.
-						theta := math.Atan2(dy, dx)
-						swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-						colorT = clamp01(fbmHueRadial*(dRaw/maxD) + fbmHueSwirl*swirl + fbmHueWarp*fld.aux[cell])
+				envelope := edgeX * edgeY * radial * breathe
+				lit := intensity * envelope
+				if variant == splashVariantBraille && lit < brailleBandHi {
+					// Faint gas: refine to sub-cell braille dots instead of a
+					// (coarse) ramp glyph; bright cores keep the solid ramp.
+					if mask := splashBrailleMask(col, row, dx, dy, phase, at, contrastLo, contrastHi, envelope); mask != 0 {
+						ch = rune(0x2800) | rune(mask)
+						idx = splashColorIdx(variant, fld.aux[cell], dx, dy, dRaw, phase, maxD, nColors)
 					}
-					idx = clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
+				} else {
+					gf := lit * float64(maxGlyph)
+					if dither {
+						// Sub-step dither in glyph-index space: kills banding on
+						// smooth gradients. Amplitude < 1 step, so lit=0 stays
+						// glyph 0 (the blank-border invariant).
+						gf += (splashDither(col, row) - 0.5) * ditherAmp
+					}
+					if g := clampInt(int(gf), 0, maxGlyph); g > 0 {
+						ch = ramp[g]
+						idx = splashColorIdx(variant, fld.aux[cell], dx, dy, dRaw, phase, maxD, nColors)
+					}
 				}
 				// Starfield on top: a fixed, twinkling point can light even a void
 				// the plasma left dark. Fades with the same border vignette.

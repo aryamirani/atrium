@@ -58,6 +58,7 @@ func TestSplashDump(t *testing.T) {
 	}{
 		{"legacy", splashVariantLegacy},
 		{"a-fbm", splashVariantFBM},
+		{"b-braille", splashVariantBraille},
 	} {
 		for _, frame := range frames {
 			out := renderSplashField(w, h, frame, pal, centeredClearing(h, 20, 4), vc.v)

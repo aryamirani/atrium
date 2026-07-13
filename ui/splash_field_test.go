@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,8 +89,9 @@ func TestSplashValNoiseAnchorsLattice(t *testing.T) {
 // for failure messages.
 func splashTestVariants() map[string]splashVariant {
 	return map[string]splashVariant{
-		"legacy": splashVariantLegacy,
-		"fbm":    splashVariantFBM,
+		"legacy":  splashVariantLegacy,
+		"fbm":     splashVariantFBM,
+		"braille": splashVariantBraille,
 	}
 }
 
@@ -191,6 +193,65 @@ func TestRenderSplashFieldConcurrent(t *testing.T) {
 	wg.Wait()
 	close(mismatch)
 	require.Empty(t, <-mismatch)
+}
+
+// TestBrailleMaskLayout pins the dot-bit table to the Unicode braille layout:
+// dots 1,2,3,7 run down the left column, dots 4,5,6,8 down the right — the
+// bit order is NOT linear in the grid, so this is worth locking.
+func TestBrailleMaskLayout(t *testing.T) {
+	require.Equal(t, uint8(0x01), brailleBit[0][0], "dot 1: top-left")
+	require.Equal(t, uint8(0x08), brailleBit[0][1], "dot 4: top-right")
+	require.Equal(t, uint8(0x02), brailleBit[1][0], "dot 2")
+	require.Equal(t, uint8(0x10), brailleBit[1][1], "dot 5")
+	require.Equal(t, uint8(0x04), brailleBit[2][0], "dot 3")
+	require.Equal(t, uint8(0x20), brailleBit[2][1], "dot 6")
+	require.Equal(t, uint8(0x40), brailleBit[3][0], "dot 7: bottom-left")
+	require.Equal(t, uint8(0x80), brailleBit[3][1], "dot 8: bottom-right")
+	var all uint8
+	for _, row := range brailleBit {
+		all |= row[0] | row[1]
+	}
+	require.Equal(t, uint8(0xFF), all, "the 8 bits must cover the full mask")
+}
+
+// TestBrailleGlyphsWidthOne asserts every braille pattern renders at terminal
+// width 1 (the column-alignment invariant every splash glyph must satisfy).
+func TestBrailleGlyphsWidthOne(t *testing.T) {
+	for m := 1; m <= 0xFF; m++ {
+		g := string(rune(0x2800) | rune(m))
+		require.Equalf(t, 1, ansi.StringWidth(g), "braille mask %#x must be width 1", m)
+	}
+}
+
+// TestBrailleHalftoneInvariants locks the halftone's two structural
+// relations: a fully dark sub-cell can never fire a dot (strict comparison
+// against non-negative dither), and the scale exceeds the band top so a cell
+// leaving the band doesn't out-weigh the ramp glyph it hands over to.
+func TestBrailleHalftoneInvariants(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		require.False(t, 0.0 > splashDither(i%97, i/97)*brailleHalftoneScale,
+			"a dark sub-cell must never fire a dot")
+	}
+	require.Greater(t, float64(brailleHalftoneScale), float64(brailleBandHi),
+		"band-top cells must not light all 8 dots")
+}
+
+// TestSplashBrailleVariantOutput drives the braille variant end to end: the
+// faint band must actually produce braille runes, and bare U+2800 (which some
+// fonts draw as eight hollow circles) must never be emitted.
+func TestSplashBrailleVariantOutput(t *testing.T) {
+	pal := splashTestPalette()
+	sawBraille := false
+	for frame := 0; frame < 8; frame++ {
+		out := ansi.Strip(renderSplashField(80, 30, frame*7, pal, centeredClearing(30, 20, 4), splashVariantBraille))
+		for _, r := range out {
+			require.NotEqual(t, rune(0x2800), r, "bare U+2800 must never be emitted")
+			if r > 0x2800 && r <= 0x28FF {
+				sawBraille = true
+			}
+		}
+	}
+	require.True(t, sawBraille, "the faint band must produce braille dots")
 }
 
 func BenchmarkSplashValNoise(b *testing.B) {
