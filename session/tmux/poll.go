@@ -284,11 +284,12 @@ func (t *Session) Poll() PaneState {
 		return state
 	}
 
-	// A live busy marker is the one positive proof of work, and the only signal that raises
-	// working. Confining it to the adapter's marker region keeps it reliable even under a
-	// multi-agent team selector. Raising only on the marker is what kills the
-	// flicker: a stuck state file or an idle repaint can never flip the indicator back to
-	// working once it has settled to idle — only the marker returning can.
+	// A live busy marker is the strongest positive proof of work. Confining it to the adapter's
+	// marker region keeps it reliable even under a multi-agent team selector. The marker is what
+	// kills the #46 flicker: a stuck state file or an idle repaint can never flip the indicator
+	// back to working once it has settled to idle. Two bounded signals below can also hold or
+	// raise working without the marker — the animation-gated live spinner (#308) and a fresh
+	// hook heartbeat (#311) — each guarded so it self-heals to idle instead of latching stuck.
 	hasMarker := len(t.adapter.BusyMarkers) > 0 || t.adapter.LiveSpinner != nil
 	if len(t.adapter.BusyMarkers) > 0 && t.markerWorking(content) {
 		t.monitor.idleStreak = 0

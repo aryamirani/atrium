@@ -200,8 +200,8 @@ type hookCommand struct {
 }
 
 type hookMatcherGroup struct {
-	// Matcher is omitted for events that don't support it (UserPromptSubmit, Stop); for
-	// PreToolUse it is "*" to match all tools.
+	// Matcher is omitted for events that don't support it (UserPromptSubmit, Stop); the
+	// per-tool events (PreToolUse, PostToolUse) set it to "*" to match all tools.
 	Matcher string        `json:"matcher,omitempty"`
 	Hooks   []hookCommand `json:"hooks"`
 }

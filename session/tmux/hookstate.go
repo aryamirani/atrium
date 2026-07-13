@@ -29,7 +29,8 @@ import (
 // hidden `hook` subcommand (main package) forwards its --event flag straight through and
 // must know which events read an agent_id from stdin.
 const (
-	// HookEventWorking latches state="working" (UserPromptSubmit / PreToolUse).
+	// HookEventWorking latches state="working" and bumps the heartbeat (#311), fired by the
+	// working edges: UserPromptSubmit / PreToolUse / PostToolUse.
 	HookEventWorking = "working"
 	// HookEventReady latches state="ready" (Stop / StopFailure — a clean or API-error
 	// end-of-turn). Gated on the in-flight set by the poller, never terminal on its own.
