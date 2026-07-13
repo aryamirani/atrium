@@ -82,6 +82,10 @@ type previewState struct {
 	// splash is true only for the idle empty screen (no agents): String() then
 	// renders the animated ripple field behind the wordmark. Implies fallback.
 	splash bool
+	// splashMessage is the onboarding line composited below the wordmark in the
+	// splash. Kept separate from text so it can be overlaid at its own width
+	// (the field then hugs the narrower wordmark, not the wider message).
+	splashMessage string
 	// text is the text displayed in the preview pane
 	text string
 }
@@ -120,6 +124,40 @@ func (p *PreviewPane) setFallbackState(message string) {
 func (p *PreviewPane) setSplashState(message string) {
 	p.setFallbackState(message)
 	p.previewState.splash = true
+	p.previewState.splashMessage = message
+}
+
+// renderSplashScene composites the idle empty screen: the animated radial-ripple
+// field with the wordmark centered on top and the onboarding message tucked just
+// below it. The wordmark and message are overlaid separately at their own widths
+// (not one padded block) so the field's rings hug the narrow wordmark rather than
+// being pushed out by the wider message; each gets its own tight clearing so no
+// glyphs bleed through the text. The outer clamp honors the pane box (#251).
+func (p *PreviewPane) renderSplashScene() string {
+	word := trimBlankLines(FallbackBanner())
+	msg := previewPaneStyle().Render(p.previewState.splashMessage)
+	wordW, wordH := lipgloss.Width(word), lipgloss.Height(word)
+	msgW, msgH := lipgloss.Width(msg), lipgloss.Height(msg)
+
+	const gap = 2 // blank rows between the wordmark and the message
+	cy := (p.height - 1) / 2
+	wordX := (p.width - wordW) / 2
+	wordY := max(0, cy-wordH/2) // wordmark centered on the pane
+	msgX := (p.width - msgW) / 2
+	msgY := wordY + wordH + gap
+
+	clear := splashClearing{
+		wordHalfW:     wordW/2 + 2,
+		wordHalfH:     wordH/2 + 1,
+		wordCenterRow: wordY + wordH/2,
+		msgHalfW:      msgW/2 + 2,
+		msgHalfH:      msgH/2 + 2,
+		msgCenterRow:  msgY + msgH/2,
+	}
+	field := renderSplashField(p.width, p.height, p.splashFrame, theme.Current().Palette, clear)
+	scene := overlayAt(field, word, wordX, wordY)
+	scene = overlayAt(scene, msg, msgX, msgY)
+	return lipgloss.NewStyle().MaxWidth(p.width).MaxHeight(p.height).Render(scene)
 }
 
 // UpdateContent updates the preview pane content with the tmux pane content.
@@ -227,18 +265,7 @@ func (p *PreviewPane) String() string {
 	}
 
 	if p.previewState.splash && splashFits(p.width, p.height) {
-		// Idle empty screen: composite the wordmark+message block over the
-		// animated radial-ripple field. The field carves a blank clearing sized
-		// to the fg block (so the possibly-wide message always lands on
-		// emptiness), and the outer clamp honors the #251 box contract. Below the
-		// size floor we fall through to the plain centered fallback.
-		fg := previewPaneStyle().Render(p.previewState.text)
-		clearHalfW := lipgloss.Width(fg)/2 + 3
-		clearHalfH := lipgloss.Height(fg)/2 + 1
-		field := renderSplashField(p.width, p.height, p.splashFrame,
-			theme.Current().Palette, clearHalfW, clearHalfH)
-		return lipgloss.NewStyle().MaxWidth(p.width).MaxHeight(p.height).
-			Render(overlayCenter(field, fg))
+		return p.renderSplashScene()
 	}
 
 	if p.previewState.fallback {

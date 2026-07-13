@@ -116,20 +116,52 @@ func buildSplashLUT(pal theme.Palette) *splashLUT {
 	return lut
 }
 
+// splashClearing marks the cells to leave blank for the composited text: a tight
+// ellipse hugging the wordmark, plus a shorter, wider one around the message,
+// each centered on its own row. Keeping them separate (rather than one clearing
+// sized to the whole text block) is what lets the rings hug the narrow wordmark
+// instead of being pushed out by the wider message. Half-extents are in cells; a
+// zero half-extent disables that ellipse. Both are centered on the field's
+// horizontal axis, since the text is centered horizontally.
+type splashClearing struct {
+	wordHalfW, wordHalfH, wordCenterRow int
+	msgHalfW, msgHalfH, msgCenterRow    int
+}
+
+// blanks reports whether the cell at horizontal offset dx (from the field axis)
+// and absolute row lies inside either clearing ellipse. Uses raw cell distance
+// (not the aspect-corrected dy) so each ellipse hugs its text rectangle —
+// deliberately distinct from the round vignette metric.
+func (c splashClearing) blanks(dx float64, row int) bool {
+	inEllipse := func(halfW, halfH, centerRow int) bool {
+		if halfW <= 0 || halfH <= 0 {
+			return false
+		}
+		dy := float64(row - centerRow)
+		return (dx*dx)/float64(halfW*halfW)+(dy*dy)/float64(halfH*halfH) < 1
+	}
+	return inEllipse(c.wordHalfW, c.wordHalfH, c.wordCenterRow) ||
+		inEllipse(c.msgHalfW, c.msgHalfH, c.msgCenterRow)
+}
+
 // renderSplashField builds the colored ripple+vignette background: exactly h
-// rows of exactly w visible cells, with a soft round clearing (half-extents
-// clearHalfW×clearHalfH, in cells) blanked in the center for the wordmark+message
-// to sit on. It is pure over its inputs (deterministic, snapshot-testable) and
-// returns "" when the pane is too small to inscribe a disc.
-func renderSplashField(w, h, frame int, pal theme.Palette, clearHalfW, clearHalfH int) string {
+// rows of exactly w visible cells, with the clearing ellipses blanked out for the
+// composited text. The rings and the round vignette both emanate from the
+// wordmark's center (clear.wordCenterRow), not the raw pane center, so the field
+// stays anchored on the wordmark even as the message below shifts the visual
+// weight down. Pure over its inputs (deterministic, snapshot-testable); returns
+// "" when the pane is too small to inscribe a disc.
+func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing) string {
 	if w <= 0 || h <= 0 {
 		return ""
 	}
 	cx := float64(w-1) / 2
-	cy := float64(h-1) / 2
-	// Inscribe the vignette disc to the nearest edge (aspect-corrected) so the
-	// corners and wide side-margins fall outside it and stay blank.
-	radius := math.Min(cx, cy*cellAspect)
+	cyFocal := float64(clear.wordCenterRow)
+	// Inscribe the vignette disc to the nearest edge from the focal row
+	// (aspect-corrected) so the corners and side-margins fall outside it, stay
+	// blank, and the disc never spills past the pane.
+	vEdge := math.Min(cyFocal, float64(h-1)-cyFocal)
+	radius := math.Min(cx, vEdge*cellAspect)
 	if radius <= 0 {
 		return ""
 	}
@@ -139,8 +171,6 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearHalfW, clearHalf
 	ramp := []rune(splashRamp)
 	maxGlyph := len(ramp) - 1
 	phase := float64(frame) * driftPerFrame
-	chw := float64(clearHalfW)
-	chh := float64(clearHalfH)
 
 	var sb strings.Builder
 	var run strings.Builder
@@ -148,8 +178,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearHalfW, clearHalf
 		if row > 0 {
 			sb.WriteByte('\n')
 		}
-		dyCells := float64(row) - cy
-		dy := dyCells * cellAspect
+		dy := (float64(row) - cyFocal) * cellAspect
 		curIdx := -1 // -1 marks a blank (uncolored) run
 		for col := 0; col < w; col++ {
 			dx := float64(col) - cx
@@ -157,13 +186,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearHalfW, clearHalf
 
 			d := math.Hypot(dx, dy)
 			r := d / radius
-			inClearing := chw > 0 && chh > 0 &&
-				(dx*dx)/(chw*chw)+(dyCells*dyCells)/(chh*chh) < 1
-			// The clearing uses raw cell distance (dyCells), not the aspect-
-			// corrected dy: the text is a wide cell-rectangle, so a wide
-			// cell-space ellipse hugs it — deliberately distinct from the round
-			// vignette metric.
-			if r < 1 && !inClearing {
+			if r < 1 && !clear.blanks(dx, row) {
 				theta := math.Atan2(dy, dx)
 				v := math.Sin(d*rippleFreq1-phase) +
 					0.5*math.Sin(d*rippleFreq2-phase*0.6+theta*rippleArms)
@@ -206,13 +229,21 @@ func flushSplashRun(sb, run *strings.Builder, styleIdx int, lut *splashLUT) {
 	run.Reset()
 }
 
-// overlayCenter composites fg centered over bg (the ripple field), splicing
-// width-correctly around bg's ANSI escapes. Adapted from overlay.PlaceOverlay
-// (ui/overlay/overlay.go) but deliberately WITHOUT its background fade — the
-// gradient must show through, not be dimmed — and without the whitespace-option
-// plumbing (plain spaces fill any gap). The field carves a blank clearing under
-// fg, so nothing colored bleeds through the text.
+// overlayCenter composites fg centered over bg. Retained as the centered
+// convenience over overlayAt (and exercised directly by tests).
 func overlayCenter(bg, fg string) string {
+	fgLines, fgWidth := splashLines(fg)
+	bgLines, bgWidth := splashLines(bg)
+	return overlayAt(bg, fg, (bgWidth-fgWidth)/2, (len(bgLines)-len(fgLines))/2)
+}
+
+// overlayAt composites fg over bg (the ripple field) at cell (placeX, placeY),
+// splicing width-correctly around bg's ANSI escapes. Adapted from
+// overlay.PlaceOverlay (ui/overlay/overlay.go) but deliberately WITHOUT its
+// background fade — the gradient must show through, not be dimmed — and without
+// the whitespace-option plumbing (plain spaces fill any gap). The field carves a
+// blank clearing under fg, so nothing colored bleeds through the text.
+func overlayAt(bg, fg string, placeX, placeY int) string {
 	fgLines, fgWidth := splashLines(fg)
 	bgLines, bgWidth := splashLines(bg)
 	fgHeight, bgHeight := len(fgLines), len(bgLines)
@@ -221,8 +252,8 @@ func overlayCenter(bg, fg string) string {
 		return fg
 	}
 
-	placeX := clampInt((bgWidth-fgWidth)/2, 0, max(0, bgWidth-fgWidth))
-	placeY := clampInt((bgHeight-fgHeight)/2, 0, max(0, bgHeight-fgHeight))
+	placeX = clampInt(placeX, 0, max(0, bgWidth-fgWidth))
+	placeY = clampInt(placeY, 0, max(0, bgHeight-fgHeight))
 
 	var b strings.Builder
 	for i, bgLine := range bgLines {
@@ -270,6 +301,21 @@ func splashLines(s string) (lines []string, widest int) {
 		}
 	}
 	return lines, widest
+}
+
+// trimBlankLines drops leading/trailing all-whitespace lines (the wordmark art
+// is padded with blank rows) so the composited block is exactly its glyph rows —
+// letting the clearing hug the wordmark tightly.
+func trimBlankLines(s string) string {
+	lines := strings.Split(s, "\n")
+	start, end := 0, len(lines)
+	for start < end && strings.TrimSpace(xansi.Strip(lines[start])) == "" {
+		start++
+	}
+	for end > start && strings.TrimSpace(xansi.Strip(lines[end-1])) == "" {
+		end--
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // smoothstep is the classic Hermite ease between edges a and b, clamped to [0,1].

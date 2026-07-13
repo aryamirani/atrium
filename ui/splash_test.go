@@ -26,13 +26,20 @@ func stripLines(s string) []string {
 	return strings.Split(ansi.Strip(s), "\n")
 }
 
+// centeredClearing builds a single wordmark ellipse centered vertically in an
+// h-row pane, so the field's focal center matches the pane center (keeping the
+// round-vignette assertions valid).
+func centeredClearing(h, halfW, halfH int) splashClearing {
+	return splashClearing{wordHalfW: halfW, wordHalfH: halfH, wordCenterRow: (h - 1) / 2}
+}
+
 // TestRenderSplashFieldDeterministic locks the pure-function contract: identical
 // inputs must produce byte-identical output (so the field is snapshot-safe and
 // the tick can drive it without hidden state).
 func TestRenderSplashFieldDeterministic(t *testing.T) {
 	pal := splashTestPalette()
-	a := renderSplashField(80, 30, 5, pal, 20, 4)
-	b := renderSplashField(80, 30, 5, pal, 20, 4)
+	a := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4))
+	b := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4))
 	require.Equal(t, a, b, "same inputs must render identically")
 	require.NotEmpty(t, a)
 }
@@ -45,7 +52,7 @@ func TestRenderSplashFieldBounds(t *testing.T) {
 	sizes := [][2]int{{50, 18}, {66, 20}, {80, 30}, {120, 40}, {51, 19}, {73, 27}}
 	for _, s := range sizes {
 		w, h := s[0], s[1]
-		field := renderSplashField(w, h, 3, pal, w/4, h/6)
+		field := renderSplashField(w, h, 3, pal, centeredClearing(h, w/4, h/6))
 		lines := strings.Split(field, "\n")
 		require.Lenf(t, lines, h, "%dx%d: line count", w, h)
 		for i, l := range lines {
@@ -58,8 +65,8 @@ func TestRenderSplashFieldBounds(t *testing.T) {
 // change the rendered field (otherwise the "slow drift" is dead).
 func TestRenderSplashFieldAnimates(t *testing.T) {
 	pal := splashTestPalette()
-	f0 := renderSplashField(80, 30, 3, pal, 20, 4)
-	f1 := renderSplashField(80, 30, 4, pal, 20, 4)
+	f0 := renderSplashField(80, 30, 3, pal, centeredClearing(30, 20, 4))
+	f1 := renderSplashField(80, 30, 4, pal, centeredClearing(30, 20, 4))
 	require.NotEqual(t, f0, f1, "consecutive frames must differ")
 }
 
@@ -69,7 +76,7 @@ func TestRenderSplashFieldAnimates(t *testing.T) {
 func TestRenderSplashFieldVignetteCorners(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 80, 30
-	lines := stripLines(renderSplashField(w, h, 3, pal, 20, 4))
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4)))
 	require.Len(t, lines, h)
 	// At 80x30 the disc is height-limited, so the first and last rows are fully
 	// outside it — entirely blank.
@@ -87,7 +94,7 @@ func TestRenderSplashFieldClearing(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 80, 30
 	chw, chh := 20, 4
-	lines := stripLines(renderSplashField(w, h, 3, pal, chw, chh))
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, chw, chh)))
 	centerRow := (h - 1) / 2
 	cx := (w - 1) / 2
 	// Along the center row the clearing spans |dx| < chw — those cells are blank.
@@ -103,7 +110,7 @@ func TestRenderSplashFieldClearing(t *testing.T) {
 func TestOverlayCenterComposites(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 60, 20
-	field := renderSplashField(w, h, 3, pal, 8, 3)
+	field := renderSplashField(w, h, 3, pal, centeredClearing(h, 8, 3))
 	fg := "ABCDEF"
 	out := overlayCenter(field, fg)
 	require.Contains(t, ansi.Strip(out), "ABCDEF", "fg must survive compositing")
@@ -128,7 +135,7 @@ func TestRenderSplashFieldExtremes(t *testing.T) {
 					t.Fatalf("renderSplashField(%d,%d) panicked: %v", w, h, r)
 				}
 			}()
-			out := renderSplashField(w, h, 2, pal, maxInt(1, w/4), maxInt(1, h/4))
+			out := renderSplashField(w, h, 2, pal, centeredClearing(h, maxInt(1, w/4), maxInt(1, h/4)))
 			if out == "" {
 				return
 			}
@@ -173,6 +180,6 @@ func BenchmarkRenderSplash(b *testing.B) {
 	pal := splashTestPalette()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = renderSplashField(80, 30, i, pal, 20, 4)
+		_ = renderSplashField(80, 30, i, pal, centeredClearing(30, 20, 4))
 	}
 }
