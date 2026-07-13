@@ -573,7 +573,7 @@ func (m *home) reconcileInFlightStarts(ctx context.Context) {
 			// Ctx still live: the force-quit abandon, or a rare non-signal event-loop
 			// error from p.Run(). Kill's teardown works as-is, no rebind needed.
 			if err := inst.Kill(); err != nil {
-				log.WarningLog.Printf("force-quit: teardown of in-flight session %q: %v", inst.Title, err)
+				log.WarningLog.Printf("exit: teardown of in-flight session %q: %v", inst.Title, err)
 			}
 		}
 	}
