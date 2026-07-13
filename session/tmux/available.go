@@ -14,7 +14,7 @@ import (
 var ErrNotInstalled = errors.New(
 	"tmux is not installed — Atrium runs each session inside tmux. " +
 		"Install it and retry (macOS: brew install tmux; Debian/Ubuntu: sudo apt install tmux). " +
-		"Run `atrium doctor` to check dependencies.")
+		"Run `atrium doctor` to check dependencies")
 
 // lookPath is the exec.LookPath seam so tests can simulate tmux present/absent
 // without a real binary on PATH (mirrors notify.Notifier's lookPath field).
