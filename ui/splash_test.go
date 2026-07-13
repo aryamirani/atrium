@@ -49,8 +49,8 @@ func overlayCenter(bg, fg string) string {
 // the tick can drive it without hidden state).
 func TestRenderSplashFieldDeterministic(t *testing.T) {
 	pal := splashTestPalette()
-	a := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4))
-	b := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4))
+	a := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
+	b := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
 	require.Equal(t, a, b, "same inputs must render identically")
 	require.NotEmpty(t, a)
 }
@@ -63,7 +63,7 @@ func TestRenderSplashFieldBounds(t *testing.T) {
 	sizes := [][2]int{{50, 18}, {66, 20}, {80, 30}, {120, 40}, {51, 19}, {73, 27}}
 	for _, s := range sizes {
 		w, h := s[0], s[1]
-		field := renderSplashField(w, h, 3, pal, centeredClearing(h, w/4, h/6))
+		field := renderSplashField(w, h, 3, pal, centeredClearing(h, w/4, h/6), splashDefaultVariant)
 		lines := strings.Split(field, "\n")
 		require.Lenf(t, lines, h, "%dx%d: line count", w, h)
 		for i, l := range lines {
@@ -76,8 +76,8 @@ func TestRenderSplashFieldBounds(t *testing.T) {
 // change the rendered field (otherwise the "slow drift" is dead).
 func TestRenderSplashFieldAnimates(t *testing.T) {
 	pal := splashTestPalette()
-	f0 := renderSplashField(80, 30, 3, pal, centeredClearing(30, 20, 4))
-	f1 := renderSplashField(80, 30, 4, pal, centeredClearing(30, 20, 4))
+	f0 := renderSplashField(80, 30, 3, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
+	f1 := renderSplashField(80, 30, 4, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
 	require.NotEqual(t, f0, f1, "consecutive frames must differ")
 }
 
@@ -87,7 +87,7 @@ func TestRenderSplashFieldAnimates(t *testing.T) {
 func TestRenderSplashFieldVignetteCorners(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 80, 30
-	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4)))
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4), splashDefaultVariant))
 	require.Len(t, lines, h)
 	// The border rows fade to zero, so the first and last rows are entirely blank.
 	require.Equal(t, strings.Repeat(" ", w), lines[0], "top row must be blank")
@@ -106,7 +106,7 @@ func TestRenderSplashFieldVignetteCorners(t *testing.T) {
 func TestRenderSplashFieldFillsPane(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 120, 30
-	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4)))
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4), splashDefaultVariant))
 	minCol, maxCol := w, -1
 	for _, l := range lines {
 		for col, r := range []rune(l) {
@@ -132,7 +132,7 @@ func TestRenderSplashFieldClearing(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 80, 30
 	chw, chh := 20, 4
-	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, chw, chh)))
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, chw, chh), splashDefaultVariant))
 	centerRow := (h - 1) / 2
 	cx := (w - 1) / 2
 	// Rune-index the row: the field now fills the whole width, so multi-byte
@@ -151,7 +151,7 @@ func TestRenderSplashFieldClearing(t *testing.T) {
 func TestOverlayCenterComposites(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 60, 20
-	field := renderSplashField(w, h, 3, pal, centeredClearing(h, 8, 3))
+	field := renderSplashField(w, h, 3, pal, centeredClearing(h, 8, 3), splashDefaultVariant)
 	fg := "ABCDEF"
 	out := overlayCenter(field, fg)
 	require.Contains(t, ansi.Strip(out), "ABCDEF", "fg must survive compositing")
@@ -232,7 +232,7 @@ func TestRenderSplashFieldExtremes(t *testing.T) {
 					t.Fatalf("renderSplashField(%d,%d) panicked: %v", w, h, r)
 				}
 			}()
-			out := renderSplashField(w, h, 2, pal, centeredClearing(h, maxInt(1, w/4), maxInt(1, h/4)))
+			out := renderSplashField(w, h, 2, pal, centeredClearing(h, maxInt(1, w/4), maxInt(1, h/4)), splashDefaultVariant)
 			if out == "" {
 				return
 			}
@@ -277,6 +277,6 @@ func BenchmarkRenderSplash(b *testing.B) {
 	pal := splashTestPalette()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = renderSplashField(80, 30, i, pal, centeredClearing(30, 20, 4))
+		_ = renderSplashField(80, 30, i, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
 	}
 }
