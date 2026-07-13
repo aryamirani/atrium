@@ -92,6 +92,7 @@ func splashTestVariants() map[string]splashVariant {
 		"legacy":  splashVariantLegacy,
 		"fbm":     splashVariantFBM,
 		"braille": splashVariantBraille,
+		"flow":    splashVariantFlow,
 	}
 }
 
@@ -252,6 +253,63 @@ func TestSplashBrailleVariantOutput(t *testing.T) {
 		}
 	}
 	require.True(t, sawBraille, "the faint band must produce braille dots")
+}
+
+// flowTestField builds a 5×5 buffer from a linear function of (col, row) and
+// returns the glyph choice at the center cell.
+func flowTestField(t *testing.T, f func(col, row int) float64) (rune, bool) {
+	t.Helper()
+	const w, h = 5, 5
+	vals := make([]float64, w*h)
+	for r := 0; r < h; r++ {
+		for c := 0; c < w; c++ {
+			vals[r*w+c] = f(c, r)
+		}
+	}
+	return splashFlowGlyph(vals, w, h, 2, 2)
+}
+
+// TestSplashFlowGlyphBins pins the angle→glyph mapping on synthetic linear
+// fields, including the two traps: the y-down→y-up flip (getting it wrong
+// swaps ╱ and ╲) and the aspect-corrected diagonals (a screen diagonal is a
+// 2-rows-per-2-cols line, not 1:1).
+func TestSplashFlowGlyphBins(t *testing.T) {
+	// f increases rightward → vertical iso-lines.
+	g, ok := flowTestField(t, func(c, _ int) float64 { return 0.1 * float64(c) })
+	require.True(t, ok)
+	require.Equal(t, '│', g)
+
+	// f increases downward → horizontal iso-lines.
+	g, ok = flowTestField(t, func(_, r int) float64 { return 0.1 * float64(r) })
+	require.True(t, ok)
+	require.Equal(t, '─', g)
+
+	// f = 0.1c − 0.2r: iso-lines run 2 cols right per row down — a rendered
+	// ╲ diagonal (one row is two visual units tall).
+	g, ok = flowTestField(t, func(c, r int) float64 { return 0.1*float64(c) - 0.2*float64(r) })
+	require.True(t, ok)
+	require.Equal(t, '╲', g)
+
+	// Mirrored: f = 0.1c + 0.2r → ╱.
+	g, ok = flowTestField(t, func(c, r int) float64 { return 0.1*float64(c) + 0.2*float64(r) })
+	require.True(t, ok)
+	require.Equal(t, '╱', g)
+
+	// A flat field is direction-free: no glyph.
+	_, ok = flowTestField(t, func(_, _ int) float64 { return 0.5 })
+	require.False(t, ok, "flat field must not stroke a contour")
+}
+
+// TestSplashFlowVariantOutput drives the flow variant end to end: the
+// contour band must actually stroke line glyphs.
+func TestSplashFlowVariantOutput(t *testing.T) {
+	pal := splashTestPalette()
+	saw := false
+	for frame := 0; frame < 8 && !saw; frame++ {
+		out := ansi.Strip(renderSplashField(80, 30, frame*7, pal, centeredClearing(30, 20, 4), splashVariantFlow))
+		saw = strings.ContainsAny(out, "─╱│╲")
+	}
+	require.True(t, saw, "the contour band must produce flow glyphs")
 }
 
 func BenchmarkSplashValNoise(b *testing.B) {

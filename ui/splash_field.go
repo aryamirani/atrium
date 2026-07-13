@@ -37,6 +37,10 @@ const (
 	// refined to 2×4 sub-cell braille dots — much finer gradation in the
 	// thin gas, while bright cores keep the solid ramp.
 	splashVariantBraille
+	// splashVariantFlow ("c") is the fBm nebula with a mid-intensity contour
+	// band stroked in gradient-oriented line glyphs (─ ╱ │ ╲) — filament
+	// edges read as drawn streamlines.
+	splashVariantFlow
 )
 
 // splashDefaultVariant is what production renders when no override is set.
@@ -54,6 +58,8 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 		return splashVariantFBM
 	case "b":
 		return splashVariantBraille
+	case "c":
+		return splashVariantFlow
 	}
 	return splashDefaultVariant
 })
@@ -124,6 +130,53 @@ const (
 	// strict and dither is non-negative.
 	brailleHalftoneScale = 0.6
 )
+
+// The flow contour band (variant "c"): cells in this lit range whose local
+// gradient is strong enough swap their ramp glyph for a line glyph oriented
+// along the iso-contour. Direction is only well-conditioned where |∇f| is
+// large — everywhere-application would render angular noise, so flat cells
+// and the band's outside keep the density ramp (the published prior art's
+// edges-only rule).
+const (
+	flowBandLo  = 0.45
+	flowBandHi  = 0.70
+	flowGradMin = 0.02
+)
+
+// splashFlowGlyph picks the contour-tangent line glyph for a cell from
+// central differences of the raw field buffer (one-sided at borders). All
+// vector math happens in aspect-corrected space, which is proportional to
+// rendered pixel space, so angles are true visual angles — but note the
+// diagonals: a cell is cellAspect× taller than wide, so ╱ renders at
+// atan(2) ≈ 63.4°, not 45°, and the bin edges sit at the midpoints between
+// glyph angles (0°, 63.4°, 90°, 116.6°). Rows grow downward while glyph
+// angles are y-up; the sign flip below does that conversion (getting it
+// wrong silently swaps ╱ and ╲).
+func splashFlowGlyph(vals []float64, w, h, row, col int) (rune, bool) {
+	gx := (vals[row*w+min(col+1, w-1)] - vals[row*w+max(col-1, 0)]) / 2
+	gy := (vals[min(row+1, h-1)*w+col] - vals[max(row-1, 0)*w+col]) / 2
+	// ∂f per aspect-space unit: a row step is cellAspect units.
+	gyv := gy / cellAspect
+	// Contour tangent = perpendicular to the gradient; then flip to y-up.
+	tu, tv := -gyv, gx
+	if math.Hypot(tu, tv) < flowGradMin {
+		return 0, false
+	}
+	ang := math.Atan2(-tv, tu) * (180 / math.Pi)
+	if ang < 0 {
+		ang += 180
+	}
+	switch {
+	case ang < 31.7 || ang >= 148.3:
+		return '─', true
+	case ang < 76.7:
+		return '╱', true
+	case ang < 103.3:
+		return '│', true
+	default:
+		return '╲', true
+	}
+}
 
 // brailleBit maps sub-cell (sy, sx) to its dot bit in U+2800..U+28FF: dots
 // 1,2,3,7 run down the left column, dots 4,5,6,8 down the right.
@@ -432,6 +485,13 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 					}
 					if g := clampInt(int(gf), 0, maxGlyph); g > 0 {
 						ch = ramp[g]
+						if variant == splashVariantFlow && lit >= flowBandLo && lit <= flowBandHi {
+							// Stroke the contour band along the field's
+							// iso-lines; flat cells keep the ramp glyph.
+							if fg, ok := splashFlowGlyph(fld.vals, w, h, row, col); ok {
+								ch = fg
+							}
+						}
 						idx = splashColorIdx(variant, fld.aux[cell], dx, dy, dRaw, phase, maxD, nColors)
 					}
 				}
