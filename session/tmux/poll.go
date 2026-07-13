@@ -269,8 +269,8 @@ func (t *Session) Poll() PaneState {
 	// multi-agent team selector. Raising only on the marker is what kills the
 	// flicker: a stuck state file or an idle repaint can never flip the indicator back to
 	// working once it has settled to idle — only the marker returning can.
-	hasMarker := len(t.adapter.BusyMarkers) > 0
-	if hasMarker && t.markerWorking(content) {
+	hasMarker := len(t.adapter.BusyMarkers) > 0 || t.adapter.LiveSpinner != nil
+	if len(t.adapter.BusyMarkers) > 0 && t.markerWorking(content) {
 		t.monitor.idleStreak = 0
 		t.monitor.lastReported = PaneWorking
 		t.monitor.logSignal(name, "marker → working")
@@ -292,7 +292,28 @@ func (t *Session) Poll() PaneState {
 		// did: the set is bounded — SubagentStop drains it, the wall-clock watchdog clears a
 		// stuck set after its cap, and tmux liveness recovers a dead pane — so an unmatched
 		// start can never pin a row busy forever the way a stuck "working" file could.
-		if rec, ok := t.readHookRecord(); ok {
+		rec, haveRec := t.readHookRecord()
+
+		// A live spinner status line above the box (2.1.207's footer reflow can crowd
+		// "esc to interrupt" out of the below-box footer while the agent works — spinner.go).
+		// It outranks the hook record like the esc-to-interrupt marker does: a spinning main
+		// turn is Working, not Pending, even with sub-agents in flight. But the above-box band
+		// is NOT structurally guaranteed live chrome (the transcript tail can quote the same
+		// signature), so it carries two guards the below-box marker doesn't need:
+		//   - Trust it only while the pane is ANIMATING (`changed`): a real spinner's per-second
+		//     timer keeps the content changing, while a frozen scrollback match goes static and
+		//     stops resetting idleStreak, self-healing to idle via the grace/cap below.
+		//   - Never override a clean ready+empty hook — an authoritative turn-end that a stale
+		//     spinner frame (or a scrollback quote on a finished pane) must not resurrect.
+		cleanIdle := haveRec && rec.State == hookStateReady && len(rec.Inflight) == 0
+		if changed && !cleanIdle && t.adapter.LiveSpinner != nil && t.adapter.LiveSpinner(content) {
+			t.monitor.idleStreak = 0
+			t.monitor.lastReported = PaneWorking
+			t.monitor.logSignal(name, "spinner → working")
+			return PaneWorking
+		}
+
+		if haveRec {
 			if len(rec.Inflight) > 0 {
 				t.monitor.idleStreak = 0
 				t.monitor.lastReported = PanePending
@@ -432,7 +453,15 @@ func (t *Session) PollNow() PaneState {
 			return PaneIdle
 		}
 	}
-	if len(t.adapter.BusyMarkers) == 0 {
+	// No hook record. A live spinner above the box still proves work (the footer marker can
+	// be crowded out on 2.1.207 — spinner.go); at face value it reads working. The resuming
+	// tick loop applies the animation gate, so a one-shot scrollback match self-heals.
+	if t.adapter.LiveSpinner != nil && t.adapter.LiveSpinner(content) {
+		t.monitor.lastReported = PaneWorking
+		t.monitor.logSignal(name, "refresh spinner → working")
+		return PaneWorking
+	}
+	if len(t.adapter.BusyMarkers) == 0 && t.adapter.LiveSpinner == nil {
 		// No level signal and no hook file; defer to the tick loop's content-change path.
 		return PaneUnknown
 	}

@@ -109,6 +109,77 @@ func footerRegion(content string) string {
 	return liveChromeLines(content, workChromeLines)
 }
 
+// aboveBoxBlockCap bounds how far aboveBoxBlock scans upward on a degenerate pane
+// that lacks the usual blank line delimiting the live status block from the transcript.
+// It sits well above any real status block (a spinner line plus a task/tip list), so a
+// normal pane is blank-delimited long before the cap is reached; it only stops a runaway
+// scan into scrollback when the delimiter is missing.
+const aboveBoxBlockCap = 40
+
+// aboveBoxBlock returns the live status block rendered just above the input box's TOP
+// border — the band where claude paints its spinner status line (and any task/tip lines
+// below it), which lies outside footerRegion's below-the-box window. It is the upward
+// mirror of footerBelowBox: anchor on the bottom-most input-box line, find the box-top
+// border above it, skip the blank separator, and return the contiguous non-blank block
+// above that, delimited by the blank line that separates the block from the scrolled-back
+// transcript — so a spinner string quoted in the transcript never counts. Returns
+// ("", false) when there is no box on screen (a pre-box startup frame, a non-boxed agent,
+// or a degenerate capture), so callers treat "no anchor" as no signal rather than
+// scanning transcript. Input is expected cleaned for detection (ANSI stripped, trailing
+// whitespace trimmed) so blank lines are truly "".
+//
+// It anchors on isBoxBorderLine, not the stricter isHorizontalRule, because claude renders
+// the session's agent-context / branch name INSIDE the top border ("──── name ──", seen
+// live), which isHorizontalRule rejects — the same reason suggestion.go locates the box
+// with the loose predicate. A spinner/task line never starts with a dash run, so the loose
+// predicate cannot mistake block content for a border.
+func aboveBoxBlock(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+
+	box := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isInputBoxLine(lines[i]) {
+			box = i
+			break
+		}
+	}
+	if box < 0 {
+		return "", false
+	}
+
+	top := -1
+	for i := box - 1; i >= 0; i-- {
+		if isBoxBorderLine(lines[i]) {
+			top = i
+			break
+		}
+	}
+	if top < 0 {
+		return "", false
+	}
+
+	// Skip the blank separator(s) between the box-top border and the status block.
+	end := top - 1
+	for end >= 0 && strings.TrimSpace(lines[end]) == "" {
+		end--
+	}
+	if end < 0 {
+		return "", false
+	}
+
+	// Walk up the contiguous non-blank block, stopping at the blank line above it (the
+	// transcript delimiter), a border, or the degenerate-pane cap.
+	start := end
+	for start > 0 && end-start < aboveBoxBlockCap {
+		prev := start - 1
+		if strings.TrimSpace(lines[prev]) == "" || isBoxBorderLine(lines[prev]) {
+			break
+		}
+		start = prev
+	}
+	return strings.Join(lines[start:end+1], "\n"), true
+}
+
 // isInputBoxLine reports whether line is the interior of an agent's input box: the "❯" or
 // ">" prompt, optionally inside the box's "│" side borders, possibly followed by typed
 // text. The box is drawn only while no overlay is up, so reaching it while scanning upward
