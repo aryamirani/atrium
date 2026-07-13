@@ -206,14 +206,44 @@ func (m *home) applySettingChange(key string) tea.Cmd {
 	return nil
 }
 
-// listRatioStep is how much each < / > press shifts the list/preview split.
-const listRatioStep = 0.05
+// listColStep is how many terminal columns each < / > press shifts the split.
+// A whole-column step gives predictable, exact control at any terminal width;
+// the mouse drag (handleMouse) covers larger jumps.
+const listColStep = 1
 
 // adjustListRatio nudges the list/preview split by delta, persists the clamped
 // value, re-pushes sizes to every pane, and refreshes the preview at its new width.
 // appState owns the clamp, so the stored and live values stay in lockstep.
 func (m *home) adjustListRatio(delta float64) tea.Cmd {
 	if err := m.appState.SetListRatio(m.listRatio + delta); err != nil {
+		return m.handleError(err)
+	}
+	m.listRatio = m.appState.GetListRatio()
+	m.recomputeLayout()
+	return m.instanceChanged()
+}
+
+// adjustListCols nudges the split by whole columns: it converts the current ratio
+// to a column count at the live width, steps it, and converts back, so a press
+// always moves the divider exactly delta columns regardless of terminal width.
+// Before the first size event (windowWidth == 0) there is no column basis, so it
+// falls back to a fixed ratio nudge.
+func (m *home) adjustListCols(delta int) tea.Cmd {
+	// A home that hasn't taken its first size event yet may carry a zero ratio
+	// (a struct literal in tests, or pre-seed); fall back to the persisted value
+	// so a nudge grows/shrinks from the real split rather than from nothing.
+	if m.listRatio <= 0 {
+		m.listRatio = m.appState.GetListRatio()
+	}
+	if m.windowWidth <= 0 {
+		return m.adjustListRatio(float64(delta) * 0.02)
+	}
+	cols := int(float32(m.windowWidth) * float32(m.listRatio))
+	// Center the target column (+0.5) so the layout's int(width*ratio) truncation
+	// lands squarely on cols+delta instead of on a boundary a float32 rounding
+	// error could snap back to cols, which would make a step silently stick.
+	ratio := (float64(cols+delta) + 0.5) / float64(m.windowWidth)
+	if err := m.appState.SetListRatio(ratio); err != nil {
 		return m.handleError(err)
 	}
 	m.listRatio = m.appState.GetListRatio()

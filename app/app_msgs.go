@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui"
@@ -123,7 +124,45 @@ func (m *home) handleSmartDispatchDone(msg smartDispatchDoneMsg) (tea.Model, tea
 	return m, tea.Batch(cmds...)
 }
 
+// dividerGrab is how many columns on each side of the list/preview seam count as
+// grabbing the divider, so the user doesn't have to land the exact border column.
+const dividerGrab = 1
+
 func (m *home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// A live drag of the list/preview seam owns all mouse events until release.
+	// Motion maps the cursor column straight to the split without persisting
+	// (SetListRatio writes state.json — too heavy per motion); release persists once.
+	if m.draggingDivider {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			if m.windowWidth <= 0 {
+				return m, nil
+			}
+			m.listRatio = config.ClampListRatio(float64(msg.X) / float64(m.windowWidth))
+			m.recomputeLayout()
+			return m, m.instanceChanged()
+		case tea.MouseActionRelease:
+			m.draggingDivider = false
+			if err := m.appState.SetListRatio(m.listRatio); err != nil {
+				return m, m.handleError(err)
+			}
+			return m, nil
+		default:
+			return m, nil
+		}
+	}
+	// Begin a divider drag when the left button presses on (or adjacent to) the
+	// seam between the panes. Default state only; the seam column is listWidth.
+	// This runs before the press-only early return and the row/tab click logic,
+	// so a seam press starts a drag instead of selecting the row behind it.
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress &&
+		m.state == stateDefault && m.windowWidth > 0 {
+		listWidth := int(float32(m.windowWidth) * float32(m.listRatio))
+		if msg.X >= listWidth-dividerGrab && msg.X <= listWidth+dividerGrab {
+			m.draggingDivider = true
+			return m, nil
+		}
+	}
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}

@@ -290,6 +290,10 @@ type home struct {
 	// goes to the preview pane). Adjusted with < / > and persisted via appState.
 	listRatio float64
 
+	// draggingDivider is true while the user holds the list/preview seam and drags
+	// it; motion events then map the cursor column to the split (see handleMouse).
+	draggingDivider bool
+
 	// -- UI Components --
 
 	// list displays the list of instances
