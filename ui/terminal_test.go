@@ -501,9 +501,9 @@ func TestEnsureSessionReapsLegacyTermSession(t *testing.T) {
 	// shell startup, out of scope for the #274 CI plumbing. The legacy-reap
 	// regression this guards still runs on Linux CI (ubuntu + race). A loud
 	// GOOS skip, not a silent tmux-missing one — remove once the darwin shell
-	// startup is fixed.
+	// startup is fixed. Tracked in #305.
 	if runtime.GOOS == "darwin" {
-		t.Skip("terminal $SHELL session does not persist within the 2s startup poll on macOS; tracked separately")
+		t.Skip("terminal $SHELL session does not persist within the 2s startup poll on macOS; tracked in #305")
 	}
 	log.Initialize(false)
 	defer log.Close()
