@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ZviBaratz/atrium/internal/testutil"
 )
 
 // TestManagedConfigParsesUnderRealTmux feeds the rendered managed config to a real
@@ -23,9 +25,7 @@ import (
 // commands directly (rather than via tmuxCommand) precisely because we need a
 // throwaway socket and an explicit `-f`-less probe server that we control.
 func TestManagedConfigParsesUnderRealTmux(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	testutil.RequireTmux(t)
 	for _, contextBar := range []bool{true, false} {
 		t.Run(fmt.Sprintf("contextBar=%v", contextBar), func(t *testing.T) {
 			rendered, err := renderManagedConfig(contextBar)

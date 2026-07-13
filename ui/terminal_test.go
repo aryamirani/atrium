@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/ZviBaratz/atrium/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/internal/testutil"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/session/tmux"
@@ -490,9 +491,7 @@ func TestTerminalScrollSnapshotDropsWhenInstancePauses(t *testing.T) {
 // Creating the new-keyed shell for an instance must reap its legacy-named one.
 // Drives a real tmux server on the dedicated socket (self-skips without tmux).
 func TestEnsureSessionReapsLegacyTermSession(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	testutil.RequireTmux(t)
 	log.Initialize(false)
 	defer log.Close()
 

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ZviBaratz/atrium/cmd/cmd_test"
+	"github.com/ZviBaratz/atrium/internal/testutil"
 
 	"github.com/stretchr/testify/require"
 )
@@ -1264,9 +1265,7 @@ func TestStartSessionNoConfigDirNoEnvFlag(t *testing.T) {
 // in the session environment — the end-to-end proxy for the acceptance criterion
 // (`tmux show-environment` shows the var). Self-skips when tmux is unavailable.
 func TestStartSessionConfigDirReachesPane(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	testutil.RequireTmux(t)
 
 	name := fmt.Sprintf("acctenv-%d", rand.Int31())
 	dir := t.TempDir()
@@ -1443,9 +1442,7 @@ func TestStartSessionNoTokenEnvSkipsResolution(t *testing.T) {
 // TestStartSessionAtriumMarkerReachesPane drives a real tmux server and asserts
 // ATRIUM=1 is actually present in the session environment. Self-skips without tmux.
 func TestStartSessionAtriumMarkerReachesPane(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	testutil.RequireTmux(t)
 	name := fmt.Sprintf("markerenv-%d", rand.Int31())
 	session := NewSession(context.Background(), name, "sleep 300")
 	require.NoError(t, session.Start(t.TempDir()))
