@@ -13,6 +13,7 @@ import (
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/internal/update"
 	"github.com/ZviBaratz/atrium/log"
+	"github.com/ZviBaratz/atrium/ui"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -134,7 +135,7 @@ func updateBadgeText(version string, installed bool) string {
 // Sessions-panel badge (updateBadgeText), which renders regardless of
 // overlays and hint_bar.
 func (m *home) handleUpdateNotice(text string) tea.Cmd {
-	if cmd := m.handleInfoNotice(text); cmd != nil {
+	if cmd := m.showMenuNotice(text, ui.NoticeInfo); cmd != nil {
 		m.pendingUpdateNotice = ""
 		return cmd
 	}

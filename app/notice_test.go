@@ -51,18 +51,20 @@ func TestHandleInfoNotice_MenuCarriesIt(t *testing.T) {
 	assert.False(t, h.errBox.HasError(), "info must never look like an error")
 }
 
-// Info acknowledgments are chrome; with the hint bar off they are dropped
-// rather than claiming a row (errors, by contrast, always surface).
-func TestHandleInfoNotice_HintBarOffDropsIt(t *testing.T) {
+// Info acknowledgments used to be dropped with the hint bar off (#287). They now
+// fall back to the errBox row — shown, not silently discarded — but styled
+// neutrally so they never read as an error.
+func TestHandleInfoNotice_HintBarOffFallsBackToErrRow(t *testing.T) {
 	h := newCreateFormHome(t)
 	off := false
 	h.appConfig.HintBar = &off
 
 	cmd := h.handleInfoNotice("branch copied")
 
-	assert.Nil(t, cmd)
-	assert.False(t, h.menu.HasNotice())
-	assert.False(t, h.errBox.HasError())
+	require.NotNil(t, cmd, "a fallen-back info notice still schedules its own hide")
+	assert.True(t, h.errBox.HasContent(), "the notice must claim the errBox row")
+	assert.False(t, h.errBox.HasError(), "info must never look like an error")
+	assert.False(t, h.menu.HasNotice(), "the hidden hint bar carries nothing")
 }
 
 // pressKey drives a single rune keybinding through the default-state handler.
