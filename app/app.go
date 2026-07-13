@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/ZviBaratz/atrium/config"
@@ -59,6 +60,11 @@ func Run(ctx context.Context, program string, autoYes bool, version, binName str
 		tea.WithContext(ctx),
 	)
 	_, err = p.Run()
+	// The event loop has exited. On signal shutdown it returned on ctx.Done()
+	// without dispatching Update, and the force-quit escape exits with a session
+	// still Loading — either way an in-flight Start was never persisted or torn
+	// down. Reconcile it here (adopt-or-teardown) so it isn't orphaned (#282).
+	h.reconcileInFlightStarts(ctx)
 	if ctx.Err() != nil {
 		// Signal-driven shutdown: Bubble Tea reports the kill as an error
 		// (ErrProgramKilled), but for us it is a clean exit.
@@ -153,6 +159,13 @@ const (
 
 type home struct {
 	ctx context.Context
+
+	// startWG tracks in-flight new-session Start goroutines so app.Run can join
+	// them after p.Run() returns and reconcile a session the Bubble Tea event loop
+	// bypassed on signal shutdown / force-quit (#282). Add() runs on the Update
+	// goroutine (happens-before app.Run's wait); Done() is deferred inside the
+	// start command.
+	startWG sync.WaitGroup
 
 	// -- Storage and Configuration --
 

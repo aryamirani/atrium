@@ -8,6 +8,7 @@ import (
 
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/session/tmux"
 	"github.com/ZviBaratz/atrium/ui"
 	"github.com/ZviBaratz/atrium/ui/overlay"
 
@@ -97,6 +98,29 @@ func TestSmartDispatch_ConfidentRoughMatchUpgradesTitleAsync(t *testing.T) {
 	render := h.textInputOverlay.Render()
 	require.Contains(t, render, "refining", "a title-only upgrade is in flight")
 	require.NotContains(t, render, "detecting", "the project is already known — not a routing call")
+}
+
+// A missing tmux must block the smart-dispatch flow the same way it blocks the
+// bare create form. The dispatch prompt is open (statePrompt) when the line is
+// submitted, so the guard must clear that overlay and leave statePrompt instead
+// of stranding the stale, already-submitted overlay on screen while its error is
+// (mis)routed to a truncating toast.
+func TestSmartDispatch_BlockedWhenTmuxMissing(t *testing.T) {
+	orig := tmuxAvailable
+	t.Cleanup(func() { tmuxAvailable = orig })
+	tmuxAvailable = func() error { return tmux.ErrNotInstalled }
+
+	h := newSmartHome(t)
+	box := mkNamedDir(t, "box")
+	addDirectInstance(t, h, "other", box) // a confident match, so routing reaches the form path
+	// Reproduce the real precondition: the smart-dispatch prompt overlay is open.
+	h.state = statePrompt
+	h.textInputOverlay = overlay.NewSmartDispatchOverlay("Describe the session")
+
+	h.handleSmartDispatchSubmit("Review box#123")
+
+	require.Nil(t, h.textInputOverlay, "a missing tmux must not strand the smart-dispatch overlay open")
+	require.NotEqual(t, statePrompt, h.state, "a missing tmux must not leave the flow parked at the prompt")
 }
 
 func TestSmartDispatch_EmptyProjectResultStillUpgradesTitle(t *testing.T) {

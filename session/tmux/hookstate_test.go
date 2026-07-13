@@ -30,31 +30,39 @@ func seedHookRecord(t *testing.T, s *Session, rec hookRecord) {
 // phantom member.
 func TestApplyHookEvent(t *testing.T) {
 	var rec hookRecord
+	const t0, t1 int64 = 1_700_000_000, 1_700_000_050
 
-	applyHookEvent(&rec, HookEventWorking, "")
+	applyHookEvent(&rec, HookEventWorking, "", t0)
 	require.Equal(t, hookStateWorking, rec.State)
+	require.Equal(t, t0, rec.LastHeartbeat, "a working edge bumps the heartbeat (#311)")
 
-	applyHookEvent(&rec, HookEventSubagentStart, "aa")
-	applyHookEvent(&rec, HookEventSubagentStart, "aa") // duplicate start is idempotent
-	applyHookEvent(&rec, HookEventSubagentStart, "bb")
+	applyHookEvent(&rec, HookEventSubagentStart, "aa", t1)
+	applyHookEvent(&rec, HookEventSubagentStart, "aa", t1) // duplicate start is idempotent
+	applyHookEvent(&rec, HookEventSubagentStart, "bb", t1)
 	require.ElementsMatch(t, []string{"aa", "bb"}, rec.Inflight)
+	require.Equal(t, t0, rec.LastHeartbeat, "sub-agent edges do not bump the main heartbeat")
 
-	applyHookEvent(&rec, HookEventReady, "")
+	applyHookEvent(&rec, HookEventReady, "", t1)
 	require.Equal(t, hookStateReady, rec.State)
 	require.Len(t, rec.Inflight, 2, "the ready latch never touches the in-flight set")
+	require.Equal(t, t0, rec.LastHeartbeat, "ready does not bump the heartbeat (else it would mask a clean turn-end)")
 
-	applyHookEvent(&rec, HookEventSubagentStop, "zz") // unmatched stop → no-op
+	applyHookEvent(&rec, HookEventSubagentStop, "zz", t1) // unmatched stop → no-op
 	require.ElementsMatch(t, []string{"aa", "bb"}, rec.Inflight)
 
-	applyHookEvent(&rec, HookEventSubagentStart, "") // empty id can't be tracked → skipped
+	applyHookEvent(&rec, HookEventSubagentStart, "", t1) // empty id can't be tracked → skipped
 	require.ElementsMatch(t, []string{"aa", "bb"}, rec.Inflight)
 
-	applyHookEvent(&rec, HookEventSubagentStop, "aa")
+	applyHookEvent(&rec, HookEventSubagentStop, "aa", t1)
 	require.ElementsMatch(t, []string{"bb"}, rec.Inflight)
 
-	applyHookEvent(&rec, HookEventResetInflight, "")
+	applyHookEvent(&rec, HookEventResetInflight, "", t1)
 	require.Empty(t, rec.Inflight)
 	require.Equal(t, hookStateReady, rec.State, "reset clears only the set, not the latch")
+
+	// A later working edge advances the heartbeat.
+	applyHookEvent(&rec, HookEventWorking, "", t1)
+	require.Equal(t, t1, rec.LastHeartbeat, "the newest working edge wins")
 }
 
 // TestParseHookRecord covers the JSON record, the Phase 1 bare-word compat fallback (a

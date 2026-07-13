@@ -265,6 +265,16 @@ func (g *Worktree) baseContext() context.Context {
 	return context.Background()
 }
 
+// SetBaseContext rebinds the lifecycle context this worktree's git subprocesses
+// derive from. baseCtx is normally creation-fixed and read lock-free, so this is
+// ONLY safe on a quiescent worktree with no in-flight op — specifically shutdown
+// reconciliation (#282), where app.Run swaps a cancelled ctx for one built with
+// context.WithoutCancel so Cleanup's `git worktree remove`/`branch -D` aren't
+// insta-killed by the cancellation and can actually tear the worktree down.
+func (g *Worktree) SetBaseContext(ctx context.Context) {
+	g.baseCtx = ctx
+}
+
 // SetGHConfigDir pins the GH_CONFIG_DIR Atrium's gh subprocesses for this worktree
 // run under. Call before the worktree is shared with background goroutines (from
 // instance Start/restore); it is creation-fixed thereafter.

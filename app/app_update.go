@@ -3,8 +3,10 @@ package app
 // Top-level event and key dispatch for the home model.
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ZviBaratz/atrium/keys"
 	"github.com/ZviBaratz/atrium/log"
@@ -484,6 +486,103 @@ func (m *home) anyLoading() bool {
 		}
 	}
 	return false
+}
+
+// drainTimeout bounds how long shutdown reconciliation waits for an in-flight
+// Start goroutine to settle. On signal shutdown the goroutine's subprocesses are
+// already SIGKILLed by the cancelled context and it unwinds in well under a
+// second; on force-quit a genuinely in-progress `git worktree add` is itself
+// capped at gitLocalTimeout (30s), and 5s comfortably covers a warm-repo worktree
+// add plus tmux new-session while capping worst-case exit delay. A Start still
+// running past this is treated as wedged and left as-is (the orphan #281 already
+// produced) rather than risking a data race by touching a live start. A var, not
+// a const, so tests can shrink the wait.
+var drainTimeout = 5 * time.Second
+
+// drainStarts waits up to timeout for every in-flight Start goroutine (tracked by
+// startWG) to return, reporting whether they all settled. It must be bounded: on
+// ctx-cancel Bubble Tea may drop a queued start command without ever running it,
+// so that goroutine's deferred Done never fires and a bare Wait would hang.
+func (m *home) drainStarts(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		m.startWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// reconcileInFlightStarts finishes or tears down a session that was still Loading
+// when the Bubble Tea event loop exited — the two paths that bypass the graceful
+// #268/#281 quit machinery: a signal shutdown (ctx cancelled, so Update never ran
+// handleQuit and the completion message was dropped) and the force-quit escape
+// (tea.Quit issued while a session was still starting). A graceful quit persists
+// the start before quitting, so nothing is Loading and this no-ops.
+//
+// After joining the Start goroutine (so its tmux/git children are quiescent and
+// safe to rebind), each still-Loading instance is:
+//   - signal shutdown + Start completed -> adopted: flipped to Running and
+//     persisted, so the daemon handoff / next launch keeps the session;
+//   - signal shutdown + partial/failed  -> torn down, rebinding its children to a
+//     WithoutCancel context first so Kill's git/tmux teardown isn't insta-killed
+//     by the cancelled lifecycle context;
+//   - ctx still live                     -> torn down (no rebind; Kill works as-is):
+//     the force-quit abandon, or a rare non-signal event-loop error from p.Run().
+//     Either way, clean it up rather than leave it orphaned.
+//
+// If the drain times out a Start is still running; touching it would race the
+// goroutine, so it is left as-is — the same orphan the force-quit path produced
+// before this fix (no regression, and no hang).
+func (m *home) reconcileInFlightStarts(ctx context.Context) {
+	if !m.anyLoading() {
+		return
+	}
+	if !m.drainStarts(drainTimeout) {
+		log.WarningLog.Printf("shutdown: in-flight session start did not settle within %s; left as-is", drainTimeout)
+		return
+	}
+
+	signalShutdown := ctx.Err() != nil
+	adopted := false
+	for _, inst := range m.list.GetInstances() {
+		if inst.GetStatus() != session.Loading {
+			continue
+		}
+		switch {
+		case signalShutdown && inst.Started():
+			// Start finished; only its completion message was dropped. Adopt it so
+			// the daemon handoff / next launch keeps the session.
+			inst.SetStatus(session.Running)
+			if m.autoYes {
+				inst.AutoYes = true
+			}
+			adopted = true
+		case signalShutdown:
+			// Partial/failed under the cancelled ctx: its own deferred Kill ran on
+			// the dead ctx and couldn't clean up. Rebind to a live ctx and retry.
+			inst.RebindBaseContext(context.WithoutCancel(ctx))
+			if err := inst.Kill(); err != nil {
+				log.WarningLog.Printf("shutdown: teardown of in-flight session %q: %v", inst.Title, err)
+			}
+		default:
+			// Ctx still live: the force-quit abandon, or a rare non-signal event-loop
+			// error from p.Run(). Kill's teardown works as-is, no rebind needed.
+			if err := inst.Kill(); err != nil {
+				log.WarningLog.Printf("exit: teardown of in-flight session %q: %v", inst.Title, err)
+			}
+		}
+	}
+
+	if adopted {
+		if err := m.persistInstances(); err != nil {
+			log.WarningLog.Printf("shutdown: failed to persist adopted session(s): %v", err)
+		}
+	}
 }
 
 func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {

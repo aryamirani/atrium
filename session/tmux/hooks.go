@@ -20,8 +20,9 @@ import (
 // pane from a genuinely-finished one — both lack the marker, and only what happens next
 // tells them apart. Claude Code itself knows the difference and emits it via hooks, so we
 // inject a tiny settings file (via --settings, merged with the user's own config) whose
-// UserPromptSubmit/PreToolUse hooks latch "working" and whose Stop hook — which fires once
-// at true end-of-turn, never between auto-accepted tool steps — latches "ready".
+// UserPromptSubmit/PreToolUse/PostToolUse hooks latch "working" (and stamp a heartbeat,
+// #311) and whose Stop hook — which fires once at true end-of-turn, never between
+// auto-accepted tool steps — latches "ready".
 //
 // Each hook re-invokes the atrium binary's hidden `hook` subcommand, which does a locked
 // read-modify-write of a structured state record (see hookstate.go): the working/ready
@@ -199,8 +200,8 @@ type hookCommand struct {
 }
 
 type hookMatcherGroup struct {
-	// Matcher is omitted for events that don't support it (UserPromptSubmit, Stop); for
-	// PreToolUse it is "*" to match all tools.
+	// Matcher is omitted for events that don't support it (UserPromptSubmit, Stop); the
+	// per-tool events (PreToolUse, PostToolUse) set it to "*" to match all tools.
 	Matcher string        `json:"matcher,omitempty"`
 	Hooks   []hookCommand `json:"hooks"`
 }
@@ -218,6 +219,11 @@ func buildHookSettings(binPath, stateFile string) ([]byte, error) {
 	s := hookSettings{Hooks: map[string][]hookMatcherGroup{
 		"UserPromptSubmit": {{Hooks: []hookCommand{cmd(HookEventWorking)}}},
 		"PreToolUse":       {{Matcher: "*", Hooks: []hookCommand{cmd(HookEventWorking)}}},
+		// PostToolUse re-latches working at each tool boundary. It carries no new latch value
+		// (a completed tool means the turn is still processing), but it bumps the heartbeat
+		// (#311) so an active turn stays fresh in the gap AFTER a long tool completes and
+		// before the next PreToolUse — holding working without scraping the pane.
+		"PostToolUse": {{Matcher: "*", Hooks: []hookCommand{cmd(HookEventWorking)}}},
 		// Stop fires at a clean end-of-turn; StopFailure fires when the turn ends on an API
 		// error. Both mean the agent has stopped, so both latch "ready" — without StopFailure
 		// an errored turn would leave the file on "working" until the poller's time cap.

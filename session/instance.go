@@ -869,6 +869,29 @@ func (i *Instance) baseContext() context.Context {
 	return context.Background()
 }
 
+// RebindBaseContext points the instance AND its already-constructed tmux/git
+// children at ctx. Unlike SetBaseContext (which only affects children built
+// later by Start, and so must run before Start), this rebinds live children.
+// The children's baseCtx is read lock-free, so this is safe ONLY when no
+// goroutine is running against them — i.e. the Start goroutine has joined — and
+// the instance is out of every poll set (Started() == false, which
+// snapshotActiveInstances/pollSelectedCmd filter on). app.Run uses it during
+// shutdown reconciliation (#282) to hand a signal-orphaned session a
+// context.WithoutCancel context so Kill's teardown subprocesses aren't
+// insta-killed by the cancelled lifecycle context.
+func (i *Instance) RebindBaseContext(ctx context.Context) {
+	i.baseCtx = ctx
+	i.mu.RLock()
+	ts, wt := i.tmuxSession, i.gitWorktree
+	i.mu.RUnlock()
+	if ts != nil {
+		ts.SetBaseContext(ctx)
+	}
+	if wt != nil {
+		wt.SetBaseContext(ctx)
+	}
+}
+
 // Start brings the instance to life: it creates (or reuses) the tmux session
 // and, for non-direct sessions, the git worktree and branch. firstTimeSetup is
 // true if this is a new instance; otherwise, it's one loaded from storage.
