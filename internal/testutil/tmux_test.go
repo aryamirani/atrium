@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -34,7 +35,7 @@ func TestRequireTmux(t *testing.T) {
 			"PATH=" + emptyDir,
 			requireTmuxEnv + "=" + requireValue,
 		}
-		cmd := exec.Command(os.Args[0], "-test.run=^TestRequireTmuxHelper$", "-test.v")
+		cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestRequireTmuxHelper$", "-test.v")
 		cmd.Env = childEnv(extra...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
