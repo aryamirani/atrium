@@ -75,6 +75,20 @@ const (
 	colorSwirlF     = 0.045
 	colorSwirlSpeed = 0.30
 
+	// The starfield: sparse, fixed, twinkling points scattered through the plasma
+	// (including its dark voids) for depth. starThreshold sets rarity (higher →
+	// fewer stars), starRamp maps twinkle→glyph, and stars are drawn in a bright
+	// near-white so they read as starlight in front of the colored gas.
+	starThreshold    = 0.986
+	starTwinkleSpeed = 1.7
+	starPhaseScatter = 137.0 // desyncs twinkles so stars don't pulse in unison
+	starRamp         = " ·+*"
+
+	// Breathing: a slow global brightness swell so the whole nebula feels alive
+	// (inhaling) rather than only drifting outward.
+	breatheDepth = 0.16
+	breatheSpeed = 0.33
+
 	// splashRamp maps intensity to a glyph, light→heavy. Index 0 (space) is
 	// "nothing here"; every glyph is terminal-width 1 (downsample-safe). A longer
 	// ramp gives finer density steps, so gradients read smooth instead of banded.
@@ -96,11 +110,12 @@ const (
 func splashFits(w, h int) bool { return w >= minSplashW && h >= minSplashH }
 
 // splashLUT is a precomputed gradient: parallel color/style stops from the
-// theme's core hue (purple) to its rim hue (cyan). Built once per palette so the
-// per-cell hot loop only does index lookups, never color math.
+// warm core hue to the cool rim, plus a bright star color. Built once per
+// palette so the per-cell hot loop only does index lookups, never color math.
 type splashLUT struct {
 	colors []lipgloss.Color
 	styles []lipgloss.Style
+	star   lipgloss.Style
 }
 
 var (
@@ -108,11 +123,15 @@ var (
 	splashLUTCache = map[string]*splashLUT{}
 )
 
-// splashLUTFor returns the memoized gradient for a palette, keyed by its three
-// anchor hues. Bubble Tea renders on a single goroutine, but the mutex is cheap
-// insurance since both the preview and (future) terminal panes render here.
+// splashLUTFor returns the memoized gradient for a palette, keyed by every
+// anchor it draws from. Bubble Tea renders on a single goroutine, but the mutex
+// is cheap insurance since both the preview and (future) terminal panes render
+// here.
 func splashLUTFor(pal theme.Palette) *splashLUT {
-	key := string(pal.Purple) + "|" + string(pal.Accent) + "|" + string(pal.Cyan)
+	key := strings.Join([]string{
+		string(pal.Danger), string(pal.Purple), string(pal.Accent),
+		string(pal.Cyan), string(pal.Fg),
+	}, "|")
 	splashLUTMu.Lock()
 	defer splashLUTMu.Unlock()
 	if lut, ok := splashLUTCache[key]; ok {
@@ -123,38 +142,50 @@ func splashLUTFor(pal theme.Palette) *splashLUT {
 	return lut
 }
 
-// buildSplashLUT blends purple→accent→cyan in HCL for a perceptually even ramp.
-// The endpoints are pinned to the exact palette colors so the core reads as the
-// brand hue and the rim as the theme's cyan. If any anchor is not parseable hex
-// (an unusual theme), the whole ramp degrades to flat purple rather than
-// emitting broken colors.
+// splashAnchors is the warm→cool nebula gradient (pink → purple → blue → cyan),
+// drawn from theme tokens so it tracks the active theme. Consecutive anchors are
+// hue-adjacent, so HCL blending between them stays smooth (no muddy backtrack).
+func splashAnchors(pal theme.Palette) []lipgloss.Color {
+	return []lipgloss.Color{pal.Danger, pal.Purple, pal.Accent, pal.Cyan}
+}
+
+// buildSplashLUT blends the anchors across splashLUTSize stops in HCL for smooth,
+// non-muddy hue steps, pins the exact endpoints, and adds a bright near-white
+// star color. If any anchor is not parseable hex (an unusual theme), the ramp
+// degrades to flat purple rather than emitting broken colors.
 func buildSplashLUT(pal theme.Palette) *splashLUT {
+	anchorCols := splashAnchors(pal)
 	lut := &splashLUT{
 		colors: make([]lipgloss.Color, splashLUTSize),
 		styles: make([]lipgloss.Style, splashLUTSize),
+		star:   lipgloss.NewStyle().Foreground(pal.Fg),
 	}
-	core, err1 := colorful.Hex(string(pal.Purple))
-	mid, err2 := colorful.Hex(string(pal.Accent))
-	rim, err3 := colorful.Hex(string(pal.Cyan))
+	anchors := make([]colorful.Color, len(anchorCols))
+	ok := true
+	for i, c := range anchorCols {
+		cc, err := colorful.Hex(string(c))
+		if err != nil {
+			ok = false
+			break
+		}
+		anchors[i] = cc
+	}
+	segs := len(anchorCols) - 1
 	for i := range lut.colors {
 		c := pal.Purple
-		if err1 == nil && err2 == nil && err3 == nil {
-			t := float64(i) / float64(splashLUTSize-1) // 0 at core, 1 at rim
-			var blended colorful.Color
-			if t < 0.5 {
-				blended = core.BlendHcl(mid, t/0.5).Clamped()
-			} else {
-				blended = mid.BlendHcl(rim, (t-0.5)/0.5).Clamped()
-			}
-			c = lipgloss.Color(blended.Hex())
+		if ok {
+			// Map stop i to a position along the multi-segment anchor path.
+			t := float64(i) / float64(splashLUTSize-1) * float64(segs)
+			seg := clampInt(int(t), 0, segs-1)
+			c = lipgloss.Color(anchors[seg].BlendHcl(anchors[seg+1], t-float64(seg)).Clamped().Hex())
 		}
 		lut.colors[i] = c
 		lut.styles[i] = lipgloss.NewStyle().Foreground(c)
 	}
 	// Pin the endpoints exactly (HCL round-tripping can nudge the hex a hair).
-	lut.colors[0], lut.styles[0] = pal.Purple, lipgloss.NewStyle().Foreground(pal.Purple)
+	lut.colors[0], lut.styles[0] = anchorCols[0], lipgloss.NewStyle().Foreground(anchorCols[0])
 	last := splashLUTSize - 1
-	lut.colors[last], lut.styles[last] = pal.Cyan, lipgloss.NewStyle().Foreground(pal.Cyan)
+	lut.colors[last], lut.styles[last] = anchorCols[segs], lipgloss.NewStyle().Foreground(anchorCols[segs])
 	return lut
 }
 
@@ -216,9 +247,14 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 
 	lut := splashLUTFor(pal)
 	nColors := len(lut.styles)
+	starIdx := nColors // flushSplashRun renders any index >= len(styles) as a star
 	ramp := []rune(splashRamp)
 	maxGlyph := len(ramp) - 1
+	starRampR := []rune(starRamp)
+	starMax := len(starRampR) - 1
 	phase := float64(frame) * driftPerFrame
+	// Slow global brightness swell (breathing), computed once per frame.
+	breathe := 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
 
 	var sb strings.Builder
 	var run strings.Builder
@@ -258,7 +294,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 				intensity = smoothstep(splashContrastLo, splashContrastHi, intensity)
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
 				radial := 1 - radialDim*clamp01(dRaw/maxD)
-				lit := intensity * edgeX * edgeY * radial
+				lit := intensity * edgeX * edgeY * radial * breathe
 				if g := clampInt(int(lit*float64(maxGlyph)), 0, maxGlyph); g > 0 {
 					ch = ramp[g]
 					// Hue swirls across the field (radius + a slow angular sweep)
@@ -266,6 +302,15 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 					swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
 					colorT := clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
 					idx = clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
+				}
+				// Starfield on top: a fixed, twinkling point can light even a void
+				// the plasma left dark. Fades with the same border vignette.
+				if sh := starHash(col, row); sh > starThreshold {
+					tw := 0.7 + 0.3*math.Sin(phase*starTwinkleSpeed+sh*starPhaseScatter)
+					if sg := clampInt(int(tw*edgeX*edgeY*float64(starMax)), 0, starMax); sg > 0 {
+						ch = starRampR[sg]
+						idx = starIdx
+					}
 				}
 			}
 
@@ -287,12 +332,23 @@ func flushSplashRun(sb, run *strings.Builder, styleIdx int, lut *splashLUT) {
 	if run.Len() == 0 {
 		return
 	}
-	if styleIdx < 0 {
+	switch {
+	case styleIdx < 0: // blank run — raw spaces, no color
 		sb.WriteString(run.String())
-	} else {
+	case styleIdx >= len(lut.styles): // star run — bright near-white
+		sb.WriteString(lut.star.Render(run.String()))
+	default: // gradient run
 		sb.WriteString(lut.styles[styleIdx].Render(run.String()))
 	}
 	run.Reset()
+}
+
+// starHash is a cheap deterministic per-cell pseudo-random value in [0,1) — the
+// classic sin-fract hash — so the starfield is fixed in place (and snapshot-
+// stable) while the plasma drifts behind it.
+func starHash(col, row int) float64 {
+	s := math.Sin(float64(col)*12.9898+float64(row)*78.233) * 43758.5453
+	return s - math.Floor(s)
 }
 
 // overlayAt composites fg over bg (the ripple field) at cell (placeX, placeY),

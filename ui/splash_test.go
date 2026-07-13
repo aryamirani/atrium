@@ -15,9 +15,11 @@ import (
 // splash tests never depend on the global active theme.
 func splashTestPalette() theme.Palette {
 	return theme.Palette{
+		Danger: lipgloss.Color("#f7768e"),
 		Purple: lipgloss.Color("#bb9af7"),
 		Accent: lipgloss.Color("#7aa2f7"),
 		Cyan:   lipgloss.Color("#7dcfff"),
+		Fg:     lipgloss.Color("#c0caf5"),
 	}
 }
 
@@ -244,14 +246,14 @@ func TestRenderSplashFieldExtremes(t *testing.T) {
 }
 
 // TestSplashLUTThemeAnchored locks the gradient to the theme: the ramp starts at
-// the palette's purple (core), ends at its cyan (rim), and the rim hue actually
-// flows into the upper half of the ramp (so swapping cyan changes the colors).
-// It asserts at the LUT level because lipgloss strips truecolor to plain text in
-// a no-TTY test process, so the rendered field carries no color to compare.
+// the warm anchor (pink/Danger), ends at cyan, and the rim hue flows into the
+// upper stops (so swapping cyan changes the colors). It asserts at the LUT level
+// because lipgloss strips truecolor to plain text in a no-TTY test process, so
+// the rendered field carries no color to compare.
 func TestSplashLUTThemeAnchored(t *testing.T) {
 	pal := splashTestPalette()
 	lut := splashLUTFor(pal)
-	require.Equal(t, pal.Purple, lut.colors[0], "core stop is theme purple")
+	require.Equal(t, pal.Danger, lut.colors[0], "core stop is the warm anchor")
 	require.Equal(t, pal.Cyan, lut.colors[len(lut.colors)-1], "rim stop is theme cyan")
 
 	other := pal
@@ -259,7 +261,7 @@ func TestSplashLUTThemeAnchored(t *testing.T) {
 	otherLUT := splashLUTFor(other)
 	require.NotEqual(t, lut.colors, otherLUT.colors,
 		"changing the rim hue must change the gradient")
-	// The lower half (core→accent) is rim-independent; the upper half must move.
+	// The lower stops (warm→blue) are rim-independent; the upper stops must move.
 	require.NotEqual(t, lut.colors[len(lut.colors)-4], otherLUT.colors[len(otherLUT.colors)-4],
 		"the rim hue must reach the upper stops of the ramp")
 }
