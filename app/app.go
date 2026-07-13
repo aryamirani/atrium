@@ -211,10 +211,11 @@ type home struct {
 	// drives that cadence.
 	metadataTick uint64
 	// splashFrame is the empty-state splash's animation clock, advanced once per
-	// 100ms preview tick (see handlePreviewTick) and pushed to the panes that
-	// render the ripple field. It lives on the tick, not the content path, so the
-	// field keeps drifting regardless of which tab is focused. Zero value is fine.
-	splashFrame uint64
+	// 100ms preview tick (see advanceSplashFrame) and pushed to the panes that
+	// render the nebula. int (not uint64) so the push needs no overflow-prone
+	// conversion; it wraps only after centuries and the phase is taken mod 2π
+	// anyway. Zero value is fine.
+	splashFrame int
 	// attachGen counts terminal attaches. It is bumped by attachCommand.Run — on the
 	// suspended event-loop goroutine, so it is still main-thread state — once an
 	// attach succeeds. Pane-state capture cmds (metadata tick, detach sweep,

@@ -128,7 +128,7 @@ func splashScene(width, height, frame int, message string) string {
 	msgX := (width - msgW) / 2
 	msgY := wordY + wordH + gap
 
-	clear := splashClearing{
+	clearing := splashClearing{
 		wordHalfW:     wordW/2 + 2,
 		wordHalfH:     wordH/2 + 1,
 		wordCenterRow: wordY + wordH/2,
@@ -136,7 +136,7 @@ func splashScene(width, height, frame int, message string) string {
 		msgHalfH:      msgH/2 + 2,
 		msgCenterRow:  msgY + msgH/2,
 	}
-	field := renderSplashField(width, height, frame, theme.Current().Palette, clear)
+	field := renderSplashField(width, height, frame, theme.Current().Palette, clearing)
 	scene := overlayAt(field, word, wordX, wordY)
 	scene = overlayAt(scene, msg, msgX, msgY)
 	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(scene)
@@ -255,17 +255,17 @@ func (c splashClearing) blanks(dx float64, row int) bool {
 // composited text. The field fills the whole pane and softens only near the four
 // borders (an edge vignette), rather than being a single disc inscribed to the
 // shorter axis — so a wide pane no longer leaves big empty side-margins. The ring
-// pattern emanates from the wordmark's center (clear.wordCenterRow) and the
+// pattern emanates from the wordmark's center (clearing.wordCenterRow) and the
 // color gradient / gentle radial dim are normalized to the farthest corner, so
 // the field stays visually anchored on the wordmark while still reaching the
 // edges. Pure over its inputs (deterministic, snapshot-testable); returns "" on a
 // degenerate pane.
-func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing) string {
+func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashClearing) string {
 	if w <= 0 || h <= 0 {
 		return ""
 	}
 	cx := float64(w-1) / 2
-	cyFocal := float64(clear.wordCenterRow)
+	cyFocal := float64(clearing.wordCenterRow)
 	// Distance from the focal point to the farthest corner: the denominator for
 	// the color gradient and the core→rim dim, so both span the whole pane.
 	maxD := math.Hypot(
@@ -303,7 +303,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 			dx := float64(col) - cx
 			idx, ch := -1, ' '
 
-			if edgeY > 0 && !clear.blanks(dx, row) {
+			if edgeY > 0 && !clearing.blanks(dx, row) {
 				// Smooth (unwarped) radius drives color + the core→rim dim; the
 				// warped radius drives the ring pattern, so the rings ripple
 				// organically while the color gradient stays clean.

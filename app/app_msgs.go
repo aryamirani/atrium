@@ -60,7 +60,7 @@ func (m *home) advanceSplashFrame() {
 	}
 	m.splashFrame++
 	if m.splashFrame%2 == 0 {
-		m.tabbedWindow.SetSplashFrame(int(m.splashFrame / 2))
+		m.tabbedWindow.SetSplashFrame(m.splashFrame / 2)
 	}
 }
 

@@ -26,5 +26,5 @@ func TestAdvanceSplashFrameFrozenWhileOverlayUp(t *testing.T) {
 	// Back in the default state it ticks again.
 	m.state = stateDefault
 	m.advanceSplashFrame()
-	require.Equal(t, uint64(1), m.splashFrame, "splash advances in the default state")
+	require.Equal(t, 1, m.splashFrame, "splash advances in the default state")
 }
