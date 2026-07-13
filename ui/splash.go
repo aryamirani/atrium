@@ -26,10 +26,9 @@ const (
 	// vignette render circular rather than oval.
 	cellAspect = 2.0
 
-	// driftPerFrame is the outward phase advance per animation frame. Small, so
-	// the rings breathe slowly rather than strobe (paired with the 10Hz push in
-	// handlePreviewTick for smooth motion).
-	driftPerFrame = 0.09
+	// driftPerFrame is the outward phase advance per pushed animation frame (~5Hz,
+	// see handlePreviewTick). Small, so the rings breathe slowly rather than strobe.
+	driftPerFrame = 0.18
 
 	// The field is a small sum of sines evaluated per cell: two domain-warped
 	// concentric ring octaves + rotationally-symmetric petals + an isotropic
@@ -108,6 +107,40 @@ const (
 // splashFits reports whether a pane is large enough to render the splash field
 // legibly. Callers fall back to the plain centered wordmark when it is not.
 func splashFits(w, h int) bool { return w >= minSplashW && h >= minSplashH }
+
+// splashScene composites the idle empty screen: the animated nebula field with
+// the wordmark centered on top and the message tucked just below it. The wordmark
+// and message are overlaid separately at their own widths (not one padded block)
+// so the field's rings hug the narrow wordmark rather than being pushed out by
+// the wider message; each gets its own tight clearing so no glyphs bleed through
+// the text. The outer clamp honors the pane box (#251). Shared by the preview and
+// terminal panes so their idle empty states match. Callers gate on splashFits.
+func splashScene(width, height, frame int, message string) string {
+	word := trimBlankLines(FallbackBanner())
+	msg := theme.Current().FgStyle().Render(message)
+	wordW, wordH := lipgloss.Width(word), lipgloss.Height(word)
+	msgW, msgH := lipgloss.Width(msg), lipgloss.Height(msg)
+
+	const gap = 2 // blank rows between the wordmark and the message
+	cy := (height - 1) / 2
+	wordX := (width - wordW) / 2
+	wordY := max(0, cy-wordH/2) // wordmark centered on the pane
+	msgX := (width - msgW) / 2
+	msgY := wordY + wordH + gap
+
+	clear := splashClearing{
+		wordHalfW:     wordW/2 + 2,
+		wordHalfH:     wordH/2 + 1,
+		wordCenterRow: wordY + wordH/2,
+		msgHalfW:      msgW/2 + 2,
+		msgHalfH:      msgH/2 + 2,
+		msgCenterRow:  msgY + msgH/2,
+	}
+	field := renderSplashField(width, height, frame, theme.Current().Palette, clear)
+	scene := overlayAt(field, word, wordX, wordY)
+	scene = overlayAt(scene, msg, msgX, msgY)
+	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(scene)
+}
 
 // splashLUT is a precomputed gradient: parallel color/style stops from the
 // warm core hue to the cool rim, plus a bright star color. Built once per

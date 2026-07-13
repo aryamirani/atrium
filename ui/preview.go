@@ -127,39 +127,6 @@ func (p *PreviewPane) setSplashState(message string) {
 	p.previewState.splashMessage = message
 }
 
-// renderSplashScene composites the idle empty screen: the animated radial-ripple
-// field with the wordmark centered on top and the onboarding message tucked just
-// below it. The wordmark and message are overlaid separately at their own widths
-// (not one padded block) so the field's rings hug the narrow wordmark rather than
-// being pushed out by the wider message; each gets its own tight clearing so no
-// glyphs bleed through the text. The outer clamp honors the pane box (#251).
-func (p *PreviewPane) renderSplashScene() string {
-	word := trimBlankLines(FallbackBanner())
-	msg := previewPaneStyle().Render(p.previewState.splashMessage)
-	wordW, wordH := lipgloss.Width(word), lipgloss.Height(word)
-	msgW, msgH := lipgloss.Width(msg), lipgloss.Height(msg)
-
-	const gap = 2 // blank rows between the wordmark and the message
-	cy := (p.height - 1) / 2
-	wordX := (p.width - wordW) / 2
-	wordY := max(0, cy-wordH/2) // wordmark centered on the pane
-	msgX := (p.width - msgW) / 2
-	msgY := wordY + wordH + gap
-
-	clear := splashClearing{
-		wordHalfW:     wordW/2 + 2,
-		wordHalfH:     wordH/2 + 1,
-		wordCenterRow: wordY + wordH/2,
-		msgHalfW:      msgW/2 + 2,
-		msgHalfH:      msgH/2 + 2,
-		msgCenterRow:  msgY + msgH/2,
-	}
-	field := renderSplashField(p.width, p.height, p.splashFrame, theme.Current().Palette, clear)
-	scene := overlayAt(field, word, wordX, wordY)
-	scene = overlayAt(scene, msg, msgX, msgY)
-	return lipgloss.NewStyle().MaxWidth(p.width).MaxHeight(p.height).Render(scene)
-}
-
 // UpdateContent updates the preview pane content with the tmux pane content.
 //
 // The splash decision is driven by what we can actually observe in the pane, not by
@@ -265,7 +232,7 @@ func (p *PreviewPane) String() string {
 	}
 
 	if p.previewState.splash && splashFits(p.width, p.height) {
-		return p.renderSplashScene()
+		return splashScene(p.width, p.height, p.splashFrame, p.previewState.splashMessage)
 	}
 
 	if p.previewState.fallback {

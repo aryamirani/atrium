@@ -54,11 +54,14 @@ func (m *home) handlePreviewTick(msg previewTickMsg) (tea.Model, tea.Cmd) {
 		m.exitHintMode()
 	}
 	m.markSeenAfterDwell(time.Now())
-	// Advance the empty-state splash animation every tick (~10Hz) for smooth
-	// motion; driftPerFrame is set low to match. The field only re-renders while
-	// the idle splash is on screen, so this costs nothing once a session exists.
+	// Advance the empty-state splash animation, pushing every other tick (~5Hz):
+	// identical frames in between diff to no-ops, so a parked empty screen doesn't
+	// repaint the full pane 10×/s. The field only renders while the idle splash is
+	// on screen, so this costs nothing once a session exists.
 	m.splashFrame++
-	m.tabbedWindow.SetSplashFrame(int(m.splashFrame))
+	if m.splashFrame%2 == 0 {
+		m.tabbedWindow.SetSplashFrame(int(m.splashFrame / 2))
+	}
 	cmd := m.instanceChanged()
 	return m, tea.Batch(
 		cmd,

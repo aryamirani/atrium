@@ -144,7 +144,7 @@ func (w *TabbedWindow) SetSize(width, height int) {
 // field keeps drifting regardless of which tab is focused.
 func (w *TabbedWindow) SetSplashFrame(n int) {
 	w.preview.SetSplashFrame(n)
-	// w.terminal.SetSplashFrame(n) // enable when the terminal pane gets the splash
+	w.terminal.SetSplashFrame(n)
 }
 
 // GetPreviewSize returns the preview pane's content dimensions, used to size
