@@ -21,10 +21,10 @@ var ErrNotInstalled = errors.New(
 var lookPath = exec.LookPath
 
 // Available reports whether tmux is usable: it returns ErrNotInstalled when the
-// binary is not on PATH, nil otherwise. This is the single pre-flight gate the
-// new-session flow and (*Session).start consult before doing any work, so a
-// missing tmux surfaces one clean, actionable message instead of the raw
-// "exec: \"tmux\": executable file not found" at pty launch.
+// binary is not on PATH, nil otherwise. It is the pre-flight gate the new-session
+// flow (the create form and smart dispatch) consults before building a worktree,
+// so a missing tmux surfaces one clean, actionable message up front instead of the
+// raw "exec: \"tmux\": executable file not found" at pty launch.
 func Available() error {
 	if _, err := lookPath("tmux"); err != nil {
 		return ErrNotInstalled

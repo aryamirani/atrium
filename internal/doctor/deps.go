@@ -43,7 +43,7 @@ type DepResult struct {
 	Kind    DepKind
 	State   DepState
 	Version string // parsed version, "" when missing/unparseable
-	Hint    string // install/remediation hint, set only when State != DepOK
+	Hint    string // remediation hint; empty for DepOK and for a present-but-unknown dep (nothing to fix)
 }
 
 // depSpec is a static core-dependency probe definition.
@@ -124,19 +124,30 @@ func checkDeps(ctx context.Context, specs []depSpec, r depRunner, goos string, a
 			}
 		}
 		if res.State != DepOK {
-			res.Hint = installHint(goos, s)
+			res.Hint = installHint(goos, s, res.State)
 		}
 		results = append(results, res)
 	}
 	return results
 }
 
-// installHint returns an OS-appropriate remediation string for a dependency.
-// goos is injected (runtime.GOOS at the callsite) so hint selection is testable
-// on any host, mirroring internal/actions.chooseOpener. gh's Linux install needs
-// GitHub's apt repo, so it points at the docs rather than a wrong `apt install gh`;
-// an unauthenticated gh is remediated with `gh auth login` regardless of OS.
-func installHint(goos string, s depSpec) string {
+// installHint returns the remediation string for a dependency in a non-OK state.
+// It is state-aware so it never tells the user to reinstall a binary that is
+// already present: an unauthenticated gh only needs `gh auth login`, and a
+// present-but-unparseable-version binary has nothing to install (no hint). Only a
+// genuinely missing binary gets an OS-appropriate install command. goos is
+// injected (runtime.GOOS at the callsite) so hint selection is testable on any
+// host, mirroring internal/actions.chooseOpener; gh's Linux install points at the
+// docs rather than a wrong `apt install gh`.
+func installHint(goos string, s depSpec, state DepState) string {
+	switch state {
+	case DepPresentUnauth:
+		// gh is installed; only its auth sub-check failed.
+		return "run: gh auth login"
+	case DepPresentUnknown:
+		// On PATH but the version was unreadable — nothing to install or fix.
+		return ""
+	}
 	if s.bin == "gh" {
 		switch goos {
 		case "darwin":
@@ -191,7 +202,7 @@ func RenderDeps(results []DepResult) string {
 		if version == "" {
 			version = "-"
 		}
-		fmt.Fprintf(&b, "  %-6s installed %-10s %s\n", r.Name, version, r.State.label())
+		fmt.Fprintf(&b, "  %-6s %-10s %s\n", r.Name, version, r.State.label())
 		if r.Hint != "" {
 			fmt.Fprintf(&b, "         → %s\n", r.Hint)
 		}

@@ -88,6 +88,10 @@ func TestCheckDepsClassifies(t *testing.T) {
 		if !strings.Contains(d.Hint, "gh auth login") {
 			t.Errorf("gh Hint = %q, want an auth hint", d.Hint)
 		}
+		// gh is already installed here — the hint must not tell the user to reinstall it.
+		if strings.Contains(d.Hint, "install:") {
+			t.Errorf("gh Hint = %q, must not advise a reinstall when gh is present", d.Hint)
+		}
 		// gh is optional, so an unauthenticated gh must not fail doctor.
 		if MissingRequired(got) {
 			t.Error("MissingRequired = true, want false when only gh is unauthenticated")
@@ -134,9 +138,30 @@ func TestInstallHint(t *testing.T) {
 		{"linux", "github.com/cli/cli", gh},
 	}
 	for _, c := range cases {
-		if got := installHint(c.goos, c.spec); !strings.Contains(got, c.want) {
+		// A missing binary is the case that warrants an install command.
+		if got := installHint(c.goos, c.spec, DepMissing); !strings.Contains(got, c.want) {
 			t.Errorf("installHint(%q, %q) = %q, want substring %q", c.goos, c.spec.bin, got, c.want)
 		}
+	}
+}
+
+// installHint must not tell a user to reinstall a binary that is already present:
+// an unauthenticated gh only needs `gh auth login`, and a present-but-unparseable
+// binary has nothing to install.
+func TestInstallHint_PresentStatesDoNotAdviseReinstall(t *testing.T) {
+	gh := depSpec{name: "gh", bin: "gh"}
+	tmux := depSpec{name: "tmux", bin: "tmux"}
+
+	unauth := installHint("darwin", gh, DepPresentUnauth)
+	if strings.Contains(unauth, "install:") {
+		t.Errorf("unauthenticated gh hint advises a reinstall: %q", unauth)
+	}
+	if !strings.Contains(unauth, "gh auth login") {
+		t.Errorf("unauthenticated gh hint = %q, want it to point at gh auth login", unauth)
+	}
+
+	if unknown := installHint("linux", tmux, DepPresentUnknown); strings.Contains(unknown, "install:") {
+		t.Errorf("present-but-unknown tmux hint advises a reinstall: %q", unknown)
 	}
 }
 
@@ -160,5 +185,29 @@ func TestRenderDeps(t *testing.T) {
 	// An OK dep must not emit a hint line.
 	if strings.Contains(out, "→ install: brew install git") {
 		t.Errorf("RenderDeps() emitted a hint for an OK dep\n%s", out)
+	}
+}
+
+// A missing dependency's row must not contradict itself by claiming the binary is
+// "installed" while its status reads "not installed".
+func TestRenderDeps_MissingRowNotContradictory(t *testing.T) {
+	out := RenderDeps([]DepResult{
+		{Name: "tmux", Bin: "tmux", Kind: DepRequired, State: DepMissing, Hint: "install: brew install tmux"},
+	})
+
+	var row string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "tmux") {
+			row = ln
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("no tmux row found in output:\n%s", out)
+	}
+	// "not installed" is the only place "installed" may legitimately appear; a
+	// leftover bare "installed" token means the row asserts the opposite too.
+	if strings.Contains(strings.Replace(row, "not installed", "", 1), "installed") {
+		t.Errorf("missing-dep row contradictorily claims the binary is installed: %q", row)
 	}
 }

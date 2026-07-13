@@ -197,6 +197,18 @@ func (m *home) handleSmartDispatchSubmit(line string) tea.Cmd {
 			fmt.Errorf("you can't create more than %d sessions (max_sessions in config.json)", limit))
 	}
 
+	// Refuse before routing when tmux is missing: no session can be created without
+	// it, so neither auto-dispatch nor the seeded form should proceed. This path
+	// enters at statePrompt with the dispatch overlay open, so reset to stateDefault
+	// first — that clears the stale overlay and lets handleError route the wide
+	// sentinel to the persistent info modal (it only does so from stateDefault)
+	// rather than a truncated toast. Mirrors openCreateFormSeeded's bare n/N guard.
+	if err := tmuxAvailable(); err != nil {
+		m.textInputOverlay = nil
+		m.state = stateDefault
+		return m.handleError(err)
+	}
+
 	// Seed the contextual default so it heads the candidate list (and is what an
 	// unmatched line falls back to), then route the line against the known repos.
 	m.newSessionPath = m.defaultNewSessionPath()
@@ -244,12 +256,6 @@ func (m *home) handleSmartDispatchSubmit(line string) tea.Cmd {
 // smart_dispatch_auto deliberately trades away the per-session permission choice the
 // form's Permissions chip would otherwise offer.
 func (m *home) autoDispatch(res PrefillResult) (tea.Cmd, bool) {
-	// Missing tmux would fail this session async with the raw exec error (this path
-	// bypasses the form's pre-flight guard). Decline the auto-dispatch so the caller
-	// falls through to openCreateFormSeeded, whose guard shows the friendly message.
-	if tmuxAvailable() != nil {
-		return nil, false
-	}
 	valid, direct, _ := targetValidity(m.ctx, res.Path)
 	if !valid {
 		return nil, false

@@ -293,12 +293,19 @@ var (
 			log.Initialize(false)
 			defer log.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
-			defer cancel()
-			deps := doctor.CheckDeps(ctx, runtime.GOOS, ghAuthChecker)
+			// Give each section its own probe budget off a fresh context: the core-dep
+			// probes include a networked `gh auth status` that can be slow, and sharing
+			// one deadline would let it eat into the agent probes' budget and spuriously
+			// time them out.
+			depsCtx, cancelDeps := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
+			defer cancelDeps()
+			deps := doctor.CheckDeps(depsCtx, runtime.GOOS, ghAuthChecker)
 			fmt.Print(doctor.RenderDeps(deps))
 			fmt.Println()
-			fmt.Print(doctor.Render(doctor.CheckInstalled(ctx)))
+
+			agentCtx, cancelAgents := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
+			defer cancelAgents()
+			fmt.Print(doctor.Render(doctor.CheckInstalled(agentCtx)))
 			if doctor.MissingRequired(deps) {
 				// Nonzero exit for CI/scripts. The root command already sets
 				// SilenceErrors/SilenceUsage, so main() prints just this message to
