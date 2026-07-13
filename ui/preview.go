@@ -55,6 +55,9 @@ type PreviewPane struct {
 	width  int
 	height int
 
+	// splashFrame is the current animation frame for the idle-splash ripple
+	// field, pushed from the app's 100ms tick via SetSplashFrame.
+	splashFrame  int
 	previewState previewState
 	isScrolling  bool
 	// scrollInstance is the instance the scroll-mode snapshot was captured from.
@@ -76,6 +79,9 @@ type PreviewPane struct {
 type previewState struct {
 	// fallback is true if the preview pane is displaying fallback text
 	fallback bool
+	// splash is true only for the idle empty screen (no agents): String() then
+	// renders the animated ripple field behind the wordmark. Implies fallback.
+	splash bool
 	// text is the text displayed in the preview pane
 	text string
 }
@@ -96,12 +102,24 @@ func (p *PreviewPane) SetSize(width, maxHeight int) {
 	p.viewport.Height = maxHeight
 }
 
+// SetSplashFrame stores the current splash animation frame, pushed from the
+// app's 100ms tick. It only affects the idle-splash render in String().
+func (p *PreviewPane) SetSplashFrame(n int) { p.splashFrame = n }
+
 // setFallbackState sets the preview state with fallback text and a message
 func (p *PreviewPane) setFallbackState(message string) {
 	p.previewState = previewState{
 		fallback: true,
 		text:     lipgloss.JoinVertical(lipgloss.Center, FallbackBanner(), "", message),
 	}
+}
+
+// setSplashState is setFallbackState for the idle empty screen (no agents),
+// additionally flagging the splash so String() renders the animated ripple
+// field behind the wordmark. Every other empty state keeps the plain fallback.
+func (p *PreviewPane) setSplashState(message string) {
+	p.setFallbackState(message)
+	p.previewState.splash = true
 }
 
 // UpdateContent updates the preview pane content with the tmux pane content.
@@ -135,7 +153,7 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 	}
 	switch {
 	case instance == nil:
-		p.setFallbackState("No agents running yet. Spin up a new session with 'n' to get started!")
+		p.setSplashState("No agents running yet. Spin up a new session with 'n' to get started!")
 		return nil
 	case instance.Paused():
 		// A direct (non-git) session has no branch to check out — show a plain resume hint.
@@ -206,6 +224,21 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 func (p *PreviewPane) String() string {
 	if p.width == 0 || p.height == 0 {
 		return strings.Repeat("\n", p.height)
+	}
+
+	if p.previewState.splash && splashFits(p.width, p.height) {
+		// Idle empty screen: composite the wordmark+message block over the
+		// animated radial-ripple field. The field carves a blank clearing sized
+		// to the fg block (so the possibly-wide message always lands on
+		// emptiness), and the outer clamp honors the #251 box contract. Below the
+		// size floor we fall through to the plain centered fallback.
+		fg := previewPaneStyle().Render(p.previewState.text)
+		clearHalfW := lipgloss.Width(fg)/2 + 3
+		clearHalfH := lipgloss.Height(fg)/2 + 1
+		field := renderSplashField(p.width, p.height, p.splashFrame,
+			theme.Current().Palette, clearHalfW, clearHalfH)
+		return lipgloss.NewStyle().MaxWidth(p.width).MaxHeight(p.height).
+			Render(overlayCenter(field, fg))
 	}
 
 	if p.previewState.fallback {

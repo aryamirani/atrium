@@ -54,6 +54,13 @@ func (m *home) handlePreviewTick(msg previewTickMsg) (tea.Model, tea.Cmd) {
 		m.exitHintMode()
 	}
 	m.markSeenAfterDwell(time.Now())
+	// Advance the empty-state splash animation. Push only every other tick so the
+	// field drifts at ~5Hz: identical frames in between diff to no-ops, keeping
+	// the colored repaint cheap over slow/SSH terminals.
+	m.splashFrame++
+	if m.splashFrame%2 == 0 {
+		m.tabbedWindow.SetSplashFrame(int(m.splashFrame / 2))
+	}
 	cmd := m.instanceChanged()
 	return m, tea.Batch(
 		cmd,
