@@ -11,7 +11,8 @@ import (
 
 // ProbeTimeout bounds the agent `--version` probes so a wedged binary can't pin
 // either `atrium doctor` or the startup drift check. Shared by both callers so
-// the manual command and the background probe stay in lockstep.
+// the manual command and the background probe stay in lockstep, and reused by
+// `atrium doctor` as the separate per-section budget for the core-dep probes.
 const ProbeTimeout = 10 * time.Second
 
 // Status is the drift classification of one agent CLI.

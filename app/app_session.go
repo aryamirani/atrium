@@ -25,6 +25,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// tmuxAvailable is the tmux-presence seam for the new-session pre-flight guards
+// (the create-form gate and the smart-dispatch auto-create path). A package var
+// (matching the detectAgents/checkDrift idiom) so tests inject a missing-tmux
+// verdict without touching PATH.
+var tmuxAvailable = tmux.Available
+
 // cycleTarget returns the sibling to re-attach when an in-session cycle key
 // (Ctrl+PgUp/PgDn) ended the attach, or nil for a normal detach. Cycling stays
 // inside Atrium's model — each hop is a real detach+attach, correctly sized via the
@@ -189,6 +195,18 @@ func (m *home) handleSmartDispatchSubmit(line string) tea.Cmd {
 		m.state = stateDefault
 		return m.handleError(
 			fmt.Errorf("you can't create more than %d sessions (max_sessions in config.json)", limit))
+	}
+
+	// Refuse before routing when tmux is missing: no session can be created without
+	// it, so neither auto-dispatch nor the seeded form should proceed. This path
+	// enters at statePrompt with the dispatch overlay open, so reset to stateDefault
+	// first — that clears the stale overlay and lets handleError route the wide
+	// sentinel to the persistent info modal (it only does so from stateDefault)
+	// rather than a truncated toast. Mirrors openCreateFormSeeded's bare n/N guard.
+	if err := tmuxAvailable(); err != nil {
+		m.textInputOverlay = nil
+		m.state = stateDefault
+		return m.handleError(err)
 	}
 
 	// Seed the contextual default so it heads the candidate list (and is what an
@@ -792,6 +810,15 @@ func (m *home) openCreateFormSeeded(seedPath string, focusTitle bool, prefill *P
 	if limit := m.appConfig.GetMaxSessions(); limit > 0 && m.list.NumInstances() >= limit {
 		return m.handleError(
 			fmt.Errorf("you can't create more than %d sessions (max_sessions in config.json)", limit))
+	}
+
+	// Refuse to open the form when tmux is missing: every session runs inside tmux,
+	// so creation would fail anyway — but only after the user filled in the form and
+	// a worktree was built and rolled back. Bailing here (all create paths route
+	// through this function) shows one actionable message up front; the wide sentinel
+	// routes through handleError to the persistent info modal.
+	if err := tmuxAvailable(); err != nil {
+		return m.handleError(err)
 	}
 
 	// On the first bare n/N open after a restart, rebuild a crash-persisted draft into
