@@ -140,21 +140,31 @@ func TestWarnMissingProgram_HintBarOffFallsBackToErrRow(t *testing.T) {
 
 // flashNotice holds only one transient surface at a time: when a later notice
 // can ride the menu row, any stale errBox fallback row from an earlier notice is
-// cleared, so the two never double-display (#287).
+// cleared, so the two never double-display (#287). Clearing that row must also
+// recompute the layout so the panes reclaim it — otherwise, when the menu is
+// already occupying its own row, the frame renders one line short of the
+// terminal.
 func TestFlashNotice_MenuNoticeClearsStaleErrBox(t *testing.T) {
 	h := newCreateFormHome(t)
 	off := false
 	h.appConfig.HintBar = &off
+	h.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: 80, Height: 24})
 
-	// Hint bar off: the notice falls back to the errBox row.
+	// Hint bar off, menu hidden: the notice falls back to the errBox row.
 	h.flashNotice("branch copied", ui.NoticeInfo)
 	require.True(t, h.errBox.HasContent(), "hint bar off routes the notice to the errBox row")
 
-	// Bar now available (e.g. filter/visual forces it visible): the next notice
-	// rides the menu row and the stale errBox row is dropped.
-	on := true
-	h.appConfig.HintBar = &on
+	// An action forces the menu visible alongside the errBox row (its own line):
+	// menu + errBox both claim a row, so the panes shrink to keep the frame full.
+	h.actionInFlight = true
+	h.recomputeLayout()
+	require.Equal(t, 24, lipgloss.Height(h.View()), "menu + errBox rows keep the frame full")
+
+	// The next notice now rides the menu row; the stale errBox row is dropped and
+	// the panes must grow back so the frame stays exactly the terminal height.
 	h.flashNotice("pushed changes", ui.NoticeInfo)
 	assert.True(t, h.menu.HasNotice(), "the new notice rides the menu row")
 	assert.False(t, h.errBox.HasContent(), "the stale errBox row must be cleared")
+	assert.Equal(t, 24, lipgloss.Height(h.View()),
+		"reclaiming the errBox row must recompute the layout, not leave the frame a line short")
 }

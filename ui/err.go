@@ -46,9 +46,10 @@ func (e *ErrBox) Clear() {
 	e.level = NoticeInfo
 }
 
-// HasError reports whether an error-level notice is showing. handleError's
-// Fits-routing and error-only callers use this; an info notice riding the box
-// reports false so it never looks like an error.
+// HasError reports whether an error-level (as opposed to neutral info) notice is
+// showing; an info notice riding the box reports false so it never looks like an
+// error. The layout allots a row on HasContent, not this — HasError only grades
+// the level for callers that distinguish the two.
 func (e *ErrBox) HasError() bool {
 	return e.text != "" && e.level == NoticeError
 }

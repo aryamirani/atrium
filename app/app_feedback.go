@@ -70,14 +70,22 @@ func (m *home) moveAndPersist(move func() bool) (tea.Model, tea.Cmd) {
 // showMenuNotice shows a transient toast on the hint bar's reserved row when the
 // bar is up, returning the command that auto-hides it; it returns nil (showing
 // nothing) when the row isn't available — the hint bar is off, or a modal owns
-// the screen. Callers that have their own persistent fallback for the
-// row-unavailable case (the drift panel badge, the buffered update notice) use
-// this directly so they don't spill onto the errBox row (#287/#108).
+// the screen. On success it clears any stale errBox fallback row so only one
+// surface ever carries a toast. Callers that have their own persistent fallback
+// for the row-unavailable case (the drift panel badge, the buffered update
+// notice) use this directly so they don't spill onto the errBox row (#287/#108).
 func (m *home) showMenuNotice(text string, level ui.NoticeLevel) tea.Cmd {
 	if !m.menuVisible() || m.menu == nil {
 		return nil
 	}
 	m.menu.SetNotice(text, level)
+	// One surface at a time: the notice now rides the menu row, so drop any stale
+	// errBox fallback row from an earlier notice and recompute so the panes
+	// reclaim that row (else the frame renders one line short of the terminal).
+	if m.errBox != nil && m.errBox.HasContent() {
+		m.errBox.Clear()
+		m.recomputeLayout()
+	}
 	return m.scheduleNoticeHide()
 }
 
@@ -88,8 +96,7 @@ func (m *home) showMenuNotice(text string, level ui.NoticeLevel) tea.Cmd {
 // handleInfoNotice, and warnMissingProgram (#287).
 func (m *home) flashNotice(text string, level ui.NoticeLevel) tea.Cmd {
 	if cmd := m.showMenuNotice(text, level); cmd != nil {
-		m.errBox.Clear() // one surface at a time: drop any stale errBox row
-		return cmd
+		return cmd // showMenuNotice already dropped any stale errBox row
 	}
 	if m.menu != nil {
 		m.menu.ClearNotice() // one surface at a time: drop any stale menu notice
