@@ -15,7 +15,9 @@ import (
 )
 
 // SanitizeNameSegment must apply exactly the per-segment rules toSanitizedName has
-// always applied (whitespace runs stripped, dots replaced), minus the brand prefix.
+// always applied (whitespace runs stripped), plus replace every tmux target-spec
+// separator (: and .) with '_' — tmux rewrites both to '_' inside a session name,
+// so a colon left in desyncs the derived name from the one on the socket (#305).
 func TestSanitizeNameSegment(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"simple", "simple"},
@@ -24,10 +26,13 @@ func TestSanitizeNameSegment(t *testing.T) {
 		{"v1.2.3", "v1_2_3"},
 		{"foo.term", "foo_term"},
 		{"repo name.git", "reponame_git"},
+		{"fix: bug", "fix_bug"}, // colon desyncs a session name from its on-socket form
 		{"", ""},
 	}
 	for _, c := range cases {
 		require.Equal(t, c.want, SanitizeNameSegment(c.in), "input %q", c.in)
+		require.NotContains(t, SanitizeNameSegment(c.in), ":", "input %q", c.in)
+		require.NotContains(t, SanitizeNameSegment(c.in), ".", "input %q", c.in)
 	}
 }
 

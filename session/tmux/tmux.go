@@ -169,32 +169,39 @@ func Prefix() string {
 // session/agent with the windowing helpers; this one is name sanitizing only.)
 var nameWhitespaceRegex = regexp.MustCompile(`\s+`)
 
+// tmuxNameForbidRegex matches the characters tmux forbids in a target spec —
+// colon (session:window) and dot (window.pane) — and is the single source of
+// truth for both name-sanitizing paths below. tmux silently rewrites these to
+// '_' inside a session name (so a name we pass with a colon lands on the socket
+// as '_' and our later `has-session -t=` misses it), and tmux >= 3.7 hard-rejects
+// them in a `-n` window name ("invalid window name: ...") where older tmux
+// accepted them. Either way, leaving them in breaks a session's existence poll —
+// the terminal pane fails to open on tmux 3.7+ (#305), and any colon-titled
+// session desyncs from its on-socket name on every tmux version.
+var tmuxNameForbidRegex = regexp.MustCompile(`[:.]`)
+
 // SanitizeNameSegment normalizes one component of a managed tmux session name:
-// whitespace runs stripped, dots replaced with underscores (tmux would do it
-// anyway). It is the per-segment half of toSanitizedName, exported so callers
-// composing qualified names (and collision checks predicting them) share the
-// exact rules the session layer applies.
+// whitespace runs stripped, then tmux's forbidden target-spec runes (: and .)
+// replaced with underscores — matching exactly what tmux itself does to a
+// session name, so the name we derive equals the one that lands on the socket.
+// It is the per-segment half of toSanitizedName, exported so callers composing
+// qualified names (and collision checks predicting them) share the exact rules
+// the session layer applies.
 func SanitizeNameSegment(s string) string {
 	s = nameWhitespaceRegex.ReplaceAllString(s, "")
-	return strings.ReplaceAll(s, ".", "_") // tmux replaces all . with _
+	return tmuxNameForbidRegex.ReplaceAllString(s, "_")
 }
-
-// windowNameForbidRegex matches the characters tmux forbids in a window name.
-// tmux >= 3.7 hard-rejects `new-session`/`rename-window` -n values containing a
-// colon or dot (its target-spec separators — WINDOW_NAME_FORBID ":." in tmux.h)
-// with "invalid window name: ...", where older tmux silently accepted them. Since
-// the failed new-session never registers a session, Start's existence poll then
-// times out — the whole terminal pane fails to open on tmux 3.7+ (#305).
-var windowNameForbidRegex = regexp.MustCompile(`[:.]`)
 
 // sanitizeWindowName makes a human-readable label safe as a tmux window name by
 // replacing each forbidden rune with '_' — exactly what tmux's own clean_name
-// would do once check_name passed. The window name is cosmetic (the managed conf
-// disables allow-rename/automatic-rename and blanks the window-status field), so
-// this substitution is never user-visible; it only keeps session startup working
-// across tmux versions. Applied at every -n boundary (new-session, rename-window).
+// would do once check_name passed. Unlike SanitizeNameSegment it preserves
+// whitespace, since spaces are legal in a window name (the label is cosmetic).
+// The window name is cosmetic (the managed conf disables allow-rename/
+// automatic-rename and blanks the window-status field), so this substitution is
+// never user-visible; it only keeps session startup working across tmux versions.
+// Applied at every -n boundary (new-session, rename-window).
 func sanitizeWindowName(s string) string {
-	return windowNameForbidRegex.ReplaceAllString(s, "_")
+	return tmuxNameForbidRegex.ReplaceAllString(s, "_")
 }
 
 // toSanitizedName converts an instance title into the legacy (unqualified)
