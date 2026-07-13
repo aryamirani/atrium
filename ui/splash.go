@@ -229,14 +229,6 @@ func flushSplashRun(sb, run *strings.Builder, styleIdx int, lut *splashLUT) {
 	run.Reset()
 }
 
-// overlayCenter composites fg centered over bg. Retained as the centered
-// convenience over overlayAt (and exercised directly by tests).
-func overlayCenter(bg, fg string) string {
-	fgLines, fgWidth := splashLines(fg)
-	bgLines, bgWidth := splashLines(bg)
-	return overlayAt(bg, fg, (bgWidth-fgWidth)/2, (len(bgLines)-len(fgLines))/2)
-}
-
 // overlayAt composites fg over bg (the ripple field) at cell (placeX, placeY),
 // splicing width-correctly around bg's ANSI escapes. Adapted from
 // overlay.PlaceOverlay (ui/overlay/overlay.go) but deliberately WITHOUT its

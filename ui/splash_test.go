@@ -33,6 +33,15 @@ func centeredClearing(h, halfW, halfH int) splashClearing {
 	return splashClearing{wordHalfW: halfW, wordHalfH: halfH, wordCenterRow: (h - 1) / 2}
 }
 
+// overlayCenter drops fg onto the center of bg via the production overlayAt. A
+// test-only convenience: the real render (renderSplashScene) positions the
+// wordmark and message explicitly, so nothing outside tests needs centering.
+func overlayCenter(bg, fg string) string {
+	fgLines, fgWidth := splashLines(fg)
+	bgLines, bgWidth := splashLines(bg)
+	return overlayAt(bg, fg, (bgWidth-fgWidth)/2, (len(bgLines)-len(fgLines))/2)
+}
+
 // TestRenderSplashFieldDeterministic locks the pure-function contract: identical
 // inputs must produce byte-identical output (so the field is snapshot-safe and
 // the tick can drive it without hidden state).
@@ -118,6 +127,62 @@ func TestOverlayCenterComposites(t *testing.T) {
 	require.Len(t, lines, h, "compositing must preserve height")
 	for i, l := range lines {
 		require.LessOrEqualf(t, lipgloss.Width(l), w, "composited line %d width", i)
+	}
+}
+
+// fieldGlyphs are ramp glyphs that only the ripple field emits — none appear in
+// the wordmark art (box-drawing + ░) or the onboarding message — so their
+// presence in a stripped render proves the field engaged, and their absence
+// proves the plain fallback did.
+const fieldGlyphs = "·:*"
+
+// TestPreviewSplashStringBounds drives the real idle path end to end
+// (UpdateContent(nil) → setSplashState → String) and locks the #251 box
+// contract at the String level: exactly h rows, each no wider than w, across a
+// spread of sizes — with the wordmark and full onboarding message both present.
+func TestPreviewSplashStringBounds(t *testing.T) {
+	const msg = "No agents running yet"
+	for _, s := range [][2]int{{50, 18}, {66, 20}, {80, 30}, {120, 40}, {51, 19}} {
+		w, h := s[0], s[1]
+		p := NewPreviewPane()
+		p.SetSize(w, h)
+		p.SetSplashFrame(6)
+		require.NoError(t, p.UpdateContent(nil))
+		require.True(t, p.previewState.splash, "%dx%d: idle screen must set splash", w, h)
+
+		out := p.String()
+		lines := strings.Split(out, "\n")
+		require.Lenf(t, lines, h, "%dx%d: line count", w, h)
+		for i, l := range lines {
+			require.LessOrEqualf(t, lipgloss.Width(l), w, "%dx%d: line %d width", w, h, i)
+		}
+		stripped := ansi.Strip(out)
+		require.Containsf(t, stripped, msg, "%dx%d: onboarding message must survive", w, h)
+		require.Containsf(t, stripped, "█", "%dx%d: wordmark must survive", w, h)
+		require.Truef(t, strings.ContainsAny(stripped, fieldGlyphs),
+			"%dx%d: ripple field must render behind the wordmark", w, h)
+	}
+}
+
+// TestPreviewSplashFallbackBelowFloor guards the size gate: below the splashFits
+// floor the idle screen must fall back to the plain centered wordmark — bounded,
+// panic-free, and with no field glyphs — never a clipped ripple.
+func TestPreviewSplashFallbackBelowFloor(t *testing.T) {
+	for _, s := range [][2]int{{49, 18}, {50, 17}, {40, 12}, {49, 17}, {10, 4}} {
+		w, h := s[0], s[1]
+		p := NewPreviewPane()
+		p.SetSize(w, h)
+		p.SetSplashFrame(6)
+		require.NoError(t, p.UpdateContent(nil))
+
+		out := p.String()
+		lines := strings.Split(out, "\n")
+		require.LessOrEqualf(t, len(lines), h, "%dx%d: too many lines", w, h)
+		for _, l := range lines {
+			require.LessOrEqualf(t, lipgloss.Width(l), w, "%dx%d: line too wide", w, h)
+		}
+		require.Falsef(t, strings.ContainsAny(ansi.Strip(out), fieldGlyphs),
+			"%dx%d: below the floor must render the plain wordmark, not the field", w, h)
 	}
 }
 
