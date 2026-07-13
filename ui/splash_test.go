@@ -79,22 +79,49 @@ func TestRenderSplashFieldAnimates(t *testing.T) {
 	require.NotEqual(t, f0, f1, "consecutive frames must differ")
 }
 
-// TestRenderSplashFieldVignetteCorners locks the round vignette: the corners (and
-// the height-limited top/bottom rows) fall outside the inscribed disc and stay
-// blank, so the field reads as a circle, not a rectangle.
+// TestRenderSplashFieldVignetteCorners locks the edge vignette: the outermost
+// rows and columns fade fully to blank at the pane border, so the full-bleed
+// field softens into the edges instead of hard-clipping into a lit rectangle.
 func TestRenderSplashFieldVignetteCorners(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 80, 30
 	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4)))
 	require.Len(t, lines, h)
-	// At 80x30 the disc is height-limited, so the first and last rows are fully
-	// outside it — entirely blank.
+	// The border rows fade to zero, so the first and last rows are entirely blank.
 	require.Equal(t, strings.Repeat(" ", w), lines[0], "top row must be blank")
 	require.Equal(t, strings.Repeat(" ", w), lines[h-1], "bottom row must be blank")
 	// And each corner is blank regardless.
 	for _, rc := range [][2]int{{0, 0}, {0, w - 1}, {h - 1, 0}, {h - 1, w - 1}} {
 		require.Equalf(t, byte(' '), lines[rc[0]][rc[1]], "corner (%d,%d)", rc[0], rc[1])
 	}
+}
+
+// TestRenderSplashFieldFillsPane guards the full-bleed fix: on a wide pane the
+// field must span most of the width — not sit as a disc inscribed to the shorter
+// (here vertical) axis, which would only reach ~half the width. It measures the
+// horizontal span of lit cells (rune-indexed, since ramp glyphs like · are
+// multi-byte).
+func TestRenderSplashFieldFillsPane(t *testing.T) {
+	pal := splashTestPalette()
+	w, h := 120, 30
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4)))
+	minCol, maxCol := w, -1
+	for _, l := range lines {
+		for col, r := range []rune(l) {
+			if r != ' ' {
+				if col < minCol {
+					minCol = col
+				}
+				if col > maxCol {
+					maxCol = col
+				}
+			}
+		}
+	}
+	require.GreaterOrEqual(t, maxCol, 0, "field must render some glyphs")
+	span := maxCol - minCol
+	require.Greaterf(t, span, int(float64(w)*0.7),
+		"field must fill most of the width (span=%d of w=%d)", span, w)
 }
 
 // TestRenderSplashFieldClearing verifies the center clearing is blank, so the
@@ -106,9 +133,12 @@ func TestRenderSplashFieldClearing(t *testing.T) {
 	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, chw, chh)))
 	centerRow := (h - 1) / 2
 	cx := (w - 1) / 2
+	// Rune-index the row: the field now fills the whole width, so multi-byte
+	// glyphs (·) before the clearing shift byte offsets off the column.
+	row := []rune(lines[centerRow])
 	// Along the center row the clearing spans |dx| < chw — those cells are blank.
 	for col := cx - (chw - 1); col <= cx+(chw-1); col++ {
-		require.Equalf(t, byte(' '), lines[centerRow][col],
+		require.Equalf(t, ' ', row[col],
 			"clearing cell (%d,%d) must be blank", centerRow, col)
 	}
 }

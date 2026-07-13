@@ -30,9 +30,29 @@ const (
 	// the rings breathe slowly rather than strobe.
 	driftPerFrame = 0.18
 
-	rippleFreq1 = 0.60 // primary ring spacing
-	rippleFreq2 = 0.30 // secondary interference band (drifts at a different rate)
-	rippleArms  = 5.0  // angular tendrils modulating the secondary band
+	// The field is a small sum of sines evaluated per cell: domain-warped
+	// concentric rings + an angular petal term + a diagonal plane wave + a slow
+	// spiral. Together they read as an organic plasma rather than plain rings,
+	// for a handful of extra trig calls per cell.
+	rippleFreq1 = 0.55  // primary ring spacing
+	rippleFreq2 = 0.30  // secondary interference band (drifts at a different rate)
+	rippleArms  = 5.0   // angular tendrils modulating the secondary band
+	rippleWarp  = 3.2   // domain-warp amplitude in cells: makes rings wavy/organic
+	rippleWarpF = 0.055 // domain-warp spatial frequency
+	planeFreqX  = 0.090 // diagonal plane-wave frequencies (adds plasma texture)
+	planeFreqY  = 0.060
+	spiralArms  = 3.0 // slow rotating spiral arm count
+	// rippleAmp is the sum of the term weights below; normalizes v into [0,1].
+	rippleAmp = 1.0 + 0.5 + 0.35 + 0.30
+
+	// edgeVignetteFrac is the fraction of each dimension over which the full-bleed
+	// field fades to black at the pane border, so it softens into the edges
+	// instead of hard-clipping into a rectangle.
+	edgeVignetteFrac = 0.16
+	// radialDim is how much the field dims from the wordmark (core) out to the
+	// farthest corner — gentle, so the field still fills the pane but stays
+	// anchored on the wordmark.
+	radialDim = 0.30
 
 	// splashRamp maps intensity to a glyph, light→heavy. Index 0 (space) is
 	// "nothing here"; every glyph is terminal-width 1 (downsample-safe).
@@ -144,27 +164,33 @@ func (c splashClearing) blanks(dx float64, row int) bool {
 		inEllipse(c.msgHalfW, c.msgHalfH, c.msgCenterRow)
 }
 
-// renderSplashField builds the colored ripple+vignette background: exactly h
-// rows of exactly w visible cells, with the clearing ellipses blanked out for the
-// composited text. The rings and the round vignette both emanate from the
-// wordmark's center (clear.wordCenterRow), not the raw pane center, so the field
-// stays anchored on the wordmark even as the message below shifts the visual
-// weight down. Pure over its inputs (deterministic, snapshot-testable); returns
-// "" when the pane is too small to inscribe a disc.
+// renderSplashField builds the colored plasma background: exactly h rows of
+// exactly w visible cells, with the clearing ellipses blanked out for the
+// composited text. The field fills the whole pane and softens only near the four
+// borders (an edge vignette), rather than being a single disc inscribed to the
+// shorter axis — so a wide pane no longer leaves big empty side-margins. The ring
+// pattern emanates from the wordmark's center (clear.wordCenterRow) and the
+// color gradient / gentle radial dim are normalized to the farthest corner, so
+// the field stays visually anchored on the wordmark while still reaching the
+// edges. Pure over its inputs (deterministic, snapshot-testable); returns "" on a
+// degenerate pane.
 func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing) string {
 	if w <= 0 || h <= 0 {
 		return ""
 	}
 	cx := float64(w-1) / 2
 	cyFocal := float64(clear.wordCenterRow)
-	// Inscribe the vignette disc to the nearest edge from the focal row
-	// (aspect-corrected) so the corners and side-margins fall outside it, stay
-	// blank, and the disc never spills past the pane.
-	vEdge := math.Min(cyFocal, float64(h-1)-cyFocal)
-	radius := math.Min(cx, vEdge*cellAspect)
-	if radius <= 0 {
+	// Distance from the focal point to the farthest corner: the denominator for
+	// the color gradient and the core→rim dim, so both span the whole pane.
+	maxD := math.Hypot(
+		math.Max(cx, float64(w-1)-cx),
+		math.Max(cyFocal, float64(h-1)-cyFocal)*cellAspect)
+	if maxD <= 0 {
 		return ""
 	}
+	// Border-fade reach in cells (min 1 so a tiny pane still fades, never /0).
+	marginX := math.Max(1, float64(w)*edgeVignetteFrac)
+	marginY := math.Max(1, float64(h)*edgeVignetteFrac)
 
 	lut := splashLUTFor(pal)
 	nColors := len(lut.styles)
@@ -178,28 +204,34 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clear splashClearing)
 		if row > 0 {
 			sb.WriteByte('\n')
 		}
-		dy := (float64(row) - cyFocal) * cellAspect
+		dyCells := float64(row) - cyFocal
+		dy := dyCells * cellAspect
+		edgeY := smoothstep(0, 1, clamp01(math.Min(float64(row), float64(h-1-row))/marginY))
 		curIdx := -1 // -1 marks a blank (uncolored) run
 		for col := 0; col < w; col++ {
 			dx := float64(col) - cx
 			idx, ch := -1, ' '
 
-			d := math.Hypot(dx, dy)
-			r := d / radius
-			if r < 1 && !clear.blanks(dx, row) {
-				theta := math.Atan2(dy, dx)
+			if edgeY > 0 && !clear.blanks(dx, row) {
+				// Smooth (unwarped) radius drives color + the core→rim dim; the
+				// warped radius drives the ring pattern, so the rings ripple
+				// organically while the color gradient stays clean.
+				dRaw := math.Hypot(dx, dy)
+				wx := dx + rippleWarp*math.Sin(dy*rippleWarpF+phase*0.5)
+				wy := dy + rippleWarp*math.Sin(dx*rippleWarpF-phase*0.4)
+				d := math.Hypot(wx, wy)
+				theta := math.Atan2(wy, wx)
 				v := math.Sin(d*rippleFreq1-phase) +
-					0.5*math.Sin(d*rippleFreq2-phase*0.6+theta*rippleArms)
-				intensity := clamp01((v/1.5 + 1) * 0.5)
-				// Keep the mid-field vivid, then fade to the round rim. Fading
-				// only past r≈0.3 (rather than immediately) lets the rings just
-				// outside the clearing read as bright, so the field emanates with
-				// energy instead of a faint haze.
-				envelope := 1 - smoothstep(0.30, 1.02, r)
-				lit := intensity * envelope
+					0.5*math.Sin(d*rippleFreq2-phase*0.6+theta*rippleArms) +
+					0.35*math.Sin(dx*planeFreqX-dy*planeFreqY-phase*0.9) +
+					0.30*math.Sin(theta*spiralArms+d*0.15+phase*0.5)
+				intensity := clamp01((v/rippleAmp + 1) * 0.5)
+				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
+				radial := 1 - radialDim*clamp01(dRaw/maxD)
+				lit := intensity * edgeX * edgeY * radial
 				if g := clampInt(int(lit*float64(maxGlyph)), 0, maxGlyph); g > 0 {
 					ch = ramp[g]
-					idx = clampInt(int(r*float64(nColors-1)), 0, nColors-1)
+					idx = clampInt(int((dRaw/maxD)*float64(nColors-1)), 0, nColors-1)
 				}
 			}
 
