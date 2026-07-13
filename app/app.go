@@ -210,11 +210,14 @@ type home struct {
 	// swept every metadataFullSweepEvery ticks (see tickUpdateMetadataCmd); the counter
 	// drives that cadence.
 	metadataTick uint64
-	// splashFrame is the empty-state splash's animation clock, advanced by the
-	// dedicated splash tick (~30fps, see handleSplashTick) and pushed to the
-	// panes that render the nebula. int (not uint64) so the push needs no
-	// overflow-prone conversion; it wraps only after centuries and the phase
-	// is taken mod 2π anyway. Zero value is fine.
+	// splashClock is the empty-state splash's animation clock in nominal
+	// 60fps frame units, advanced by the dedicated splash tick (see
+	// handleSplashTick) in steps sized to the actual tick interval — so an
+	// ATRIUM_SPLASH_FPS override changes smoothness, never speed. The floor
+	// is pushed to the panes that render the nebula (splashFrame mirrors it
+	// for tests). It only ever advances while the splash is on screen, so an
+	// overlay freezes the field exactly where it was. Zero value is fine.
+	splashClock float64
 	splashFrame int
 	// splashTicking marks a live splash tick loop, so the 100ms preview tick
 	// (which re-arms the animation whenever the idle splash is on screen)

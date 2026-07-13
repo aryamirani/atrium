@@ -8,7 +8,10 @@ package app
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZviBaratz/atrium/log"
@@ -46,13 +49,27 @@ func (m *home) handleDriftFound(msg driftFoundMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// splashTickInterval is the empty-state splash's animation cadence (~30fps).
-// The splash runs on its own tick, decoupled from the 100ms preview poll — at
-// the poll rate (frames pushed at ~5Hz) the drift read as visibly choppy. The
-// loop only exists while the idle splash is actually on screen
-// (handleSplashTick dies the moment it isn't), so the higher rate costs
-// nothing once a session exists or an overlay is up.
-const splashTickInterval = 33 * time.Millisecond
+// splashDefaultFPS is the empty-state splash's animation rate. The splash
+// runs on its own tick, decoupled from the 100ms preview poll — at the poll
+// rate (frames pushed at ~5Hz) the drift read as visibly choppy. 60 is also
+// Bubble Tea's renderer cap, so a higher rate would only burn CPU. The loop
+// only exists while the idle splash is actually on screen (handleSplashTick
+// dies the moment it isn't), so the rate costs nothing once a session exists
+// or an overlay is up.
+const splashDefaultFPS = 60
+
+// splashTickInterval resolves the splash frame interval once per process,
+// honoring the dev-only ATRIUM_SPLASH_FPS override (clamped to 5–60) — a
+// live A/B knob for slower terminals (e.g. over SSH) without a rebuild.
+var splashTickInterval = sync.OnceValue(func() time.Duration {
+	fps := splashDefaultFPS
+	if s := os.Getenv("ATRIUM_SPLASH_FPS"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			fps = min(max(v, 5), 60)
+		}
+	}
+	return time.Second / time.Duration(fps)
+})
 
 // splashTickMsg drives the dedicated splash animation loop (see armSplashTick).
 type splashTickMsg struct{}
@@ -80,20 +97,29 @@ func (m *home) armSplashTick() tea.Cmd {
 
 func (m *home) splashTickCmd() tea.Cmd {
 	return func() tea.Msg {
-		time.Sleep(splashTickInterval)
+		time.Sleep(splashTickInterval())
 		return splashTickMsg{}
 	}
 }
 
-// handleSplashTick advances the splash one frame and re-arms itself — or dies
-// (clearing splashTicking) as soon as the splash leaves the screen, so a
-// parked session view or a modal never repaints at animation rate.
+// splashTickAdvance is the clock step per tick in nominal 60fps frame units:
+// exactly 1 at the default rate, proportionally more at a lower override —
+// the animation covers the same distance per second however often it paints.
+var splashTickAdvance = sync.OnceValue(func() float64 {
+	return float64(splashTickInterval()) / float64(time.Second/splashDefaultFPS)
+})
+
+// handleSplashTick advances the splash clock one tick's worth of nominal
+// frames and re-arms itself — or dies (clearing splashTicking) as soon as
+// the splash leaves the screen, so a parked session view or a modal never
+// repaints at animation rate.
 func (m *home) handleSplashTick() (tea.Model, tea.Cmd) {
 	if !m.splashAnimating() {
 		m.splashTicking = false
 		return m, nil
 	}
-	m.splashFrame++
+	m.splashClock += splashTickAdvance()
+	m.splashFrame = int(m.splashClock)
 	m.tabbedWindow.SetSplashFrame(m.splashFrame)
 	return m, m.splashTickCmd()
 }
