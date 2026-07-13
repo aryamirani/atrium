@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ZviBaratz/atrium/ui/theme"
 )
@@ -57,13 +58,25 @@ func (v splashVariant) isFractal() bool {
 	return v == splashVariantJulia || v == splashVariantMandala
 }
 
-// splashDefaultVariant is what production renders when no override is set.
+// splashDefaultVariant is the fallback for an unrecognized override value
+// (an unset override rotates instead — see splashActiveVariant) and the
+// variant the contract tests pin.
 const splashDefaultVariant = splashVariantFBM
 
-// splashActiveVariant resolves the variant once per process: the dev-only
-// ATRIUM_SPLASH_VARIANT env override, else the default. Only splashScene
-// consults it — renderSplashField takes the variant as a parameter and stays
-// pure over its inputs.
+// splashRotation is the pool a launch draws from when no override is set:
+// every finished variant except the superseded legacy baseline (still
+// reachable via the env override).
+var splashRotation = []splashVariant{
+	splashVariantFBM, splashVariantBraille, splashVariantFlow,
+	splashVariantJulia, splashVariantMandala,
+}
+
+// splashActiveVariant resolves the variant once per process: the
+// ATRIUM_SPLASH_VARIANT env override if set, else a per-launch pick from the
+// rotation pool (seeded from the launch time — a fresh look each launch).
+// Resolving once is what keeps the preview and terminal panes in agreement,
+// and only splashScene consults it — renderSplashField takes the variant as
+// a parameter and stays pure over its inputs.
 var splashActiveVariant = sync.OnceValue(func() splashVariant {
 	switch os.Getenv("ATRIUM_SPLASH_VARIANT") {
 	case "legacy":
@@ -78,13 +91,15 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 		return splashVariantJulia
 	case "e", "mandala":
 		return splashVariantMandala
+	case "":
+		return splashRotation[time.Now().UnixNano()%int64(len(splashRotation))]
 	}
 	return splashDefaultVariant
 })
 
 // The domain-warped fBm field ("a" and its derivatives). Frequencies are per
-// aspect-corrected cell; drifts are noise-units per phase-unit (phase advances
-// driftPerFrame per pushed frame, ~0.9/s at the 5 Hz push).
+// aspect-corrected cell; drifts are noise-units per phase-unit (phase
+// advances driftPerFrame per frame, ~0.9/s at the ~30fps splash tick).
 const (
 	fieldFreq  = 0.10 // base octave frequency → ~10-cell features
 	fbmOctaves = 3

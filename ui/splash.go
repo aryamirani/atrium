@@ -25,9 +25,11 @@ const (
 	// vignette render circular rather than oval.
 	cellAspect = 2.0
 
-	// driftPerFrame is the outward phase advance per pushed animation frame (~5Hz,
-	// see handlePreviewTick). Small, so the rings breathe slowly rather than strobe.
-	driftPerFrame = 0.18
+	// driftPerFrame is the outward phase advance per animation frame (~30fps,
+	// see the app's splash tick) — ~0.9 phase units/second, the same visual
+	// speed the field had at its original 5Hz push (0.18/frame), just six
+	// times smoother along the way.
+	driftPerFrame = 0.03
 
 	// The field is a small sum of sines evaluated per cell: two domain-warped
 	// concentric ring octaves + rotationally-symmetric petals + an isotropic

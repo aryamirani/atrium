@@ -210,12 +210,16 @@ type home struct {
 	// swept every metadataFullSweepEvery ticks (see tickUpdateMetadataCmd); the counter
 	// drives that cadence.
 	metadataTick uint64
-	// splashFrame is the empty-state splash's animation clock, advanced once per
-	// 100ms preview tick (see advanceSplashFrame) and pushed to the panes that
-	// render the nebula. int (not uint64) so the push needs no overflow-prone
-	// conversion; it wraps only after centuries and the phase is taken mod 2π
-	// anyway. Zero value is fine.
+	// splashFrame is the empty-state splash's animation clock, advanced by the
+	// dedicated splash tick (~30fps, see handleSplashTick) and pushed to the
+	// panes that render the nebula. int (not uint64) so the push needs no
+	// overflow-prone conversion; it wraps only after centuries and the phase
+	// is taken mod 2π anyway. Zero value is fine.
 	splashFrame int
+	// splashTicking marks a live splash tick loop, so the 100ms preview tick
+	// (which re-arms the animation whenever the idle splash is on screen)
+	// never starts a second one. The loop clears it as it dies.
+	splashTicking bool
 	// attachGen counts terminal attaches. It is bumped by attachCommand.Run — on the
 	// suspended event-loop goroutine, so it is still main-thread state — once an
 	// attach succeeds. Pane-state capture cmds (metadata tick, detach sweep,
@@ -438,6 +442,7 @@ func (m *home) Init() tea.Cmd {
 			time.Sleep(100 * time.Millisecond)
 			return previewTickMsg{}
 		},
+		m.armSplashTick(), // idle splash animation, live from the first frame
 		tickUpdateMetadataCmd(m.ctx, m.snapshotActiveInstances(), m.list.GetSelectedInstance(), true, m.attachGen), // first tick: full sweep
 		m.updateCheckCmd(),   // nil (inert) is fine: tea.Batch skips nil cmds
 		m.driftCheckCmd(),    // agent-heuristic drift hint

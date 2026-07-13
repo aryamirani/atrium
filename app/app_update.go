@@ -99,6 +99,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.showReleaseNotes(msg.version, msg.notes, msg.url)
 	case previewTickMsg:
 		return m.handlePreviewTick(msg)
+	case splashTickMsg:
+		return m.handleSplashTick()
 	case autoNameDoneMsg:
 		m.generatingName = false
 		if msg.err != nil {

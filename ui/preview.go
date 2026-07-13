@@ -56,7 +56,7 @@ type PreviewPane struct {
 	height int
 
 	// splashFrame is the current animation frame for the idle-splash ripple
-	// field, pushed from the app's 100ms tick via SetSplashFrame.
+	// field, pushed from the app's ~30fps splash tick via SetSplashFrame.
 	splashFrame  int
 	previewState previewState
 	isScrolling  bool
@@ -107,7 +107,7 @@ func (p *PreviewPane) SetSize(width, maxHeight int) {
 }
 
 // SetSplashFrame stores the current splash animation frame, pushed from the
-// app's 100ms tick. It only affects the idle-splash render in String().
+// app's ~30fps splash tick. It only affects the idle-splash render in String().
 func (p *PreviewPane) SetSplashFrame(n int) { p.splashFrame = n }
 
 // setFallbackState sets the preview state with fallback text and a message
