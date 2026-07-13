@@ -105,9 +105,10 @@ func TestErrBox_SetNotice_ErrorLevelReportsHasError(t *testing.T) {
 
 func TestErrBox_InfoAndErrorStyleDiffer(t *testing.T) {
 	// Force color output for this test to verify style differences.
-	restore := func() {}
 	oldProfile := lipgloss.ColorProfile()
-	defer func() { lipgloss.SetColorProfile(oldProfile); restore() }()
+	defer func() { lipgloss.SetColorProfile(oldProfile) }()
+	// Forcing the profile mutates lipgloss's package-global renderer; safe because
+	// package ui tests run sequentially (no t.Parallel).
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
 	info := NewErrBox()

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -135,4 +136,25 @@ func TestWarnMissingProgram_HintBarOffFallsBackToErrRow(t *testing.T) {
 	assert.True(t, h.errBox.HasContent(), "the warning must claim the errBox row")
 	assert.True(t, h.errBox.HasError(), "a missing-program warning is error-level")
 	assert.False(t, h.menu.HasNotice())
+}
+
+// flashNotice holds only one transient surface at a time: when a later notice
+// can ride the menu row, any stale errBox fallback row from an earlier notice is
+// cleared, so the two never double-display (#287).
+func TestFlashNotice_MenuNoticeClearsStaleErrBox(t *testing.T) {
+	h := newCreateFormHome(t)
+	off := false
+	h.appConfig.HintBar = &off
+
+	// Hint bar off: the notice falls back to the errBox row.
+	h.flashNotice("branch copied", ui.NoticeInfo)
+	require.True(t, h.errBox.HasContent(), "hint bar off routes the notice to the errBox row")
+
+	// Bar now available (e.g. filter/visual forces it visible): the next notice
+	// rides the menu row and the stale errBox row is dropped.
+	on := true
+	h.appConfig.HintBar = &on
+	h.flashNotice("pushed changes", ui.NoticeInfo)
+	assert.True(t, h.menu.HasNotice(), "the new notice rides the menu row")
+	assert.False(t, h.errBox.HasContent(), "the stale errBox row must be cleared")
 }

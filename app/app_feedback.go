@@ -88,7 +88,11 @@ func (m *home) showMenuNotice(text string, level ui.NoticeLevel) tea.Cmd {
 // handleInfoNotice, and warnMissingProgram (#287).
 func (m *home) flashNotice(text string, level ui.NoticeLevel) tea.Cmd {
 	if cmd := m.showMenuNotice(text, level); cmd != nil {
+		m.errBox.Clear() // one surface at a time: drop any stale errBox row
 		return cmd
+	}
+	if m.menu != nil {
+		m.menu.ClearNotice() // one surface at a time: drop any stale menu notice
 	}
 	m.errBox.SetNotice(text, level)
 	m.recomputeLayout() // give the notice its row; panes shrink by one
