@@ -42,13 +42,7 @@ func (m *home) handleError(err error) tea.Cmd {
 		return m.showInfo(err.Error()) // showInfo logs the message itself
 	}
 	log.ErrorLog.Printf("%v", err)
-	if m.menuVisible() && m.menu != nil {
-		m.menu.SetNotice(err.Error(), ui.NoticeError)
-	} else {
-		m.errBox.SetError(err)
-		m.recomputeLayout() // give the error its row; panes shrink by one
-	}
-	return m.scheduleNoticeHide()
+	return m.flashNotice(err.Error(), ui.NoticeError)
 }
 
 // persistInstances writes the current instance list to disk. It is the single
@@ -73,16 +67,50 @@ func (m *home) moveAndPersist(move func() bool) (tea.Model, tea.Cmd) {
 	return m, m.instanceChanged()
 }
 
-// handleInfoNotice flashes a neutral acknowledgment ("branch copied") on the
-// hint bar's reserved row. Unlike errors, info is chrome: when the user runs
-// without the hint bar there is no reserved row to ride, so the notice is
-// dropped rather than claiming one.
-func (m *home) handleInfoNotice(text string) tea.Cmd {
+// showMenuNotice shows a transient toast on the hint bar's reserved row when the
+// bar is up, returning the command that auto-hides it; it returns nil (showing
+// nothing) when the row isn't available — the hint bar is off, or a modal owns
+// the screen. On success it clears any stale errBox fallback row so only one
+// surface ever carries a toast. Callers that have their own persistent fallback
+// for the row-unavailable case (the drift panel badge, the buffered update
+// notice) use this directly so they don't spill onto the errBox row (#287/#108).
+func (m *home) showMenuNotice(text string, level ui.NoticeLevel) tea.Cmd {
 	if !m.menuVisible() || m.menu == nil {
 		return nil
 	}
-	m.menu.SetNotice(text, ui.NoticeInfo)
+	m.menu.SetNotice(text, level)
+	// One surface at a time: the notice now rides the menu row, so drop any stale
+	// errBox fallback row from an earlier notice and recompute so the panes
+	// reclaim that row (else the frame renders one line short of the terminal).
+	if m.errBox != nil && m.errBox.HasContent() {
+		m.errBox.Clear()
+		m.recomputeLayout()
+	}
 	return m.scheduleNoticeHide()
+}
+
+// flashNotice shows a transient toast on the hint bar's reserved row when the
+// bar is visible, else on the errBox's fallback row, styled by level. The toast
+// auto-hides after errToastDuration via scheduleNoticeHide. It is the single
+// chokepoint for menu-or-errBox fallback shared by handleError,
+// handleInfoNotice, and warnMissingProgram (#287).
+func (m *home) flashNotice(text string, level ui.NoticeLevel) tea.Cmd {
+	if cmd := m.showMenuNotice(text, level); cmd != nil {
+		return cmd // showMenuNotice already dropped any stale errBox row
+	}
+	if m.menu != nil {
+		m.menu.ClearNotice() // one surface at a time: drop any stale menu notice
+	}
+	m.errBox.SetNotice(text, level)
+	m.recomputeLayout() // give the notice its row; panes shrink by one
+	return m.scheduleNoticeHide()
+}
+
+// handleInfoNotice flashes a neutral acknowledgment ("branch copied"). When the
+// hint bar is up it rides the bar's reserved row; when the bar is off it falls
+// back to the errBox row (#287) rather than being dropped.
+func (m *home) handleInfoNotice(text string) tea.Cmd {
+	return m.flashNotice(text, ui.NoticeInfo)
 }
 
 // surfaceLostRecoveries makes lost-session recoveries visible instead of a silent

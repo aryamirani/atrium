@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestErrBox_Fits(t *testing.T) {
@@ -73,5 +76,62 @@ func TestErrBox_String_FlattenMultiline(t *testing.T) {
 	}
 	if !strings.Contains(got, "//") {
 		t.Errorf("String() should join multiline with //, got %q", got)
+	}
+}
+
+func TestErrBox_SetNotice_Info(t *testing.T) {
+	e := NewErrBox()
+	e.SetSize(80, 1)
+	e.SetNotice("branch copied", NoticeInfo)
+
+	if !e.HasContent() {
+		t.Fatal("HasContent should be true after SetNotice")
+	}
+	if e.HasError() {
+		t.Fatal("an info notice must not report HasError")
+	}
+	if got := e.String(); !strings.Contains(got, "branch copied") {
+		t.Errorf("String() = %q, expected to contain notice text", got)
+	}
+}
+
+func TestErrBox_SetNotice_ErrorLevelReportsHasError(t *testing.T) {
+	e := NewErrBox()
+	e.SetNotice("boom", NoticeError)
+	if !e.HasError() {
+		t.Fatal("an error-level notice must report HasError")
+	}
+}
+
+func TestErrBox_InfoAndErrorStyleDiffer(t *testing.T) {
+	// Force color output for this test to verify style differences.
+	oldProfile := lipgloss.ColorProfile()
+	defer func() { lipgloss.SetColorProfile(oldProfile) }()
+	// Forcing the profile mutates lipgloss's package-global renderer; safe because
+	// package ui tests run sequentially (no t.Parallel).
+	lipgloss.SetColorProfile(termenv.TrueColor)
+
+	info := NewErrBox()
+	info.SetSize(80, 1)
+	info.SetNotice("same text", NoticeInfo)
+
+	err := NewErrBox()
+	err.SetSize(80, 1)
+	err.SetError(errors.New("same text"))
+
+	if info.String() == err.String() {
+		t.Error("info (neutral) and error (danger) must render with different styling")
+	}
+}
+
+func TestErrBox_ClearResetsContent(t *testing.T) {
+	e := NewErrBox()
+	e.SetNotice("branch copied", NoticeInfo)
+	e.Clear()
+	if e.HasContent() {
+		t.Fatal("HasContent should be false after Clear")
+	}
+	if got := e.String(); got != "" {
+		t.Errorf("String() after Clear = %q, want empty", got)
 	}
 }

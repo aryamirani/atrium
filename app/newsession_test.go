@@ -31,7 +31,7 @@ func newTestHomeWithInstances(t *testing.T, paths ...string) *home {
 		require.NoError(t, err)
 		l.AddInstance(inst)
 	}
-	return &home{ctx: context.Background(), list: l, appState: config.DefaultState()}
+	return &home{ctx: context.Background(), list: l, appState: config.DefaultState(), errBox: ui.NewErrBox()}
 }
 
 // newCreateFormHome builds a home wired enough to drive the `N` (create-form) flow.

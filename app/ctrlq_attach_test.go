@@ -46,8 +46,13 @@ func TestCtrlQ_OnPausedInstance_IsNoOp(t *testing.T) {
 	model, cmd := h.handleKeyPress(tea.KeyMsg{Type: tea.KeyCtrlQ})
 
 	require.NotNil(t, model)
-	assert.Nil(t, cmd, "ctrl+q on a paused session should be a no-op, like enter")
-	assert.Equal(t, stateDefault, h.state, "ctrl+q must not change state for a paused selection")
+	assert.Equal(t, stateDefault, h.state, "ctrl+q must not attach or change state for a paused selection")
+	// The paused guard is a state-guard info notice: like enter, ctrl+q refuses to
+	// attach a paused session and explains why. With the hint bar off it now surfaces
+	// on the errBox row (#287) instead of being silently dropped.
+	require.NotNil(t, cmd, "the surfaced guard notice schedules its own hide")
+	assert.True(t, h.errBox.HasContent(), "the paused guard notice must be surfaced, not dropped")
+	assert.False(t, h.errBox.HasError(), "a state-guard info notice must not look like an error")
 }
 
 // Scope guarantee: ctrl+q's attach behavior is main-screen-only. Inside the

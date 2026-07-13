@@ -466,7 +466,7 @@ func (m *home) View() string {
 	if m.menuVisible() {
 		parts = append(parts, m.menu.String())
 	}
-	if m.errBox.HasError() {
+	if m.errBox.HasContent() {
 		parts = append(parts, m.errBox.String())
 	}
 	mainView := lipgloss.JoinVertical(lipgloss.Left, parts...)
