@@ -22,12 +22,12 @@ import (
 )
 
 func (m *home) handleDriftFound(msg driftFoundMsg) (tea.Model, tea.Cmd) {
-	// Try to show the hint first. handleInfoNotice returns nil when the hint
+	// Try to show the hint first. showMenuNotice returns nil when the hint
 	// bar can't render right now (e.g. hint_bar off, or a modal owns the
 	// screen); in that case record no ack so the hint re-arms on a later
 	// startup instead of being silently consumed. atrium doctor remains the
 	// durable surface meanwhile.
-	cmd := m.handleInfoNotice(fmt.Sprintf("⚠ agent heuristics may be stale — run `%s doctor`", m.hintBinName()))
+	cmd := m.showMenuNotice(fmt.Sprintf("⚠ agent heuristics may be stale — run `%s doctor`", m.hintBinName()), ui.NoticeInfo)
 	if cmd == nil {
 		// Toast dropped (hint bar off, or a modal owns the screen). Surface the
 		// drift via the persistent panel badge instead — the durable fallback

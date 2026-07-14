@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ZviBaratz/atrium/session"
+	"github.com/ZviBaratz/atrium/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -51,18 +52,20 @@ func TestHandleInfoNotice_MenuCarriesIt(t *testing.T) {
 	assert.False(t, h.errBox.HasError(), "info must never look like an error")
 }
 
-// Info acknowledgments are chrome; with the hint bar off they are dropped
-// rather than claiming a row (errors, by contrast, always surface).
-func TestHandleInfoNotice_HintBarOffDropsIt(t *testing.T) {
+// Info acknowledgments used to be dropped with the hint bar off (#287). They now
+// fall back to the errBox row — shown, not silently discarded — but styled
+// neutrally so they never read as an error.
+func TestHandleInfoNotice_HintBarOffFallsBackToErrRow(t *testing.T) {
 	h := newCreateFormHome(t)
 	off := false
 	h.appConfig.HintBar = &off
 
 	cmd := h.handleInfoNotice("branch copied")
 
-	assert.Nil(t, cmd)
-	assert.False(t, h.menu.HasNotice())
-	assert.False(t, h.errBox.HasError())
+	require.NotNil(t, cmd, "a fallen-back info notice still schedules its own hide")
+	assert.True(t, h.errBox.HasContent(), "the notice must claim the errBox row")
+	assert.False(t, h.errBox.HasError(), "info must never look like an error")
+	assert.False(t, h.menu.HasNotice(), "the hidden hint bar carries nothing")
 }
 
 // pressKey drives a single rune keybinding through the default-state handler.
@@ -118,4 +121,50 @@ func TestHideNotice_StaleGenerationIgnored(t *testing.T) {
 
 	h.Update(hideErrMsg{gen: h.noticeGen})
 	assert.False(t, h.menu.HasNotice(), "the matching hide clears the notice")
+}
+
+// With the hint bar off, the missing-program warning must land on the errBox row
+// rather than vanish — it goes through the same flashNotice fallback (#287).
+func TestWarnMissingProgram_HintBarOffFallsBackToErrRow(t *testing.T) {
+	h := newCreateFormHome(t)
+	off := false
+	h.appConfig.HintBar = &off
+
+	cmd := h.warnMissingProgram("definitely-not-a-real-program")
+
+	require.NotNil(t, cmd, "the warning schedules its own hide")
+	assert.True(t, h.errBox.HasContent(), "the warning must claim the errBox row")
+	assert.True(t, h.errBox.HasError(), "a missing-program warning is error-level")
+	assert.False(t, h.menu.HasNotice())
+}
+
+// flashNotice holds only one transient surface at a time: when a later notice
+// can ride the menu row, any stale errBox fallback row from an earlier notice is
+// cleared, so the two never double-display (#287). Clearing that row must also
+// recompute the layout so the panes reclaim it — otherwise, when the menu is
+// already occupying its own row, the frame renders one line short of the
+// terminal.
+func TestFlashNotice_MenuNoticeClearsStaleErrBox(t *testing.T) {
+	h := newCreateFormHome(t)
+	off := false
+	h.appConfig.HintBar = &off
+	h.updateHandleWindowSizeEvent(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Hint bar off, menu hidden: the notice falls back to the errBox row.
+	h.flashNotice("branch copied", ui.NoticeInfo)
+	require.True(t, h.errBox.HasContent(), "hint bar off routes the notice to the errBox row")
+
+	// An action forces the menu visible alongside the errBox row (its own line):
+	// menu + errBox both claim a row, so the panes shrink to keep the frame full.
+	h.actionInFlight = true
+	h.recomputeLayout()
+	require.Equal(t, 24, lipgloss.Height(h.View()), "menu + errBox rows keep the frame full")
+
+	// The next notice now rides the menu row; the stale errBox row is dropped and
+	// the panes must grow back so the frame stays exactly the terminal height.
+	h.flashNotice("pushed changes", ui.NoticeInfo)
+	assert.True(t, h.menu.HasNotice(), "the new notice rides the menu row")
+	assert.False(t, h.errBox.HasContent(), "the stale errBox row must be cleared")
+	assert.Equal(t, 24, lipgloss.Height(h.View()),
+		"reclaiming the errBox row must recompute the layout, not leave the frame a line short")
 }

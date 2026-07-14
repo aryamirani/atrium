@@ -623,6 +623,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.handleRenameState(msg)
 	}
 
+	if m.state == stateQueue {
+		return m.handleQueueState(msg)
+	}
+
 	// Settings, like the other overlay states, must run before the global quit
 	// handling so q/esc and printable keys reach the panel.
 	if m.state == stateSettings {
@@ -730,6 +734,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, tea.WindowSize()
 	case keys.KeyQuickSend:
 		return m.openQuickSend()
+	case keys.KeyQueue:
+		return m.openQueue()
 	case keys.KeyApprove:
 		return m.approveSelected()
 	case keys.KeyCopyBranch:

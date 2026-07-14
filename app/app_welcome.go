@@ -109,11 +109,5 @@ func (m *home) warnMissingProgram(program string) tea.Cmd {
 	} else {
 		text = "no default program set — press , to choose one"
 	}
-	if m.menuVisible() && m.menu != nil {
-		m.menu.SetNotice(text, ui.NoticeError)
-	} else {
-		m.errBox.SetError(fmt.Errorf("%s", text))
-		m.recomputeLayout()
-	}
-	return m.scheduleNoticeHide()
+	return m.flashNotice(text, ui.NoticeError)
 }

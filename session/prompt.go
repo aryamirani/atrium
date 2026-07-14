@@ -76,16 +76,30 @@ func promptSignature(prompt string) string {
 	return ""
 }
 
-// boxHasSignature reports whether the agent's input box currently contains sig (squashed).
-func boxHasSignature(ts *tmux.Session, sig string) bool {
-	if sig == "" {
-		return false
-	}
+// boxHoldsPrompt reports whether the composer currently holds this prompt: either its first-line
+// signature is visible (inline text — single-line, or a multi-line paste the agent did not
+// collapse), or — for a multi-line prompt the agent collapsed into a placeholder chip — a
+// collapsed-paste chip is present. Without this, a long prompt that claude renders as
+// "[Pasted text +N lines]" never confirms as landed, so it is never submitted and is re-pasted on
+// every retry (see SendPrompt).
+//
+// A collapsed-paste chip carries no prompt text to match, so it is trusted only for a multi-line
+// prompt (the bracketed-paste path) and only because it is our own staged paste: SendPrompt is the
+// sole writer of an awaiting-input composer, which starts empty when delivery begins, so a chip
+// seen mid-delivery is the paste this call — or a prior not-yet-confirmed retry — placed, never a
+// stray unrelated one. A single-line send always uses the exact signature.
+//
+// It reads the box once and classifies that single readback for both signals, so a poll costs one
+// capture rather than a signature capture plus a separate chip capture.
+func boxHoldsPrompt(ts *tmux.Session, prompt, sig string) bool {
 	text, ok := ts.InputBoxText()
 	if !ok {
 		return false
 	}
-	return strings.Contains(squashSpace(text), sig)
+	if sig != "" && strings.Contains(squashSpace(text), sig) {
+		return true
+	}
+	return strings.Contains(prompt, "\n") && ts.IsCollapsedPaste(text)
 }
 
 // confirmBox polls pred up to attempts times, spaced by promptVerifyInterval, returning
@@ -149,11 +163,11 @@ func (i *Instance) SendPrompt(prompt string) error {
 	sig := promptSignature(prompt)
 	// Skip typing if a previous attempt already staged this prompt in the box but could
 	// not confirm its submission; retype only when the box does not already hold it.
-	if !boxHasSignature(ts, sig) {
+	if !boxHoldsPrompt(ts, prompt, sig) {
 		if err := i.typePrompt(ts, prompt); err != nil {
 			return err
 		}
-		if !confirmBox(func() bool { return boxHasSignature(ts, sig) }, promptLandAttempts) {
+		if !confirmBox(func() bool { return boxHoldsPrompt(ts, prompt, sig) }, promptLandAttempts) {
 			return errPromptNotLanded
 		}
 	}
@@ -161,7 +175,7 @@ func (i *Instance) SendPrompt(prompt string) error {
 	if err := ts.TapEnter(); err != nil {
 		return fmt.Errorf("error submitting prompt to tmux session: %w", err)
 	}
-	if !confirmBox(func() bool { return !boxHasSignature(ts, sig) }, promptSubmitAttempts) {
+	if !confirmBox(func() bool { return !boxHoldsPrompt(ts, prompt, sig) }, promptSubmitAttempts) {
 		return errPromptNotSubmitted
 	}
 	return nil

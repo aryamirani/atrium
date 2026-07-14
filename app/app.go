@@ -133,6 +133,8 @@ const (
 	stateConfirm
 	// stateRename is the state when the user is editing a session's display label.
 	stateRename
+	// stateQueue is the state when the pending-prompt management overlay is up.
+	stateQueue
 	// stateFilter is the state when the user is typing an incremental filter query
 	// to narrow the session list by DisplayName / Branch.
 	stateFilter
@@ -314,6 +316,11 @@ type home struct {
 	spinner spinner.Model
 	// textInputOverlay handles text input with state
 	textInputOverlay *overlay.TextInputOverlay
+	// queueOverlay manages a session's pending prompt queue (list / cancel).
+	queueOverlay *overlay.QueueOverlay
+	// queueTarget is the instance the queue overlay was opened for; a cancel acts
+	// on it even if the selection moves (mirrors renameTarget).
+	queueTarget *session.Instance
 	// stashedDraft keeps a dirty new-session form across Escape so reopening with
 	// n/N restores it — the full live overlay, every field, within this run. It is
 	// also mirrored to state.json (title/prompt/project only; see config.SessionDraft)
@@ -467,7 +474,7 @@ func (m *home) View() string {
 	if m.menuVisible() {
 		parts = append(parts, m.menu.String())
 	}
-	if m.errBox.HasError() {
+	if m.errBox.HasContent() {
 		parts = append(parts, m.errBox.String())
 	}
 	mainView := lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -498,6 +505,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("rename overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.renameOverlay.Render(), mainView, true)
+	} else if m.state == stateQueue {
+		if m.queueOverlay == nil {
+			log.ErrorLog.Printf("queue overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.queueOverlay.Render(), mainView, true)
 	} else if m.state == stateSettings {
 		if m.settingsOverlay == nil {
 			log.ErrorLog.Printf("settings overlay is nil")
