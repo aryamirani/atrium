@@ -9,7 +9,6 @@ package ui
 // it; every other empty state keeps the plain FallbackBanner.
 
 import (
-	"math"
 	"strings"
 	"sync"
 
@@ -26,9 +25,11 @@ const (
 	// vignette render circular rather than oval.
 	cellAspect = 2.0
 
-	// driftPerFrame is the outward phase advance per pushed animation frame (~5Hz,
-	// see handlePreviewTick). Small, so the rings breathe slowly rather than strobe.
-	driftPerFrame = 0.18
+	// driftPerFrame is the outward phase advance per nominal 60fps animation
+	// frame (see the app's splash tick) — ~0.9 phase units/second, the same
+	// visual speed the field had at its original 5Hz push (0.18/frame), just
+	// twelve times smoother along the way.
+	driftPerFrame = 0.015
 
 	// The field is a small sum of sines evaluated per cell: two domain-warped
 	// concentric ring octaves + rotationally-symmetric petals + an isotropic
@@ -136,7 +137,7 @@ func splashScene(width, height, frame int, message string) string {
 		msgHalfH:      msgH/2 + 2,
 		msgCenterRow:  msgY + msgH/2,
 	}
-	field := renderSplashField(width, height, frame, theme.Current().Palette, clearing)
+	field := renderSplashField(width, height, frame, theme.Current().Palette, clearing, splashActiveVariant())
 	scene := overlayAt(field, word, wordX, wordY)
 	scene = overlayAt(scene, msg, msgX, msgY)
 	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(scene)
@@ -250,114 +251,6 @@ func (c splashClearing) blanks(dx float64, row int) bool {
 		inEllipse(c.msgHalfW, c.msgHalfH, c.msgCenterRow)
 }
 
-// renderSplashField builds the colored plasma background: exactly h rows of
-// exactly w visible cells, with the clearing ellipses blanked out for the
-// composited text. The field fills the whole pane and softens only near the four
-// borders (an edge vignette), rather than being a single disc inscribed to the
-// shorter axis — so a wide pane no longer leaves big empty side-margins. The ring
-// pattern emanates from the wordmark's center (clearing.wordCenterRow) and the
-// color gradient / gentle radial dim are normalized to the farthest corner, so
-// the field stays visually anchored on the wordmark while still reaching the
-// edges. Pure over its inputs (deterministic, snapshot-testable); returns "" on a
-// degenerate pane.
-func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashClearing) string {
-	if w <= 0 || h <= 0 {
-		return ""
-	}
-	cx := float64(w-1) / 2
-	cyFocal := float64(clearing.wordCenterRow)
-	// Distance from the focal point to the farthest corner: the denominator for
-	// the color gradient and the core→rim dim, so both span the whole pane.
-	maxD := math.Hypot(
-		math.Max(cx, float64(w-1)-cx),
-		math.Max(cyFocal, float64(h-1)-cyFocal)*cellAspect)
-	if maxD <= 0 {
-		return ""
-	}
-	// Border-fade reach in cells (min 1 so a tiny pane still fades, never /0).
-	marginX := math.Max(1, float64(w)*edgeVignetteFrac)
-	marginY := math.Max(1, float64(h)*edgeVignetteFrac)
-
-	lut := splashLUTFor(pal)
-	nColors := len(lut.styles)
-	starIdx := nColors // flushSplashRun renders any index >= len(styles) as a star
-	ramp := []rune(splashRamp)
-	maxGlyph := len(ramp) - 1
-	starRampR := []rune(starRamp)
-	starMax := len(starRampR) - 1
-	phase := float64(frame) * driftPerFrame
-	// Slow global brightness swell (breathing), computed once per frame.
-	breathe := 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
-
-	var sb strings.Builder
-	var run strings.Builder
-	for row := 0; row < h; row++ {
-		if row > 0 {
-			sb.WriteByte('\n')
-		}
-		dyCells := float64(row) - cyFocal
-		dy := dyCells * cellAspect
-		edgeY := smoothstep(0, 1, clamp01(math.Min(float64(row), float64(h-1-row))/marginY))
-		curIdx := -1 // -1 marks a blank (uncolored) run
-		for col := 0; col < w; col++ {
-			dx := float64(col) - cx
-			idx, ch := -1, ' '
-
-			if edgeY > 0 && !clearing.blanks(dx, row) {
-				// Smooth (unwarped) radius drives color + the core→rim dim; the
-				// warped radius drives the ring pattern, so the rings ripple
-				// organically while the color gradient stays clean.
-				dRaw := math.Hypot(dx, dy)
-				wx := dx + rippleWarp*math.Sin(dy*rippleWarpF-phase*0.4)
-				wy := dy + rippleWarp*math.Sin(dx*rippleWarpF-phase*0.4)
-				d := math.Hypot(wx, wy)
-				theta := math.Atan2(wy, wx)
-				// Isotropic fine texture: three plane waves 120° apart, whose
-				// directions cancel — detail without a diagonal grain.
-				tex := math.Sin(dx*isoFreq-phase*isoSpeed) +
-					math.Sin((dx*iso1Cos+dy*iso1Sin)*isoFreq-phase*isoSpeed) +
-					math.Sin((dx*iso2Cos+dy*iso2Sin)*isoFreq-phase*isoSpeed)
-				v := math.Sin(d*rippleFreq1-phase) +
-					0.55*math.Sin(d*rippleFreq2-phase*0.7) +
-					0.40*math.Sin(d*rippleFreq3-phase*0.5)*math.Cos(theta*petalCount) +
-					isoWeight*tex
-				intensity := clamp01((v/rippleAmp + 1) * 0.5)
-				// Contrast: push mid-tones apart so bright ridges read as filaments
-				// against darker voids, and the bright end of the ramp gets used.
-				intensity = smoothstep(splashContrastLo, splashContrastHi, intensity)
-				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
-				radial := 1 - radialDim*clamp01(dRaw/maxD)
-				lit := intensity * edgeX * edgeY * radial * breathe
-				if g := clampInt(int(lit*float64(maxGlyph)), 0, maxGlyph); g > 0 {
-					ch = ramp[g]
-					// Hue swirls across the field (radius + a slow angular sweep)
-					// so the gradient reads as a drifting multi-hued nebula.
-					swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-					colorT := clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
-					idx = clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
-				}
-				// Starfield on top: a fixed, twinkling point can light even a void
-				// the plasma left dark. Fades with the same border vignette.
-				if sh := starHash(col, row); sh > starThreshold {
-					tw := 0.7 + 0.3*math.Sin(phase*starTwinkleSpeed+sh*starPhaseScatter)
-					if sg := clampInt(int(tw*edgeX*edgeY*float64(starMax)), 0, starMax); sg > 0 {
-						ch = starRampR[sg]
-						idx = starIdx
-					}
-				}
-			}
-
-			if idx != curIdx {
-				flushSplashRun(&sb, &run, curIdx, lut)
-				curIdx = idx
-			}
-			run.WriteRune(ch)
-		}
-		flushSplashRun(&sb, &run, curIdx, lut)
-	}
-	return sb.String()
-}
-
 // flushSplashRun emits an accumulated run of same-color cells with a single SGR
 // (or raw, for a blank run), then resets the buffer. Coalescing runs keeps the
 // per-frame ANSI compact instead of one color code per cell.
@@ -376,12 +269,12 @@ func flushSplashRun(sb, run *strings.Builder, styleIdx int, lut *splashLUT) {
 	run.Reset()
 }
 
-// starHash is a cheap deterministic per-cell pseudo-random value in [0,1) — the
-// classic sin-fract hash — so the starfield is fixed in place (and snapshot-
-// stable) while the plasma drifts behind it.
+// starHash is a deterministic per-cell pseudo-random value in [0,1), so the
+// starfield is fixed in place (and snapshot-stable) while the plasma drifts
+// behind it. Built on the integer lattice hash: exact on every architecture,
+// unlike the sin-fract hash it replaced.
 func starHash(col, row int) float64 {
-	s := math.Sin(float64(col)*12.9898+float64(row)*78.233) * 43758.5453
-	return s - math.Floor(s)
+	return splashCellHash(col, row, seedStar)
 }
 
 // overlayAt composites fg over bg (the ripple field) at cell (placeX, placeY),

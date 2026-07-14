@@ -101,7 +101,7 @@ func (t *TerminalPane) SetSize(width, height int) {
 }
 
 // SetSplashFrame stores the current splash animation frame, pushed from the
-// app's 100ms tick. It only affects the idle-splash render in String().
+// app's 60fps splash tick. It only affects the idle-splash render in String().
 func (t *TerminalPane) SetSplashFrame(n int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

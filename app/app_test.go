@@ -36,6 +36,10 @@ func TestMain(m *testing.M) {
 	// guard's own test overrides this seam to simulate a missing tmux.
 	tmuxAvailable = func() error { return nil }
 
+	// Pin the splash variant: with no override the splash rotates per launch
+	// (time-seeded), which would make idle-screen renders nondeterministic.
+	_ = os.Setenv("ATRIUM_SPLASH_VARIANT", "a")
+
 	exitCode := testutil.SandboxHomeMain(m)
 
 	log.Close()
