@@ -92,14 +92,22 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 	case "e", "mandala":
 		return splashVariantMandala
 	case "":
-		return splashRotation[time.Now().UnixNano()%int64(len(splashRotation))]
+		return splashRotationPick(time.Now().UnixNano())
 	}
 	return splashDefaultVariant
 })
 
+// splashRotationPick maps a launch-time nanosecond seed to a rotation variant.
+// The uint64 conversion keeps the index non-negative: a clock set before the
+// Unix epoch makes UnixNano() negative, and Go's % preserves the dividend's
+// sign, so an int64 modulo could yield a negative index and panic.
+func splashRotationPick(nano int64) splashVariant {
+	return splashRotation[uint64(nano)%uint64(len(splashRotation))]
+}
+
 // The domain-warped fBm field ("a" and its derivatives). Frequencies are per
 // aspect-corrected cell; drifts are noise-units per phase-unit (phase
-// advances driftPerFrame per frame, ~0.9/s at the ~30fps splash tick).
+// advances driftPerFrame per frame, ~0.9/s at the 60fps splash tick).
 const (
 	fieldFreq  = 0.10 // base octave frequency → ~10-cell features
 	fbmOctaves = 3

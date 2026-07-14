@@ -359,6 +359,22 @@ func TestSplashFlowVariantOutput(t *testing.T) {
 	require.True(t, saw, "the contour band must produce flow glyphs")
 }
 
+// TestSplashRotationPickInBounds guards against a negative-index panic: a clock
+// set before the Unix epoch yields a negative UnixNano(), and Go's signed % of
+// that would produce a negative slice index. The pick must stay in [0, len) for
+// every int64 seed, including negative and boundary values.
+func TestSplashRotationPickInBounds(t *testing.T) {
+	seeds := []int64{
+		0, 1, -1, 42, -42,
+		math.MinInt64, math.MaxInt64,
+		-1234567890123456789, 1234567890123456789,
+	}
+	for _, seed := range seeds {
+		require.NotPanics(t, func() { splashRotationPick(seed) },
+			"splashRotationPick must not panic for seed %d", seed)
+	}
+}
+
 func BenchmarkSplashValNoise(b *testing.B) {
 	var sink float64
 	for i := 0; i < b.N; i++ {
