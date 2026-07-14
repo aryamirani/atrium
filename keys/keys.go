@@ -115,6 +115,12 @@ const (
 	// KeyToggleMark marks/unmarks the highlighted session while in multi-select
 	// mode. It is consumed only by the mode handler, never the default state.
 	KeyToggleMark
+
+	// KeyScreensaver shows the configured splash pattern full-window until any
+	// key (or click) dismisses it. A deliberate easter egg: it has no
+	// GlobalKeyBindings entry, so it never appears in the help cheatsheet or
+	// the hint bar (the coverage guard only walks that map).
+	KeyScreensaver
 )
 
 // KillKey is the chord that triggers a kill from the session list. It mirrors the
@@ -175,6 +181,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"a":          KeyApprove,
 	"v":          KeyMultiSelect,
 	" ":          KeyToggleMark,
+	"`":          KeyScreensaver,
 }
 
 // GlobalKeyBindings is a global, immutable map of KeyName to keybinding.

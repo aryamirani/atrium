@@ -41,3 +41,23 @@ func TestHelpScreen_NoRetiredKeys(t *testing.T) {
 		}
 	}
 }
+
+// The screensaver backtick is a deliberate easter egg. It surfaces to users by
+// exactly two routes, so this guards both: a GlobalKeyBindings entry (which
+// would feed it to the coverage guard above *and* to the hint bar — see
+// ui.renderHintLine, the map's only other reader), and the hand-written prose.
+//
+// The structural half is the load-bearing one: the absence of a binding is what
+// makes the omission automatic rather than a thing every future editor has to
+// remember.
+func TestHelpScreen_OmitsScreensaverKey(t *testing.T) {
+	if _, ok := keys.GlobalKeyBindings[keys.KeyScreensaver]; ok {
+		t.Error("KeyScreensaver must have no GlobalKeyBindings entry — that absence is " +
+			"what keeps the easter egg out of both the help cheatsheet and the hint bar")
+	}
+
+	content := strings.ToLower(ansi.Strip(helpTypeGeneral{}.toContent()))
+	if strings.Contains(content, "screensaver") {
+		t.Error("help cheatsheet must not mention the screensaver")
+	}
+}

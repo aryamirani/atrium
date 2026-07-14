@@ -183,6 +183,11 @@ type Config struct {
 	// to the default. Glyphs are a separate axis — see NerdFont; the "unicode"
 	// theme differs only by using square borders.
 	Theme string `json:"theme,omitempty"`
+	// Splash selects the animated empty-state splash pattern by name (see
+	// SplashVariants: "nebula", "braille", "contours", "julia", "mandala",
+	// "plasma"). Empty, "random", or an unknown value picks a fresh pattern
+	// each launch.
+	Splash string `json:"splash,omitempty"`
 	// NerdFont, when true, draws the branch / pull-request / dirty / auto markers
 	// with vendor icons from a patched Nerd Font. nil/false (the default) uses
 	// plain Unicode that renders on any font, so a bare terminal never shows tofu

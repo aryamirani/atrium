@@ -745,8 +745,8 @@ func (m *home) killMarked() tea.Cmd {
 	}
 	m.exitVisualMode()
 	message := fmt.Sprintf("Kill %d marked session%s?", len(insts), plural(len(insts)))
-	if n := sessionsWithUnmergedWork(insts); n > 0 {
-		message += fmt.Sprintf(" (%d of %d have unmerged work)", n, len(insts))
+	if n := sessionsWithUnpushedWork(insts); n > 0 {
+		message += fmt.Sprintf(" (%d of %d have unpushed work)", n, len(insts))
 	}
 	return m.killInstances(insts, message)
 }
@@ -1284,29 +1284,35 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 }
 
 // killDataWarning returns a parenthetical suffix for the kill confirmation that
-// warns when killing would discard local work, or "" when the branch has nothing
-// unmerged. commits is the count of commits ahead of base — pause folds its
-// auto-WIP commit in via noteAutoPauseCommit, so a paused-then-dirty session reads
-// Dirty=false with commits>=1. Kill runs `git branch -D`, so these commits are
-// destroyed with no user-facing recovery path.
-func killDataWarning(dirty bool, commits int) string {
+// warns when killing would discard local work, or "" when nothing is at risk.
+// unpushed is the count of commits that exist nowhere but this branch: kill runs
+// `git branch -D` and never touches origin, so a pushed commit survives the session
+// and must not be warned about — a branch sitting in an open PR loses nothing.
+// Pause folds its auto-WIP commit in via noteAutoPauseCommit, so a paused-then-dirty
+// session reads Dirty=false with unpushed>=1. Every non-empty case names the
+// consequence: kill removes the worktree and `branch -D`s the branch, so uncommitted
+// changes are destroyed just as permanently as unpushed commits, with no user-facing
+// recovery path for either.
+func killDataWarning(dirty bool, unpushed int) string {
 	switch {
-	case dirty && commits > 0:
-		return fmt.Sprintf(" (has uncommitted changes and %d unmerged commit%s — deleting discards them)", commits, plural(commits))
+	case dirty && unpushed > 0:
+		return fmt.Sprintf(" (has uncommitted changes and %d unpushed commit%s — deleting discards this work)", unpushed, plural(unpushed))
 	case dirty:
-		return " (has uncommitted changes)"
-	case commits > 0:
-		return fmt.Sprintf(" (has %d unmerged commit%s — deleting discards them)", commits, plural(commits))
+		return " (has uncommitted changes — deleting discards this work)"
+	case unpushed > 0:
+		return fmt.Sprintf(" (has %d unpushed commit%s — deleting discards this work)", unpushed, plural(unpushed))
 	}
 	return ""
 }
 
-// sessionsWithUnmergedWork counts how many of insts carry uncommitted changes or
-// commits ahead of base, for the batch-kill confirmation's aggregate warning.
-func sessionsWithUnmergedWork(insts []*session.Instance) int {
+// sessionsWithUnpushedWork counts how many of insts carry uncommitted changes or
+// unpushed commits, for the batch-kill confirmation's aggregate warning. It keys off
+// the same at-risk measure as killDataWarning, so a fully pushed session is not
+// counted: deleting it discards nothing.
+func sessionsWithUnpushedWork(insts []*session.Instance) int {
 	n := 0
 	for _, inst := range insts {
-		if s := inst.GetDiffStats(); s != nil && (s.Dirty || s.Commits > 0) {
+		if s := inst.GetDiffStats(); s != nil && (s.Dirty || s.Unpushed > 0) {
 			n++
 		}
 	}
@@ -1367,7 +1373,7 @@ func (m *home) confirmKill(inst *session.Instance) tea.Cmd {
 
 	message := fmt.Sprintf("Kill session '%s'?", inst.DisplayName())
 	if stats := inst.GetDiffStats(); stats != nil {
-		message += killDataWarning(stats.Dirty, stats.Commits)
+		message += killDataWarning(stats.Dirty, stats.Unpushed)
 	}
 	cmd := m.confirmAction(message, killAction)
 	// Kill is the one destructive confirmation, so it alone wears the danger

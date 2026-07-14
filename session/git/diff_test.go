@@ -175,6 +175,7 @@ func TestComputeRepoStats_RevListCacheHit(t *testing.T) {
 	wt.statsCache = repoStatsEntry{
 		commits:    3,
 		behind:     1,
+		unpushed:   2,
 		computedAt: time.Now(),
 	}
 	wt.statsCacheMu.Unlock()
@@ -188,6 +189,10 @@ func TestComputeRepoStats_RevListCacheHit(t *testing.T) {
 	if stats.Behind != 1 {
 		t.Errorf("rev-list cache hit: Behind = %d, want 1", stats.Behind)
 	}
+	// unpushed rides the same clock; dropping it on a hit would read as "nothing at risk".
+	if stats.Unpushed != 2 {
+		t.Errorf("rev-list cache hit: Unpushed = %d, want 2", stats.Unpushed)
+	}
 }
 
 // TestComputeRepoStats_RevListCacheMiss verifies that an expired cache entry is not
@@ -200,6 +205,7 @@ func TestComputeRepoStats_RevListCacheMiss(t *testing.T) {
 	wt.statsCache = repoStatsEntry{
 		commits:    99,
 		behind:     99,
+		unpushed:   99,
 		computedAt: time.Now().Add(-(revListCacheTTL + time.Second)),
 	}
 	wt.statsCacheMu.Unlock()
@@ -209,6 +215,11 @@ func TestComputeRepoStats_RevListCacheMiss(t *testing.T) {
 
 	if stats.Commits == 99 || stats.Behind == 99 {
 		t.Errorf("stale rev-list cache propagated: Commits=%d Behind=%d, want != 99", stats.Commits, stats.Behind)
+	}
+	// A stale unpushed count is the one that would keep warning about work that has
+	// since been pushed, so it must expire with the rest of the entry.
+	if stats.Unpushed == 99 {
+		t.Errorf("stale rev-list cache propagated: Unpushed = 99, want != 99")
 	}
 }
 
@@ -268,5 +279,32 @@ func TestComputeRepoStats_DirtyCacheMiss(t *testing.T) {
 	wt.computeRepoStats(stats, t.TempDir()) // non-git dir → git status fails silently → Dirty=false
 	if stats.Dirty {
 		t.Error("stale dirty cache propagated: Dirty = true, want false")
+	}
+}
+
+// TestUnpushedCount_ConservativeWhenGitFails pins the failure direction. Unpushed is
+// the input to a data-loss warning, so when git cannot tell us which commits are on
+// origin we must assume none of them are and warn about all of them. Returning 0 here
+// would silently report "nothing at risk" for a branch we know nothing about.
+func TestUnpushedCount_ConservativeWhenGitFails(t *testing.T) {
+	wt := &Worktree{}
+	// A nonexistent dir makes the rev-list fail rather than inheriting the test
+	// process's cwd and quietly succeeding against the wrong repo.
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	if got := wt.unpushedCount(missing, "main", 3); got != 3 {
+		t.Errorf("git failure with 3 ahead: unpushedCount = %d, want 3 (assume nothing is pushed)", got)
+	}
+}
+
+// TestUnpushedCount_NotAheadIsZero documents the gate that keeps the steady-state
+// subprocess cost unchanged: a branch not ahead of its base has every commit on the
+// base, which is pushed by definition, so nothing is at risk and no git runs.
+func TestUnpushedCount_NotAheadIsZero(t *testing.T) {
+	wt := &Worktree{}
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	if got := wt.unpushedCount(missing, "main", 0); got != 0 {
+		t.Errorf("not ahead: unpushedCount = %d, want 0", got)
 	}
 }

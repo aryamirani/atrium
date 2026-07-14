@@ -148,6 +148,26 @@ func TestSettingsOverlay_CycleEffortIndicator(t *testing.T) {
 	assert.Equal(t, config.EffortIndicatorOn, cfg.GetEffortIndicator(), "the enum wraps")
 }
 
+// TestSettingsOverlay_CycleSplash pins the splash enum: defaults to random,
+// right steps into the named patterns, and a full cycle wraps back to random.
+func TestSettingsOverlay_CycleSplash(t *testing.T) {
+	cfg := config.DefaultConfig()
+	o := NewSettingsOverlay(cfg)
+	settingsAt(t, o, "splash")
+
+	require.Equal(t, config.SplashRandom, cfg.GetSplash(), "splash defaults to random")
+
+	_, changed := o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRight})
+	assert.Equal(t, "splash", changed, "the cycle must report its row key so home can persist")
+	assert.Equal(t, config.SplashVariants()[0], cfg.GetSplash())
+
+	// Stepping over every named pattern wraps back to random.
+	for range config.SplashVariants() {
+		o.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRight})
+	}
+	assert.Equal(t, config.SplashRandom, cfg.GetSplash(), "the enum wraps")
+}
+
 func indexOf(ss []string, s string) int {
 	for i, v := range ss {
 		if v == s {

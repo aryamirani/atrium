@@ -81,9 +81,9 @@ func TestUpdateBase_LocalBehind_BranchesOffOrigin(t *testing.T) {
 	if got := wt.GetBaseRef(); got != "origin/"+branch {
 		t.Fatalf("baseRef = %q, want %q (keeps ahead/behind honest)", got, "origin/"+branch)
 	}
-	ahead, behind, ok := wt.revListCounts(wt.GetWorktreePath())
-	if !ok || ahead != 0 || behind != 0 {
-		t.Fatalf("fresh session counts = (%d ahead, %d behind, ok=%v), want 0/0", ahead, behind, ok)
+	ahead, behind, unpushed, ok := wt.revListCounts(wt.GetWorktreePath())
+	if !ok || ahead != 0 || behind != 0 || unpushed != 0 {
+		t.Fatalf("fresh session counts = (%d ahead, %d behind, %d unpushed, ok=%v), want 0/0/0", ahead, behind, unpushed, ok)
 	}
 
 	// The user's local base branch must be untouched (non-invasive default).

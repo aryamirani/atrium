@@ -109,6 +109,17 @@ const (
 // legibly. Callers fall back to the plain centered wordmark when it is not.
 func splashFits(w, h int) bool { return w >= minSplashW && h >= minSplashH }
 
+// SplashFits is splashFits for callers outside ui — the screensaver's entry
+// and stay-alive gate in app.
+func SplashFits(w, h int) bool { return splashFits(w, h) }
+
+// SplashScreensaver renders the full-window splash easter egg: the same
+// animated scene as the idle empty state, wordmark centered, but without the
+// guidance message line. Callers gate on SplashFits and own the frame ticks.
+func SplashScreensaver(width, height, frame int) string {
+	return splashScene(width, height, frame, "")
+}
+
 // splashScene composites the idle empty screen: the animated nebula field with
 // the wordmark centered on top and the message tucked just below it. The wordmark
 // and message are overlaid separately at their own widths (not one padded block)
@@ -116,30 +127,45 @@ func splashFits(w, h int) bool { return w >= minSplashW && h >= minSplashH }
 // the wider message; each gets its own tight clearing so no glyphs bleed through
 // the text. The outer clamp honors the pane box (#251). Shared by the preview and
 // terminal panes so their idle empty states match. Callers gate on splashFits.
+//
+// The message line is optional: an empty message renders the wordmark alone over
+// an uninterrupted field, which is the screensaver (see SplashScreensaver). Both
+// panes always pass one.
 func splashScene(width, height, frame int, message string) string {
 	word := trimBlankLines(FallbackBanner())
-	msg := theme.Current().FgStyle().Render(message)
 	wordW, wordH := lipgloss.Width(word), lipgloss.Height(word)
-	msgW, msgH := lipgloss.Width(msg), lipgloss.Height(msg)
 
 	const gap = 2 // blank rows between the wordmark and the message
 	cy := (height - 1) / 2
 	wordX := (width - wordW) / 2
 	wordY := max(0, cy-wordH/2) // wordmark centered on the pane
-	msgX := (width - msgW) / 2
-	msgY := wordY + wordH + gap
 
 	clearing := splashClearing{
 		wordHalfW:     wordW/2 + 2,
 		wordHalfH:     wordH/2 + 1,
 		wordCenterRow: wordY + wordH/2,
-		msgHalfW:      msgW/2 + 2,
-		msgHalfH:      msgH/2 + 2,
-		msgCenterRow:  msgY + msgH/2,
 	}
+
+	// Sized only when there is a message: the zero-value msg half-extents left
+	// behind otherwise disable that ellipse, so the field flows unbroken below
+	// the wordmark instead of being blanked for text nobody passed.
+	var msg string
+	var msgX, msgY int
+	if message != "" {
+		msg = theme.Current().FgStyle().Render(message)
+		msgW, msgH := lipgloss.Width(msg), lipgloss.Height(msg)
+		msgX = (width - msgW) / 2
+		msgY = wordY + wordH + gap
+		clearing.msgHalfW = msgW/2 + 2
+		clearing.msgHalfH = msgH/2 + 2
+		clearing.msgCenterRow = msgY + msgH/2
+	}
+
 	field := renderSplashField(width, height, frame, theme.Current().Palette, clearing, splashActiveVariant())
 	scene := overlayAt(field, word, wordX, wordY)
-	scene = overlayAt(scene, msg, msgX, msgY)
+	if message != "" {
+		scene = overlayAt(scene, msg, msgX, msgY)
+	}
 	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(scene)
 }
 
