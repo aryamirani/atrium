@@ -24,7 +24,7 @@ func flattenOverlay(s string) string {
 // `git branch -D`, which only destroys commits that exist nowhere else.
 func TestKillDataWarning(t *testing.T) {
 	require.Equal(t, "", killDataWarning(false, 0))
-	require.Equal(t, " (has uncommitted changes)", killDataWarning(true, 0))
+	require.Equal(t, " (has uncommitted changes — deleting discards this work)", killDataWarning(true, 0))
 	require.Equal(t, " (has 1 unpushed commit — deleting discards this work)", killDataWarning(false, 1))
 	require.Equal(t, " (has 3 unpushed commits — deleting discards this work)", killDataWarning(false, 3))
 	require.Equal(t,

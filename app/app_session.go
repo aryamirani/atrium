@@ -1289,14 +1289,16 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 // `git branch -D` and never touches origin, so a pushed commit survives the session
 // and must not be warned about — a branch sitting in an open PR loses nothing.
 // Pause folds its auto-WIP commit in via noteAutoPauseCommit, so a paused-then-dirty
-// session reads Dirty=false with unpushed>=1. Anything counted here is destroyed
-// with no user-facing recovery path.
+// session reads Dirty=false with unpushed>=1. Every non-empty case names the
+// consequence: kill removes the worktree and `branch -D`s the branch, so uncommitted
+// changes are destroyed just as permanently as unpushed commits, with no user-facing
+// recovery path for either.
 func killDataWarning(dirty bool, unpushed int) string {
 	switch {
 	case dirty && unpushed > 0:
 		return fmt.Sprintf(" (has uncommitted changes and %d unpushed commit%s — deleting discards this work)", unpushed, plural(unpushed))
 	case dirty:
-		return " (has uncommitted changes)"
+		return " (has uncommitted changes — deleting discards this work)"
 	case unpushed > 0:
 		return fmt.Sprintf(" (has %d unpushed commit%s — deleting discards this work)", unpushed, plural(unpushed))
 	}
