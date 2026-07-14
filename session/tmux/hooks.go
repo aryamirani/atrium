@@ -217,7 +217,12 @@ func buildHookSettings(binPath, stateFile string) ([]byte, error) {
 		return hookCommand{Type: "command", Command: hookEventCommand(binPath, stateFile, event)}
 	}
 	s := hookSettings{Hooks: map[string][]hookMatcherGroup{
-		"UserPromptSubmit": {{Hooks: []hookCommand{cmd(HookEventWorking)}}},
+		// UserPromptSubmit latches working exactly like the tool-use edges, but via its own
+		// event: its $CLAUDE_EFFORT is a stale pre-resolution value, so it must not record
+		// effort (see HookEventPromptSubmit). No version-skew risk in splitting it out —
+		// ensureHookSettings rewrites settings.json from resolvedBinPath, the same binary
+		// that handles the event.
+		"UserPromptSubmit": {{Hooks: []hookCommand{cmd(HookEventPromptSubmit)}}},
 		"PreToolUse":       {{Matcher: "*", Hooks: []hookCommand{cmd(HookEventWorking)}}},
 		// PostToolUse re-latches working at each tool boundary. It carries no new latch value
 		// (a completed tool means the turn is still processing), but it bumps the heartbeat
@@ -320,7 +325,7 @@ func (t *Session) ClearInflight() error {
 	if err != nil {
 		return err
 	}
-	return UpdateHookState(path, HookEventResetInflight, "")
+	return UpdateHookState(path, HookEventResetInflight, "", "")
 }
 
 // cleanupHookSession removes a session's hook artifacts. Called from Close on kill; missing

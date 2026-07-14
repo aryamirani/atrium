@@ -69,6 +69,8 @@ func assembleHome(
 	h.list.SetModelIndicator(appConfig.GetModelIndicator())
 	// Seed the permission-mode chip (on/off; see config.GetPermissionIndicator).
 	h.list.SetPermissionIndicator(appConfig.GetPermissionIndicator())
+	// Seed the reasoning-effort chip (on/off; see config.GetEffortIndicator).
+	h.list.SetEffortIndicator(appConfig.GetEffortIndicator())
 
 	// Add loaded instances to the list
 	for _, instance := range instances {

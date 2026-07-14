@@ -184,6 +184,10 @@ func (m *home) applySettingChange(key string) tea.Cmd {
 		if m.list != nil {
 			m.list.SetPermissionIndicator(m.appConfig.GetPermissionIndicator())
 		}
+	case "effort_indicator":
+		if m.list != nil {
+			m.list.SetEffortIndicator(m.appConfig.GetEffortIndicator())
+		}
 	case "session_sort":
 		// Re-order the list under the new mode immediately; the list takes the
 		// normalized mode string so ui needs no config import. Selection is

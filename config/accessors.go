@@ -35,6 +35,21 @@ func (c *Config) GetPermissionIndicator() string {
 	return PermissionIndicatorOn
 }
 
+// EffortIndicator modes (see Config.EffortIndicator).
+const (
+	EffortIndicatorOn  = "on"
+	EffortIndicatorOff = "off"
+)
+
+// GetEffortIndicator returns the normalized effort-chip mode: "off" only when
+// set explicitly, "on" for everything else.
+func (c *Config) GetEffortIndicator() string {
+	if c != nil && c.EffortIndicator == EffortIndicatorOff {
+		return EffortIndicatorOff
+	}
+	return EffortIndicatorOn
+}
+
 // defaultCarryFiles is the carry list applied when a config predates the
 // carry_files key (nil field). Claude Code's gitignored local project config
 // is the one file every fresh worktree loses by default.
