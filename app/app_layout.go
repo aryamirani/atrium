@@ -6,6 +6,7 @@ import (
 	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session/tmux"
+	"github.com/ZviBaratz/atrium/ui"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -184,6 +185,11 @@ func (m *home) applySettingChange(key string) tea.Cmd {
 		if m.list != nil {
 			m.list.SetPermissionIndicator(m.appConfig.GetPermissionIndicator())
 		}
+	case "splash":
+		// Mirror the newHome seeding; ui takes the normalized name so it needs
+		// no config import. With zero sessions the splash repaints in place, so
+		// cycling the enum previews each pattern behind the panel.
+		ui.SetSplashVariant(m.appConfig.GetSplash())
 	case "session_sort":
 		// Re-order the list under the new mode immediately; the list takes the
 		// normalized mode string so ui needs no config import. Selection is

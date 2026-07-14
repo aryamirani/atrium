@@ -69,6 +69,9 @@ func assembleHome(
 	h.list.SetModelIndicator(appConfig.GetModelIndicator())
 	// Seed the permission-mode chip (on/off; see config.GetPermissionIndicator).
 	h.list.SetPermissionIndicator(appConfig.GetPermissionIndicator())
+	// Seed the splash pattern (a pinned name, or a fresh random pick; see
+	// config.GetSplash). ui takes the normalized name, no config import needed.
+	ui.SetSplashVariant(appConfig.GetSplash())
 
 	// Add loaded instances to the list
 	for _, instance := range instances {

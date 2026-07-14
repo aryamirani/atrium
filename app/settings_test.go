@@ -86,6 +86,24 @@ func TestSettingsPanel_AutoYesTogglePropagatesToHomeFlag(t *testing.T) {
 		"the persisted flag is what the exit-time daemon decision reads")
 }
 
+// TestSettingsPanel_SplashChangePersists proves the "splash" settings-changed
+// case reaches disk end-to-end (the live ui.SetSplashVariant side is pinned in
+// ui's own tests; its rendering effect is shielded here by the env override
+// TestMain sets).
+func TestSettingsPanel_SplashChangePersists(t *testing.T) {
+	resetSettingsTestState(t)
+	h := newSettingsTestHome()
+
+	_, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
+	require.True(t, h.settingsOverlay.SelectRow("splash"))
+	_, _ = h.handleKeyPress(tea.KeyMsg{Type: tea.KeyRight})
+
+	want := config.SplashVariants()[0]
+	assert.Equal(t, want, h.appConfig.GetSplash())
+	assert.Equal(t, want, config.LoadConfig().GetSplash(),
+		"the change must reach disk immediately so it survives a crash")
+}
+
 // TestGroupModeChange_ClustersList proves the "group_mode" settings-changed case
 // (app_layout.go) reaches the live list end-to-end: opening the panel, cycling
 // the row to "account", and reading the list back out. Mirrors

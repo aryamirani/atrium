@@ -75,12 +75,15 @@ var splashTickInterval = sync.OnceValue(func() time.Duration {
 // splashTickMsg drives the dedicated splash animation loop (see armSplashTick).
 type splashTickMsg struct{}
 
-// splashAnimating reports whether the idle splash is on screen and allowed to
-// move: no sessions exist and the default state owns the screen. Outside the
-// default state an overlay is up (the welcome dialog, help, confirm, a form,
-// …), and motion churning behind a modal the user is reading is distracting,
-// so the animation freezes.
+// splashAnimating reports whether a splash is on screen and allowed to move:
+// the idle empty state (no sessions, default state — outside it an overlay is
+// up, and motion churning behind a modal the user is reading is distracting),
+// or the full-window screensaver, which is the splash regardless of how many
+// sessions exist.
 func (m *home) splashAnimating() bool {
+	if m.state == stateScreensaver {
+		return true
+	}
 	return m.state == stateDefault && m.list != nil && m.list.NumInstances() == 0
 }
 
@@ -191,6 +194,21 @@ func (m *home) handleSmartDispatchDone(msg smartDispatchDoneMsg) (tea.Model, tea
 const dividerGrab = 1
 
 func (m *home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// The screensaver dismisses on a click, mirroring the any-key exit; wheel
+	// and motion events are ignored so a nudged mouse doesn't tear it down.
+	if m.state == stateScreensaver {
+		if msg.Action == tea.MouseActionPress {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown,
+				tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight:
+				// Wheel deltas arrive as presses; not a deliberate wake.
+			default:
+				m.state = stateDefault
+			}
+		}
+		return m, nil
+	}
+
 	// A live drag of the list/preview seam owns mouse events until release. A drag
 	// is a single press→motion→release gesture that only makes sense in the default
 	// state, so abandon a stale one instead of trapping later events: if an overlay
