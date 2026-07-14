@@ -286,7 +286,10 @@ func (t *Session) Poll() PaneState {
 	// silent self-heal instead of a stale chip.
 	//
 	// Cost is confined to the gap: a session whose footer parses never reads the file, and
-	// readHookRecord is a no-op for agents without HookSupport.
+	// readHookRecord is a no-op for agents without HookSupport. A session actually IN the gap
+	// (a statusLine stealing the anchor) reads it every tick for as long as the gap lasts —
+	// inherent to being the fallback, and a lock-free os.ReadFile of a small file next to the
+	// capture-pane fork/exec already running under this same monitorMu.
 	if mode, ok := t.adapter.DetectPermissionMode(content); ok {
 		t.monitor.mode = mode
 	} else if rec, ok := t.readHookRecord(); ok && rec.PermissionMode != "" {

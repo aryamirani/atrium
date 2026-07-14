@@ -362,6 +362,11 @@ func runHookEvent(stateFile, event string, stdin io.Reader) {
 // buffers a whole top-level value before unmarshalling, so an unbounded read is the only real
 // memory exposure here. 4 MiB sits far above any payload these events carry and far below
 // anything that could hurt; on overflow the decode fails and we degrade to the zero payload.
+//
+// That degradation is not free, so the cap is set where it can only ever fire on a broken
+// contract: an overflowing SubagentStart/Stop loses its agent_id, stranding a member in the
+// in-flight set until the wall-clock watchdog clears it (#290) — a bounded, self-healing
+// cost, but a real one, and one the previous unbounded Decode would not have paid.
 const hookPayloadLimit = 4 << 20
 
 // hookPayloadTimeout caps the wait for stdin. A var so tests can shorten it.
