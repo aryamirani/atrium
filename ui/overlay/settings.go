@@ -181,6 +181,18 @@ func newSettingRows(cfg *config.Config) []settingRow {
 				return names
 			},
 		},
+		{
+			key: "splash", section: "Appearance", label: "Splash", kind: kindEnum,
+			description: "Empty-state splash pattern; random picks one each launch.",
+			get:         func(c *config.Config) string { return c.GetSplash() },
+			set: func(c *config.Config, v string) error {
+				c.Splash = v
+				return nil
+			},
+			options: func(c *config.Config) []string {
+				return append([]string{config.SplashRandom}, config.SplashVariants()...)
+			},
+		},
 		boolRow("nerd_font", "Appearance", "Nerd Font icons",
 			"Vendor icons (branch, PR, dirty, auto) from a patched Nerd Font; off = plain Unicode.", "",
 			(*config.Config).GetNerdFont,

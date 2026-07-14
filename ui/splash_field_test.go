@@ -375,6 +375,74 @@ func TestSplashRotationPickInBounds(t *testing.T) {
 	}
 }
 
+// resetSplashSelection restores the process-wide splash selection after a test
+// pins or re-rolls it, so package siblings see the pristine lazy-random state.
+// (Rendering is shielded anyway — TestMain pins the env override, which trumps
+// the selection — but the package state should stay canonical regardless.)
+func resetSplashSelection(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		splashRandomMode, splashPicked, splashPick = true, false, splashDefaultVariant
+	})
+}
+
+// TestSplashVariantNamesCoverAllVariants guards the settings vocabulary: every
+// rotation variant (plus the legacy baseline) must be pinnable by name, so a
+// future variant can't ship unreachable from the settings panel.
+func TestSplashVariantNamesCoverAllVariants(t *testing.T) {
+	named := make(map[splashVariant]bool, len(splashVariantNames))
+	for _, v := range splashVariantNames {
+		named[v] = true
+	}
+	for _, v := range splashRotation {
+		require.True(t, named[v], "rotation variant %d has no config name", v)
+	}
+	require.True(t, named[splashVariantLegacy], "the legacy baseline must stay pinnable")
+}
+
+// TestSetSplashVariantPinsKnownNames locks the name→generator mapping and that
+// a pinned name leaves random mode.
+func TestSetSplashVariantPinsKnownNames(t *testing.T) {
+	resetSplashSelection(t)
+	for name, want := range splashVariantNames {
+		SetSplashVariant(name)
+		require.False(t, splashRandomMode, "%q must pin, not stay random", name)
+		require.True(t, splashPicked)
+		require.Equal(t, want, splashPick, "name %q", name)
+	}
+}
+
+// TestSetSplashVariantRandomRerolls pins random-mode semantics: anything that
+// isn't a known name (config.SplashRandom, junk) enters random mode with an
+// immediate rotation draw, and RerollSplashVariant only re-draws in that mode —
+// a pinned pattern survives a screensaver activation untouched.
+func TestSetSplashVariantRandomRerolls(t *testing.T) {
+	resetSplashSelection(t)
+
+	SetSplashVariant("julia")
+	RerollSplashVariant()
+	require.Equal(t, splashVariantJulia, splashPick, "reroll must not disturb a pinned pattern")
+
+	SetSplashVariant("random")
+	require.True(t, splashRandomMode)
+	require.True(t, splashPicked, "random mode draws immediately so both panes agree")
+	require.Contains(t, splashRotation, splashPick, "the draw must come from the rotation pool")
+
+	RerollSplashVariant()
+	require.Contains(t, splashRotation, splashPick)
+}
+
+// TestSplashEnvOverrideTrumpsSelection relies on TestMain pinning
+// ATRIUM_SPLASH_VARIANT=a: whatever the config pins, the dev override wins in
+// splashActiveVariant — which is exactly what keeps every String()-path test
+// deterministic even if a future test seeds a config with a splash value.
+func TestSplashEnvOverrideTrumpsSelection(t *testing.T) {
+	resetSplashSelection(t)
+	SetSplashVariant("mandala")
+	require.Equal(t, splashVariantFBM, splashActiveVariant(),
+		"the env override (pinned to \"a\" in TestMain) must trump the config selection")
+}
+
 func BenchmarkSplashValNoise(b *testing.B) {
 	var sink float64
 	for i := 0; i < b.N; i++ {

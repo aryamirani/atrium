@@ -21,10 +21,10 @@ import (
 	"github.com/ZviBaratz/atrium/ui/theme"
 )
 
-// splashVariant selects the field generator + glyph technique. The non-legacy
-// variants land behind the dev-only ATRIUM_SPLASH_VARIANT switch so they can
-// be screenshot-compared live; the losers (and this type, if only one
-// survives) are removed once a winner is picked.
+// splashVariant selects the field generator + glyph technique. Users pin one
+// (or keep the random per-launch rotation) via the "splash" config setting;
+// the dev-only ATRIUM_SPLASH_VARIANT env override still trumps it for
+// screenshot A/B runs and test pinning.
 type splashVariant int
 
 const (
@@ -63,39 +63,108 @@ func (v splashVariant) isFractal() bool {
 // variant the contract tests pin.
 const splashDefaultVariant = splashVariantFBM
 
-// splashRotation is the pool a launch draws from when no override is set:
-// every finished variant except the superseded legacy baseline (still
-// reachable via the env override).
+// splashRotation is the pool random mode draws from: every finished variant
+// except the superseded legacy baseline (still pinnable as "plasma", or via
+// the env override).
 var splashRotation = []splashVariant{
 	splashVariantFBM, splashVariantBraille, splashVariantFlow,
 	splashVariantJulia, splashVariantMandala,
 }
 
-// splashActiveVariant resolves the variant once per process: the
-// ATRIUM_SPLASH_VARIANT env override if set, else a per-launch pick from the
-// rotation pool (seeded from the launch time — a fresh look each launch).
-// Resolving once is what keeps the preview and terminal panes in agreement,
-// and only splashScene consults it — renderSplashField takes the variant as
-// a parameter and stays pure over its inputs.
-var splashActiveVariant = sync.OnceValue(func() splashVariant {
-	switch os.Getenv("ATRIUM_SPLASH_VARIANT") {
-	case "legacy":
-		return splashVariantLegacy
-	case "a":
-		return splashVariantFBM
-	case "b":
-		return splashVariantBraille
-	case "c":
-		return splashVariantFlow
-	case "d", "julia":
-		return splashVariantJulia
-	case "e", "mandala":
-		return splashVariantMandala
-	case "":
-		return splashRotationPick(time.Now().UnixNano())
+// splashVariantNames maps the user-facing pattern names (config.SplashVariants,
+// cycled in the settings panel) onto the variant enum. ui deliberately takes
+// the name as a plain string (SetSplashVariant) so it needs no config import.
+var splashVariantNames = map[string]splashVariant{
+	"nebula":   splashVariantFBM,
+	"braille":  splashVariantBraille,
+	"contours": splashVariantFlow,
+	"julia":    splashVariantJulia,
+	"mandala":  splashVariantMandala,
+	"plasma":   splashVariantLegacy,
+}
+
+// splashEnvVariant resolves the dev-only ATRIUM_SPLASH_VARIANT override once
+// per process. It trumps the config setting so screenshot A/B runs and the
+// test suites (which pin "a" in TestMain against rotation nondeterminism)
+// stay deterministic whatever the config under test says. The second value
+// is false when the variable is unset. Accepts both the user-facing names
+// and the historical dev letters.
+var splashEnvVariant = sync.OnceValues(func() (splashVariant, bool) {
+	s := os.Getenv("ATRIUM_SPLASH_VARIANT")
+	if s == "" {
+		return splashDefaultVariant, false
 	}
-	return splashDefaultVariant
+	if v, ok := splashVariantNames[s]; ok {
+		return v, true
+	}
+	switch s {
+	case "legacy":
+		return splashVariantLegacy, true
+	case "a":
+		return splashVariantFBM, true
+	case "b":
+		return splashVariantBraille, true
+	case "c":
+		return splashVariantFlow, true
+	case "d":
+		return splashVariantJulia, true
+	case "e":
+		return splashVariantMandala, true
+	}
+	return splashDefaultVariant, true
 })
+
+// splashPick holds the process-wide variant selection: lazily a per-launch
+// rotation draw, or whatever SetSplashVariant last pinned or re-rolled.
+// splashRandomMode records whether the config asked for random, which is what
+// lets the screensaver re-roll per showing while a pinned choice stays put.
+// Plain vars, deliberately unsynchronized: they are only touched from Bubble
+// Tea's single update/view goroutine (renderSplashField takes the variant as
+// a parameter, so the concurrent-render path never reads them).
+var (
+	splashRandomMode = true
+	splashPicked     bool
+	splashPick       splashVariant
+)
+
+// splashActiveVariant resolves the variant splashScene renders: the dev env
+// override if set, else the current selection (seeded lazily from the launch
+// time, so an unconfigured launch gets a fresh look each time). Resolving to
+// one process-wide value is what keeps the preview and terminal panes in
+// agreement; only splashScene consults it — renderSplashField takes the
+// variant as a parameter and stays pure over its inputs.
+func splashActiveVariant() splashVariant {
+	if v, ok := splashEnvVariant(); ok {
+		return v
+	}
+	if !splashPicked {
+		splashPick, splashPicked = splashRotationPick(time.Now().UnixNano()), true
+	}
+	return splashPick
+}
+
+// SetSplashVariant applies the config's splash mode (config.GetSplash): a
+// known pattern name pins that generator; anything else (config.SplashRandom,
+// or an unknown value) re-rolls a fresh random pick. Called at startup and on
+// a live settings change — with the settings panel open over the idle empty
+// state, cycling the enum previews each pattern in place.
+func SetSplashVariant(name string) {
+	if v, ok := splashVariantNames[name]; ok {
+		splashRandomMode, splashPick, splashPicked = false, v, true
+		return
+	}
+	splashRandomMode = true
+	splashPick, splashPicked = splashRotationPick(time.Now().UnixNano()), true
+}
+
+// RerollSplashVariant draws a fresh random pick when in random mode (a pinned
+// config keeps its pattern). The screensaver calls it on activation so each
+// showing within a launch can differ.
+func RerollSplashVariant() {
+	if splashRandomMode {
+		splashPick, splashPicked = splashRotationPick(time.Now().UnixNano()), true
+	}
+}
 
 // splashRotationPick maps a launch-time nanosecond seed to a rotation variant.
 // Go's % preserves the dividend's sign, so a clock set before the Unix epoch

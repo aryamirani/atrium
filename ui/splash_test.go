@@ -266,6 +266,35 @@ func TestSplashLUTThemeAnchored(t *testing.T) {
 		"the rim hue must reach the upper stops of the ramp")
 }
 
+// TestSplashFitsExported pins the exported gate the screensaver entry uses —
+// the same floor as the internal splashFits.
+func TestSplashFitsExported(t *testing.T) {
+	require.True(t, SplashFits(minSplashW, minSplashH))
+	require.False(t, SplashFits(minSplashW-1, minSplashH))
+	require.False(t, SplashFits(minSplashW, minSplashH-1))
+}
+
+// TestSplashScreensaverScene pins the full-window easter-egg scene: exact row
+// count, rows within the pane width, deterministic over (size, frame), and no
+// message line — the field flows uninterrupted below the wordmark instead of
+// being blanked for guidance text nobody passed.
+func TestSplashScreensaverScene(t *testing.T) {
+	const w, h = 80, 30
+	out := SplashScreensaver(w, h, 7)
+	require.Equal(t, out, SplashScreensaver(w, h, 7), "same frame must render identically")
+
+	lines := stripLines(out)
+	require.Len(t, lines, h)
+	for i, ln := range lines {
+		require.LessOrEqual(t, lipgloss.Width(ln), w, "row %d overflows the window", i)
+	}
+
+	withMsg := splashScene(w, h, 7, "press n to start")
+	require.NotContains(t, ansi.Strip(out), "press n", "the screensaver has no message line")
+	require.NotEqual(t, out, withMsg,
+		"dropping the message must also drop its clearing, not just its text")
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a

@@ -276,6 +276,11 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateHints {
 			m.exitHintMode()
 		}
+		// A window shrunk below the splash floor can't render the screensaver;
+		// wake up rather than draw a degenerate field.
+		if m.state == stateScreensaver && !ui.SplashFits(msg.Width, msg.Height) {
+			m.state = stateDefault
+		}
 		m.updateHandleWindowSizeEvent(msg)
 		// First launch ever: show the interactive welcome once the size is known
 		// (its async detection cmd is returned); returning users get the
@@ -597,6 +602,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, tea.ClearScreen
 	}
 
+	// The screensaver dismisses on any key, and the key is consumed — a stray
+	// 'n' (or 'q') must wake the screen, not open the new-session form or quit.
+	// Runs before every other state handler; only ctrl+l above bypasses it, so
+	// a repaint doesn't tear the screensaver down.
+	if m.state == stateScreensaver {
+		m.state = stateDefault
+		return m, nil
+	}
+
 	if m.state == stateHelp {
 		return m.handleHelpState(msg)
 	}
@@ -720,6 +734,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.accountsOverlay = overlay.NewAccountsOverlay(m.appConfig)
 		m.recomputeLayout() // the hint bar hides behind the modal; panes reclaim its row
 		return m, tea.WindowSize()
+	case keys.KeyScreensaver:
+		// The full-window splash easter egg. Silently ignored when the window
+		// is below the splash floor (nothing legible to show).
+		if !ui.SplashFits(m.windowWidth, m.windowHeight) {
+			return m, nil
+		}
+		// Random mode shows a fresh pattern each time; a pinned config keeps its
+		// pick. Arm the animation loop directly — the splash isn't waiting for
+		// the preview tick to notice it.
+		ui.RerollSplashVariant()
+		m.state = stateScreensaver
+		return m, m.armSplashTick()
 	case keys.KeyPrompt:
 		// The full entry point: focus starts on the project picker.
 		return m, m.openCreateForm(false)

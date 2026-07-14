@@ -4,6 +4,8 @@ package config
 // and a nil/absent field (an older config.json predating the key) and returns the
 // documented default, so callers never branch on config presence.
 
+import "slices"
+
 // ModelIndicator modes (see Config.ModelIndicator).
 const (
 	ModelIndicatorOn  = "on"
@@ -33,6 +35,27 @@ func (c *Config) GetPermissionIndicator() string {
 		return PermissionIndicatorOff
 	}
 	return PermissionIndicatorOn
+}
+
+// SplashRandom is the Splash mode that picks a fresh pattern each launch —
+// the default (see Config.Splash).
+const SplashRandom = "random"
+
+// SplashVariants lists the pinnable splash pattern names in settings-panel
+// display order. The mapping onto generators lives in ui (splash_field.go),
+// which takes the name as a plain string so it needs no config import.
+func SplashVariants() []string {
+	return []string{"nebula", "braille", "contours", "julia", "mandala", "plasma"}
+}
+
+// GetSplash returns the normalized splash mode: a known variant name when set
+// to one, else SplashRandom (including a nil Config, the empty default, and
+// unknown values from a hand-edited config).
+func (c *Config) GetSplash() string {
+	if c != nil && slices.Contains(SplashVariants(), c.Splash) {
+		return c.Splash
+	}
+	return SplashRandom
 }
 
 // defaultCarryFiles is the carry list applied when a config predates the

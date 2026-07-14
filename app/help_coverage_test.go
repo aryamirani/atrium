@@ -41,3 +41,15 @@ func TestHelpScreen_NoRetiredKeys(t *testing.T) {
 		}
 	}
 }
+
+// The screensaver backtick is a deliberate easter egg: it has no
+// GlobalKeyBindings entry (so the coverage guard above never demands it), and
+// this pins the prose side — the cheatsheet must not mention it either.
+func TestHelpScreen_OmitsScreensaverKey(t *testing.T) {
+	content := ansi.Strip(helpTypeGeneral{}.toContent())
+	for _, s := range []string{"`", "screensaver"} {
+		if strings.Contains(strings.ToLower(content), s) {
+			t.Errorf("help cheatsheet must not mention the screensaver (%q found)", s)
+		}
+	}
+}

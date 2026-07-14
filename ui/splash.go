@@ -109,6 +109,17 @@ const (
 // legibly. Callers fall back to the plain centered wordmark when it is not.
 func splashFits(w, h int) bool { return w >= minSplashW && h >= minSplashH }
 
+// SplashFits is splashFits for callers outside ui — the screensaver's entry
+// and stay-alive gate in app.
+func SplashFits(w, h int) bool { return splashFits(w, h) }
+
+// SplashScreensaver renders the full-window splash easter egg: the same
+// animated scene as the idle empty state, wordmark centered, but without the
+// guidance message line. Callers gate on SplashFits and own the frame ticks.
+func SplashScreensaver(width, height, frame int) string {
+	return splashScene(width, height, frame, "")
+}
+
 // splashScene composites the idle empty screen: the animated nebula field with
 // the wordmark centered on top and the message tucked just below it. The wordmark
 // and message are overlaid separately at their own widths (not one padded block)
@@ -137,9 +148,16 @@ func splashScene(width, height, frame int, message string) string {
 		msgHalfH:      msgH/2 + 2,
 		msgCenterRow:  msgY + msgH/2,
 	}
+	if message == "" {
+		// No message line (the screensaver): a zero half-extent disables the
+		// ellipse, so the field flows uninterrupted below the wordmark.
+		clearing.msgHalfW, clearing.msgHalfH = 0, 0
+	}
 	field := renderSplashField(width, height, frame, theme.Current().Palette, clearing, splashActiveVariant())
 	scene := overlayAt(field, word, wordX, wordY)
-	scene = overlayAt(scene, msg, msgX, msgY)
+	if message != "" {
+		scene = overlayAt(scene, msg, msgX, msgY)
+	}
 	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(scene)
 }
 

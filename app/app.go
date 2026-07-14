@@ -157,6 +157,9 @@ const (
 	stateWelcome
 	// stateAccounts is the Claude/GitHub account manager modal.
 	stateAccounts
+	// stateScreensaver is the full-window splash easter egg (backtick from the
+	// default state); any key or click returns to stateDefault.
+	stateScreensaver
 )
 
 type home struct {
@@ -466,6 +469,12 @@ func (m *home) Init() tea.Cmd {
 }
 
 func (m *home) View() string {
+	// The screensaver replaces the whole frame — no list, panes, or hint bar —
+	// so it renders (and returns) before the normal layout is even assembled.
+	if m.state == stateScreensaver {
+		return ui.SplashScreensaver(m.windowWidth, m.windowHeight, m.splashFrame)
+	}
+
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
 	parts := []string{listAndPreview}
