@@ -161,6 +161,13 @@ func applyHookEvent(rec *hookRecord, event, agentID, effort string, now int64) {
 //     per #290 a background sub-agent's PreToolUse fires in the MAIN session against this
 //     very record. Gating on the set keeps the chip on the main session's level instead of
 //     flickering to a sub-agent's.
+//
+// The in-flight clause costs one turn in a narrow case, which is the accepted price of the
+// #290 gate: a turn that still has sub-agents running when its own Stop fires records
+// nothing (Stop is gated, and the SubagentStop that drains the set is itself a no-op here),
+// so the level lands on the next ordinary turn instead. Harmless in practice — a turn's
+// first PreToolUse usually fires before anything is spawned — and it degrades to a stale or
+// flag-derived chip, never to another session's level.
 func (rec *hookRecord) recordEffort(effort string) {
 	if effort != "" && len(rec.Inflight) == 0 {
 		rec.Effort = effort

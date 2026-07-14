@@ -214,6 +214,9 @@ func (t *Session) RuntimeEffort() string {
 // known level in place instead of blanking the chip. The record's own write rule already
 // settled which turns may report an effort at all — by the time it lands on disk it is the
 // main session's resolved level, so this is a plain lift, not a second gate.
+//
+// Caller must hold monitorMu (both call sites are inside Poll/PollNow, which hold it for
+// their duration) — RuntimeEffort reads the field under that same lock.
 func (t *Session) stashEffort(rec hookRecord) {
 	if rec.Effort != "" {
 		t.monitor.effort = rec.Effort

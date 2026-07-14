@@ -25,6 +25,11 @@ func (i *Instance) PinnedEffort() string {
 // wins. Truth is strictly better than the flag here, and in two ways the flag can never
 // match: it survives an in-session /effort switch, and it knows the level a session with no
 // --effort inherited from settings.json or the model default.
+//
+// Only PinnedEffort gates on claude; the runtime path needs no gate, because effort reaches
+// runtimeEffort solely through the hook record and hook settings are written for claude
+// sessions alone (tmux.ensureHookSettings). A non-claude session therefore has no runtime
+// level to prefer, and falls through to the gated flag.
 func (i *Instance) EffortInfo() string {
 	if i.runtimeEffort != "" {
 		return i.runtimeEffort
