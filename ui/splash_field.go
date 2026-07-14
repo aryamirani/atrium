@@ -624,7 +624,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 
 	lut := splashLUTFor(pal)
 	nColors := len(lut.styles)
-	starIdx := nColors // flushSplashRun renders any index >= len(styles) as a star
+	starIdx := lut.starIndex() // splashRunAffix emits any index >= this as a star
 	ramp := []rune(splashRamp)
 	maxGlyph := len(ramp) - 1
 	starRampR := []rune(starRamp)
@@ -648,7 +648,14 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	}
 
 	var sb strings.Builder
-	var run strings.Builder
+	// A seed, not a bound — the run count isn't known until the field is walked.
+	// ~4 bytes/cell is where the truecolor output actually lands (measured
+	// 2.1–5.5 across the variants: a cell is one glyph plus its share of the SGR
+	// bracket its run pays for). Seeding near the real size is what holds
+	// Builder's doubling to a step or two: at 240×60 it is the difference
+	// between ~24 allocations a frame and 4. A colorless profile emits ~1
+	// byte/cell and merely over-seeds — one buffer, no copies.
+	sb.Grow(w*h*4 + h)
 	for row := 0; row < h; row++ {
 		if row > 0 {
 			sb.WriteByte('\n')
@@ -712,12 +719,13 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 			}
 
 			if idx != curIdx {
-				flushSplashRun(&sb, &run, curIdx, lut)
+				splashCloseRun(&sb, curIdx, lut)
+				splashOpenRun(&sb, idx, lut)
 				curIdx = idx
 			}
-			run.WriteRune(ch)
+			sb.WriteRune(ch)
 		}
-		flushSplashRun(&sb, &run, curIdx, lut)
+		splashCloseRun(&sb, curIdx, lut)
 	}
 	return sb.String()
 }
