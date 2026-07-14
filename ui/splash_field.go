@@ -98,11 +98,16 @@ var splashActiveVariant = sync.OnceValue(func() splashVariant {
 })
 
 // splashRotationPick maps a launch-time nanosecond seed to a rotation variant.
-// The uint64 conversion keeps the index non-negative: a clock set before the
-// Unix epoch makes UnixNano() negative, and Go's % preserves the dividend's
-// sign, so an int64 modulo could yield a negative index and panic.
+// Go's % preserves the dividend's sign, so a clock set before the Unix epoch
+// (a negative UnixNano) could yield a negative index and panic; fold any
+// negative remainder back into [0, len) instead.
 func splashRotationPick(nano int64) splashVariant {
-	return splashRotation[uint64(nano)%uint64(len(splashRotation))]
+	n := int64(len(splashRotation))
+	idx := nano % n
+	if idx < 0 {
+		idx += n
+	}
+	return splashRotation[idx]
 }
 
 // The domain-warped fBm field ("a" and its derivatives). Frequencies are per
