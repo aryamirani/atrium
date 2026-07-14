@@ -764,9 +764,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.tabbedWindow.ScrollDown(1)
 		return m, m.instanceChanged()
 	case keys.KeyShrinkList:
-		return m, m.adjustListRatio(-listRatioStep)
+		return m, m.adjustListCols(-listColStep)
 	case keys.KeyGrowList:
-		return m, m.adjustListRatio(+listRatioStep)
+		return m, m.adjustListCols(+listColStep)
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())

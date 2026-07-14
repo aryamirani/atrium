@@ -99,6 +99,12 @@ func clampListRatio(r float64) float64 {
 	return r
 }
 
+// ClampListRatio bounds r to the same [min,max] range SetListRatio enforces, for
+// callers computing a live value that isn't persisted yet (e.g. a divider drag).
+func ClampListRatio(r float64) float64 {
+	return clampListRatio(r)
+}
+
 // StateManager combines instance storage and app state management
 type StateManager interface {
 	InstanceStorage

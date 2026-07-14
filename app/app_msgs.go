@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZviBaratz/atrium/config"
 	"github.com/ZviBaratz/atrium/log"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui"
@@ -123,7 +124,63 @@ func (m *home) handleSmartDispatchDone(msg smartDispatchDoneMsg) (tea.Model, tea
 	return m, tea.Batch(cmds...)
 }
 
+// dividerGrab is how many columns on each side of the list/preview seam count as
+// grabbing the divider, so the user doesn't have to land the exact border column.
+const dividerGrab = 1
+
 func (m *home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// A live drag of the list/preview seam owns mouse events until release. A drag
+	// is a single press→motion→release gesture that only makes sense in the default
+	// state, so abandon a stale one instead of trapping later events: if an overlay
+	// took the screen mid-drag, or a fresh press arrives (the matching release was
+	// dropped — e.g. the button came up off-screen, which the terminal never
+	// reports), clear the flag and fall through to normal handling of this event.
+	// Without this a lost release would swallow every click and let the next
+	// press-drag anywhere snap the divider to the cursor.
+	if m.draggingDivider {
+		if m.state != stateDefault || msg.Action == tea.MouseActionPress {
+			m.draggingDivider = false
+		} else {
+			switch msg.Action {
+			case tea.MouseActionMotion:
+				if m.windowWidth <= 0 {
+					return m, nil
+				}
+				m.listRatio = config.ClampListRatio(float64(msg.X) / float64(m.windowWidth))
+				// Reflow the panes so the divider tracks the cursor live. The pane
+				// content (tmux/diff capture) is intentionally left to the periodic
+				// preview tick rather than re-fetched here: a full instanceChanged()
+				// would re-capture on every motion event of the drag. recomputeLayout
+				// re-clamps the already-captured text to the new width in the meantime.
+				m.recomputeLayout()
+				return m, nil
+			case tea.MouseActionRelease:
+				m.draggingDivider = false
+				if err := m.appState.SetListRatio(m.listRatio); err != nil {
+					return m, m.handleError(err)
+				}
+				// One content refresh at the end of the gesture, now that the width
+				// has settled, so the preview/diff aren't left a tick stale.
+				return m, m.instanceChanged()
+			default:
+				return m, nil
+			}
+		}
+	}
+	// Begin a divider drag when the left button presses on (or adjacent to) the
+	// seam between the panes. Default state only; the seam column is listWidth and
+	// the grab is bounded to the pane rows so a press on the hint/error strip below
+	// them doesn't start a drag. This runs before the press-only early return and
+	// the row/tab click logic, so a seam press starts a drag instead of selecting
+	// the row behind it.
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress &&
+		m.state == stateDefault && m.windowWidth > 0 && msg.Y < m.paneContentHeight() {
+		listWidth := int(float32(m.windowWidth) * float32(m.listRatio))
+		if msg.X >= listWidth-dividerGrab && msg.X <= listWidth+dividerGrab {
+			m.draggingDivider = true
+			return m, nil
+		}
+	}
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}

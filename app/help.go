@@ -64,7 +64,7 @@ func (h helpTypeGeneral) toContent() string {
 		helpRow("tab / shift-tab", "next / prev pane"),
 		helpRow("1 / 2 / 3", "jump to preview / diff / terminal"),
 		helpRow("shift-↑↓", "scroll the active pane"),
-		helpRow("< / >", "shrink / grow the session list"),
+		helpRow("< / >", "shrink / grow the session list (or drag the divider)"),
 		helpRow("esc", "exit scroll mode / clear filter"),
 		"",
 		helpHeaderStyle().Render("Manage"),
