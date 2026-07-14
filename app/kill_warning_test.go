@@ -25,10 +25,10 @@ func flattenOverlay(s string) string {
 func TestKillDataWarning(t *testing.T) {
 	require.Equal(t, "", killDataWarning(false, 0))
 	require.Equal(t, " (has uncommitted changes)", killDataWarning(true, 0))
-	require.Equal(t, " (has 1 unpushed commit — deleting discards them)", killDataWarning(false, 1))
-	require.Equal(t, " (has 3 unpushed commits — deleting discards them)", killDataWarning(false, 3))
+	require.Equal(t, " (has 1 unpushed commit — deleting discards this work)", killDataWarning(false, 1))
+	require.Equal(t, " (has 3 unpushed commits — deleting discards this work)", killDataWarning(false, 3))
 	require.Equal(t,
-		" (has uncommitted changes and 2 unpushed commits — deleting discards them)",
+		" (has uncommitted changes and 2 unpushed commits — deleting discards this work)",
 		killDataWarning(true, 2))
 }
 
@@ -72,7 +72,7 @@ func TestConfirmKill_WarnsUnpushedCommits(t *testing.T) {
 
 	require.Equal(t, stateConfirm, h.state)
 	require.NotNil(t, h.confirmationOverlay)
-	require.Contains(t, flattenOverlay(h.confirmationOverlay.Render()), "has 1 unpushed commit — deleting discards them")
+	require.Contains(t, flattenOverlay(h.confirmationOverlay.Render()), "has 1 unpushed commit — deleting discards this work")
 }
 
 // TestConfirmKill_SilentWhenAllCommitsPushed is the regression test for the bug

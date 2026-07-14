@@ -1294,11 +1294,11 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 func killDataWarning(dirty bool, unpushed int) string {
 	switch {
 	case dirty && unpushed > 0:
-		return fmt.Sprintf(" (has uncommitted changes and %d unpushed commit%s — deleting discards them)", unpushed, plural(unpushed))
+		return fmt.Sprintf(" (has uncommitted changes and %d unpushed commit%s — deleting discards this work)", unpushed, plural(unpushed))
 	case dirty:
 		return " (has uncommitted changes)"
 	case unpushed > 0:
-		return fmt.Sprintf(" (has %d unpushed commit%s — deleting discards them)", unpushed, plural(unpushed))
+		return fmt.Sprintf(" (has %d unpushed commit%s — deleting discards this work)", unpushed, plural(unpushed))
 	}
 	return ""
 }
