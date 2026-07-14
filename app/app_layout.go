@@ -41,6 +41,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	if m.errBox.HasError() {
 		errHeight = 1
 	}
+	// Kept in lockstep with paneContentHeight, which recomputes this same budget
+	// for the divider's Y-bound; menuHeight/errHeight are needed here anyway to
+	// size the menu and error rows.
 	contentHeight := max(1, msg.Height-menuHeight-errHeight)
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), errHeight)
 
@@ -124,6 +127,23 @@ func welcomeWidth(termWidth int) int {
 		return preferred
 	}
 	return max(20, min(preferred, termWidth-4))
+}
+
+// paneContentHeight is how many rows the list/preview panes occupy: the full
+// terminal height minus the contextual hint-bar and error rows (see menuVisible),
+// which View reserves at the bottom in lockstep with the layout. The panes start
+// at row 0, so this is also the exclusive lower Y-bound of the draggable divider
+// (handleMouse) — a press below it lands on the menu/error strip, not the seam.
+func (m *home) paneContentHeight() int {
+	menuHeight := 0
+	if m.menuVisible() {
+		menuHeight = 1
+	}
+	errHeight := 0
+	if m.errBox.HasError() {
+		errHeight = 1
+	}
+	return max(1, m.windowHeight-menuHeight-errHeight)
 }
 
 // recomputeLayout re-runs the size calculation off the cached terminal size. Use

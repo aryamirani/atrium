@@ -145,3 +145,56 @@ func TestDividerDragIgnoredInNonDefaultState(t *testing.T) {
 	_, _ = h.Update(pressAt(seam, 5))
 	require.False(t, h.draggingDivider, "the seam must not be draggable while an overlay owns the screen")
 }
+
+// TestDividerPressBelowPanesDoesNotDrag: a press at the seam column but on the
+// hint/error strip below the panes must not start a drag — that row belongs to
+// the menu, not the divider.
+func TestDividerPressBelowPanesDoesNotDrag(t *testing.T) {
+	h := newWheelHome(t)
+	seam := layoutListWidth(h)
+
+	belowPanes := h.paneContentHeight() // first row below the panes (the menu strip)
+	require.Less(t, belowPanes, h.windowHeight, "test needs a menu/error row below the panes")
+
+	_, _ = h.Update(pressAt(seam, belowPanes))
+	require.False(t, h.draggingDivider, "a seam-column press on the menu strip must not begin a drag")
+}
+
+// TestDividerDragAbandonedOnLostRelease: if the release that should end a drag is
+// never delivered (button came up off-screen), a later press must clear the stale
+// drag and be handled normally — not be swallowed, and not let the next motion
+// snap the divider to the cursor.
+func TestDividerDragAbandonedOnLostRelease(t *testing.T) {
+	h := newWheelHome(t)
+	seam := layoutListWidth(h)
+
+	_, _ = h.Update(pressAt(seam, 5))
+	require.True(t, h.draggingDivider, "press on the seam begins a drag")
+
+	// The release is lost; the next thing we see is a fresh press elsewhere.
+	before := h.listRatio
+	_, _ = h.Update(pressAt(seam+20, 5)) // well inside the preview, not on the seam
+	require.False(t, h.draggingDivider, "a fresh press must abandon the stale drag")
+
+	// A subsequent button-held motion must NOT move the divider — the drag is over.
+	_, _ = h.Update(motionAt(90, 5))
+	require.InDelta(t, before, h.listRatio, 1e-9,
+		"motion after an abandoned drag must not move the divider")
+}
+
+// TestDividerDragAbandonedWhenStateChanges: if an overlay takes the screen while a
+// drag is in flight, subsequent motion must not keep resizing the panes behind it.
+func TestDividerDragAbandonedWhenStateChanges(t *testing.T) {
+	h := newWheelHome(t)
+	seam := layoutListWidth(h)
+
+	_, _ = h.Update(pressAt(seam, 5))
+	require.True(t, h.draggingDivider, "press on the seam begins a drag")
+
+	before := h.listRatio
+	h.state = statePrompt // an overlay opened mid-drag
+	_, _ = h.Update(motionAt(90, 5))
+	require.False(t, h.draggingDivider, "a state change must abandon the drag")
+	require.InDelta(t, before, h.listRatio, 1e-9,
+		"motion behind an overlay must not move the divider")
+}
