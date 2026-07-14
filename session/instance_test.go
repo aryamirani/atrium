@@ -122,7 +122,7 @@ func TestRecoverLostSessionTransitionsToPaused(t *testing.T) {
 // uncommitted changes — which Pause commits before removing the worktree —
 // clears the cached diffStats.Dirty flag. The metadata poll loop skips paused
 // instances, so a stale Dirty=true would otherwise persist and surface a false
-// "(has uncommitted changes)" in the kill dialog (and a stale list glyph).
+// "has uncommitted changes" warning in the kill dialog (and a stale list glyph).
 func TestPause_ClearsCachedDirtyDiffStat(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

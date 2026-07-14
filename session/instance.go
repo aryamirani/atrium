@@ -379,6 +379,9 @@ func (i *Instance) ToInstanceData() InstanceData {
 
 	// Only include diff stats if they exist
 	if i.diffStats != nil {
+		// Copy to a local before taking its address: &i.diffStats.Unpushed would
+		// alias the live struct the poll keeps mutating into the serialized data.
+		unpushed := i.diffStats.Unpushed
 		data.DiffStats = DiffStatsData{
 			Added:        i.diffStats.Added,
 			Removed:      i.diffStats.Removed,
@@ -386,6 +389,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 			FilesChanged: i.diffStats.FilesChanged,
 			Commits:      i.diffStats.Commits,
 			Behind:       i.diffStats.Behind,
+			Unpushed:     &unpushed,
 			Dirty:        i.diffStats.Dirty,
 		}
 	}
@@ -462,6 +466,15 @@ func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix strin
 			branchPrefix,
 		)
 		instance.gitWorktree.SetGHConfigDir(instance.ghConfigDir)
+		// A state.json predating the unpushed field omits it. Resolve that gap
+		// conservatively — assume none of the ahead commits are pushed, which is the
+		// pre-field behavior — rather than as a literal 0, which would claim nothing
+		// is at risk. An active session self-corrects on the next poll; a paused one
+		// is never polled, so this value is the one its kill dialog will use.
+		unpushed := data.DiffStats.Commits
+		if data.DiffStats.Unpushed != nil {
+			unpushed = *data.DiffStats.Unpushed
+		}
 		instance.diffStats = &git.DiffStats{
 			Added:        data.DiffStats.Added,
 			Removed:      data.DiffStats.Removed,
@@ -469,6 +482,7 @@ func FromInstanceData(ctx context.Context, data InstanceData, branchPrefix strin
 			FilesChanged: data.DiffStats.FilesChanged,
 			Commits:      data.DiffStats.Commits,
 			Behind:       data.DiffStats.Behind,
+			Unpushed:     unpushed,
 			Dirty:        data.DiffStats.Dirty,
 		}
 	}

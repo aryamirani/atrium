@@ -30,11 +30,17 @@ const revListCacheTTL = 3 * time.Second
 const dirtyCacheTTL = 1 * time.Second
 
 // repoStatsEntry holds the cached results from a single computeRepoStats run.
-// commits-ahead/behind are cached for revListCacheTTL; dirty is cached for
-// dirtyCacheTTL (shorter, because it reflects uncommitted file edits).
+// commits-ahead/behind and unpushed are cached for revListCacheTTL; dirty is cached
+// for dirtyCacheTTL (shorter, because it reflects uncommitted file edits). unpushed
+// shares the commits clock deliberately: it is computed by the same revListCounts
+// call and moves on the same events (a commit, or a push), so it needs no TTL field
+// of its own. Atrium's own CommitChanges/PushChanges invalidate the entry outright; a
+// push the agent runs itself inside the session does not, and is simply picked up
+// when the TTL lapses.
 type repoStatsEntry struct {
 	commits         int
 	behind          int
+	unpushed        int
 	dirty           bool
 	dirtyComputedAt time.Time
 	computedAt      time.Time
@@ -59,6 +65,13 @@ type DiffStats struct {
 	// Commits is the number of commits the session branch is ahead of the base
 	// (i.e. committed progress made within the session)
 	Commits int
+	// Unpushed is the number of commits reachable from the session branch but not
+	// from any origin remote-tracking ref — the commits that a kill's `git branch -D`
+	// would actually destroy. Unlike Commits (ahead of base), it is 0 for a fully
+	// pushed branch, whose work survives on the remote regardless of the session.
+	// It is bounded by the base, so a repo with no origin degrades to Commits rather
+	// than counting the whole history.
+	Unpushed int
 	// Behind is the number of commits the base ref has advanced since the session
 	// forked from it. It is 0 when unknown (e.g. the base ref was not persisted).
 	Behind int
@@ -205,6 +218,7 @@ func (g *Worktree) computeRepoStats(stats *DiffStats, wt string) {
 	if cacheFresh(g.statsCache.computedAt, revListCacheTTL) {
 		stats.Commits = g.statsCache.commits
 		stats.Behind = g.statsCache.behind
+		stats.Unpushed = g.statsCache.unpushed
 		g.statsCacheMu.Unlock()
 	} else {
 		g.statsCacheMu.Unlock()
@@ -212,15 +226,17 @@ func (g *Worktree) computeRepoStats(stats *DiffStats, wt string) {
 		// Only cache a successful result. A transient rev-list failure must not be
 		// stored, or the zero it leaves would suppress retries for the whole TTL;
 		// leaving the cache empty makes the next tick recompute immediately.
-		if commits, behind, ok := g.revListCounts(wt); ok {
+		if commits, behind, unpushed, ok := g.revListCounts(wt); ok {
 			stats.Commits = commits
 			stats.Behind = behind
+			stats.Unpushed = unpushed
 
 			// Update only the rev-list fields: a whole-struct replace would wipe
 			// the dirty cache, forcing a redundant git status on the next tick.
 			g.statsCacheMu.Lock()
 			g.statsCache.commits = commits
 			g.statsCache.behind = behind
+			g.statsCache.unpushed = unpushed
 			g.statsCache.computedAt = time.Now()
 			g.statsCacheMu.Unlock()
 		}
@@ -248,13 +264,13 @@ func (g *Worktree) computeRepoStats(stats *DiffStats, wt string) {
 	}
 }
 
-// revListCounts returns the session's commits-ahead and, when the base ref is
-// known, commits-behind by shelling out to git rev-list. ok is false only when a
-// subprocess that was attempted failed (or its output couldn't be parsed); the
-// no-base case returns (0, 0, true) because zero is the correct, cacheable answer
+// revListCounts returns the session's commits-ahead, commits-behind (when the base
+// ref is known), and unpushed count by shelling out to git rev-list. ok is false only
+// when a subprocess that was attempted failed (or its output couldn't be parsed); the
+// no-base case returns (0, 0, 0, true) because zero is the correct, cacheable answer
 // rather than an error. The split lets computeRepoStats cache good results while
 // skipping bad ones.
-func (g *Worktree) revListCounts(wt string) (commits, behind int, ok bool) {
+func (g *Worktree) revListCounts(wt string) (commits, behind, unpushed int, ok bool) {
 	// A single rev-list gives both "ahead" (session commits) and "behind" (base
 	// advanced) when the base ref is known; fall back to ahead-only otherwise.
 	// Read baseRef/baseCommitSHA through baseMu (via their getters): setup writes
@@ -262,27 +278,70 @@ func (g *Worktree) revListCounts(wt string) (commits, behind int, ok bool) {
 	if baseRef := g.GetBaseRef(); baseRef != "" {
 		out, err := g.runGitCommand(wt, "rev-list", "--left-right", "--count", baseRef+"...HEAD")
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
 		behind, ahead, parsed := parseLeftRightCount(out)
 		if !parsed {
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
-		return ahead, behind, true
+		return ahead, behind, g.unpushedCount(wt, baseRef, ahead), true
 	}
 	if baseCommitSHA := g.GetBaseCommitSHA(); baseCommitSHA != "" {
 		out, err := g.runGitCommand(wt, "rev-list", "--count", baseCommitSHA+"..HEAD")
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
 		ahead, aerr := strconv.Atoi(strings.TrimSpace(out))
 		if aerr != nil {
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
-		return ahead, 0, true
+		return ahead, 0, g.unpushedCount(wt, baseCommitSHA, ahead), true
 	}
 	// No base to compare against: zero is a legitimate, cacheable result.
-	return 0, 0, true
+	return 0, 0, 0, true
+}
+
+// unpushedCount returns how many of the session's ahead commits are reachable from
+// no origin remote-tracking ref — the ones a kill's `git branch -D` would actually
+// destroy. base is whatever revListCounts measured ahead against, and ahead is that
+// count; both are passed in so this never re-derives them.
+//
+// The range is bounded by base rather than walking from HEAD, which matters in two
+// ways. A repo with no origin has nothing to exclude, so an unbounded walk would
+// return the entire history; bounded, it collapses to ahead — correct, since none of
+// that work is pushed. And excluding --remotes=origin (rather than diffing against
+// origin/<branch>) means a never-pushed branch is counted rather than erroring: git
+// fatals on `origin/<branch>..HEAD` when that ref does not exist, and this function's
+// failure path would then read as "nothing at risk" on precisely the branch that has
+// everything at risk.
+//
+// On any failure it returns ahead, not zero: we know that many commits exist and
+// could not prove any of them are pushed, so assume none are. Over-warning is the
+// safe direction — this is the input to a data-loss warning. A remote not named
+// origin (a fork/upstream setup) lands here too: nothing matches --remotes=origin, so
+// the whole ahead-range counts as at-risk. Over-warning again, and consistent with
+// the rest of the codebase, which hardcodes origin.
+//
+// It reads only local remote-tracking refs, never the network, so the answer is as
+// fresh as the last fetch. A ref that is stale-behind over-warns (safe); the one
+// unsafe direction is a ref left pointing at a branch since deleted on the remote,
+// which no local-only check can detect.
+func (g *Worktree) unpushedCount(wt, base string, ahead int) int {
+	// Not ahead of base means every commit on this branch is also reachable from
+	// base, which survives `git branch -D` — so nothing is at risk regardless of
+	// whether base itself is pushed, and the common idle case pays no subprocess.
+	if ahead <= 0 {
+		return 0
+	}
+	out, err := g.runGitCommand(wt, "rev-list", "--count", base+"..HEAD", "--not", "--remotes=origin")
+	if err != nil {
+		return ahead
+	}
+	n, perr := strconv.Atoi(strings.TrimSpace(out))
+	if perr != nil {
+		return ahead
+	}
+	return n
 }
 
 // invalidateStatsCache clears the cached rev-list counts and dirty flag so the

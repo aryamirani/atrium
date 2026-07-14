@@ -99,6 +99,10 @@ func (i *Instance) noteAutoPauseCommit() {
 		i.diffStats = &git.DiffStats{}
 	}
 	i.diffStats.Commits++
+	// The WIP commit was just made locally and never pushed, so it is also at risk:
+	// a paused session is never polled, making this the only chance to record that
+	// before the kill dialog reads it.
+	i.diffStats.Unpushed++
 }
 
 // noteAutoPauseUnwind reverses noteAutoPauseCommit's cached accounting when Resume
@@ -112,6 +116,9 @@ func (i *Instance) noteAutoPauseUnwind(n int) {
 		return
 	}
 	i.diffStats.Commits = max(0, i.diffStats.Commits-n)
+	// The unwound commits were the unpushed ones noteAutoPauseCommit counted, so drop
+	// them from the at-risk count too; their content lives on as pending changes.
+	i.diffStats.Unpushed = max(0, i.diffStats.Unpushed-n)
 	i.diffStats.Dirty = true
 }
 

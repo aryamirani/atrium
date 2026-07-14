@@ -256,3 +256,109 @@ func TestDiff_RepoStats(t *testing.T) {
 		t.Errorf("after base advances: Commits = %d, want 1 (unchanged)", stats.Commits)
 	}
 }
+
+// TestDiff_UnpushedTracksWhatDeleteWouldDestroy is the core test for the Unpushed
+// count. Killing a session runs `git branch -D` and never touches origin, so the
+// commits genuinely at risk are exactly those reachable from the session branch but
+// not from any origin ref. Commits (ahead of base) must keep its own meaning
+// throughout — the two diverge the moment the branch is pushed, which is the bug
+// this count exists to fix.
+func TestDiff_UnpushedTracksWhatDeleteWouldDestroy(t *testing.T) {
+	repoPath := newTestRepo(t)
+	baseBranch := strings.TrimSpace(mustRunGit(t, repoPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	withOrigin(t, repoPath, baseBranch)
+
+	wt, _, err := NewWorktreeFromBase(context.Background(), repoPath, "sess", baseBranch)
+	if err != nil {
+		t.Fatalf("NewWorktreeFromBase: %v", err)
+	}
+	if err := wt.Setup(); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	wtPath := wt.GetWorktreePath()
+	branch := wt.GetBranchName()
+
+	commit := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(wtPath, name), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		mustRunGit(t, wtPath, "add", ".")
+		mustRunGit(t, wtPath, "commit", "-m", "session work: "+name)
+		// Direct git commits bypass CommitChanges, so drop the cached counts.
+		wt.invalidateStatsCache()
+	}
+
+	// Two commits, never pushed: every one of them dies with the branch.
+	commit("one.txt", "1\n")
+	commit("two.txt", "2\n")
+	stats := wt.Diff()
+	if stats.Commits != 2 || stats.Unpushed != 2 {
+		t.Fatalf("never pushed: got commits=%d unpushed=%d, want 2 and 2", stats.Commits, stats.Unpushed)
+	}
+
+	// Push the branch: the work now lives on origin (this is the open-PR shape).
+	// Still 2 commits ahead of base, but nothing is at risk any more.
+	mustRunGit(t, wtPath, "push", "origin", branch)
+	wt.invalidateStatsCache()
+	stats = wt.Diff()
+	if stats.Commits != 2 {
+		t.Errorf("after push: Commits = %d, want 2 (ahead-of-base is unchanged by pushing)", stats.Commits)
+	}
+	if stats.Unpushed != 0 {
+		t.Errorf("after push: Unpushed = %d, want 0 — pushed commits survive `git branch -D`", stats.Unpushed)
+	}
+
+	// One more local commit on top of the pushed branch: exactly that one is at risk.
+	commit("three.txt", "3\n")
+	stats = wt.Diff()
+	if stats.Commits != 3 {
+		t.Errorf("after local commit: Commits = %d, want 3", stats.Commits)
+	}
+	if stats.Unpushed != 1 {
+		t.Errorf("after local commit: Unpushed = %d, want 1", stats.Unpushed)
+	}
+}
+
+// TestDiff_UnpushedWithoutRemoteDegradesToCommits guards the trap that an unbounded
+// `rev-list HEAD --not --remotes=origin` falls into: with no origin to exclude, it
+// walks the entire history and would report every commit in the repo as at-risk.
+// Bounding the rev-list by the base makes the no-remote case collapse to Commits,
+// which is the correct conservative answer — nothing here is pushed anywhere.
+func TestDiff_UnpushedWithoutRemoteDegradesToCommits(t *testing.T) {
+	repoPath := newTestRepo(t) // no origin at all
+	// Give the base branch some history, so "whole history" and "ahead of base"
+	// are different numbers and the assertion can tell them apart.
+	for _, n := range []string{"h1.txt", "h2.txt", "h3.txt"} {
+		if err := os.WriteFile(filepath.Join(repoPath, n), []byte(n), 0644); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+		mustRunGit(t, repoPath, "add", ".")
+		mustRunGit(t, repoPath, "commit", "-m", "base history "+n)
+	}
+	baseBranch := strings.TrimSpace(mustRunGit(t, repoPath, "rev-parse", "--abbrev-ref", "HEAD"))
+
+	wt, _, err := NewWorktreeFromBase(context.Background(), repoPath, "sess", baseBranch)
+	if err != nil {
+		t.Fatalf("NewWorktreeFromBase: %v", err)
+	}
+	if err := wt.Setup(); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	wtPath := wt.GetWorktreePath()
+
+	if err := os.WriteFile(filepath.Join(wtPath, "work.txt"), []byte("w\n"), 0644); err != nil {
+		t.Fatalf("write work.txt: %v", err)
+	}
+	mustRunGit(t, wtPath, "add", ".")
+	mustRunGit(t, wtPath, "commit", "-m", "session work")
+	wt.invalidateStatsCache()
+
+	stats := wt.Diff()
+	if stats.Commits != 1 {
+		t.Fatalf("no remote: Commits = %d, want 1", stats.Commits)
+	}
+	if stats.Unpushed != 1 {
+		t.Errorf("no remote: Unpushed = %d, want 1 (the session commit only, not the whole history)", stats.Unpushed)
+	}
+}

@@ -133,7 +133,15 @@ type DiffStatsData struct {
 	FilesChanged int    `json:"files_changed"`
 	Commits      int    `json:"commits"`
 	Behind       int    `json:"behind"`
-	Dirty        bool   `json:"dirty"`
+	// Unpushed is a pointer so that "absent" and "0" stay distinguishable, which the
+	// rest of these fields have no need for. A state.json written before this field
+	// existed omits it, and the poll never recomputes stats for a paused session — so
+	// decoding the gap as a literal 0 would tell a paused-with-WIP session that
+	// nothing is at risk and let a kill discard it. nil means unknown, and
+	// FromInstanceData resolves unknown conservatively. omitempty drops only nil,
+	// never 0, so every save written from here on carries the key.
+	Unpushed *int `json:"unpushed,omitempty"`
+	Dirty    bool `json:"dirty"`
 }
 
 // Storage handles saving and loading instances using the state interface
