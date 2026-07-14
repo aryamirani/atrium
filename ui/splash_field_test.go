@@ -2,6 +2,7 @@ package ui
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -428,8 +429,85 @@ func TestSetSplashVariantRandomRerolls(t *testing.T) {
 	require.True(t, splashPicked, "random mode draws immediately so both panes agree")
 	require.Contains(t, splashRotation, splashPick, "the draw must come from the rotation pool")
 
-	RerollSplashVariant()
-	require.Contains(t, splashRotation, splashPick)
+	// Every re-roll must land somewhere in the pool *and* move: the screensaver
+	// re-rolls per activation, so a draw that repeats the current pattern reads
+	// as a dead keypress. Looping catches a seed-dependent repeat that a single
+	// call would only hit ~1/len of the time.
+	for i := 0; i < 40; i++ {
+		prev := splashPick
+		RerollSplashVariant()
+		require.Contains(t, splashRotation, splashPick)
+		require.NotEqual(t, prev, splashPick, "a re-roll must change the pattern (iteration %d)", i)
+	}
+}
+
+// TestSplashRotationRerollUniformOverRemainder pins the exclusion arithmetic
+// directly, seed by seed: every consecutive seed maps to some variant other
+// than cur, and sweeping a full period hits each of the other variants exactly
+// once — i.e. skipping cur's slot doesn't bias the draw toward its neighbour.
+func TestSplashRotationRerollUniformOverRemainder(t *testing.T) {
+	for _, cur := range splashRotation {
+		counts := map[splashVariant]int{}
+		for seed := int64(0); seed < int64(len(splashRotation)-1); seed++ {
+			got := splashRotationReroll(seed, cur)
+			require.NotEqual(t, cur, got, "cur=%d seed=%d must be excluded", cur, seed)
+			counts[got]++
+		}
+		require.Len(t, counts, len(splashRotation)-1, "cur=%d: every other variant must be reachable", cur)
+		for v, n := range counts {
+			require.Equal(t, 1, n, "cur=%d variant=%d drawn %d times over one period", cur, v, n)
+		}
+	}
+}
+
+// TestSplashRotationRerollFallsBackOutsidePool: a cur the pool doesn't contain
+// (the unpicked zero value, or the legacy baseline — pinnable but never drawn)
+// has nothing to exclude, so it degrades to a plain draw rather than looping or
+// panicking. Negative seeds must stay in bounds here too.
+func TestSplashRotationRerollFallsBackOutsidePool(t *testing.T) {
+	for _, seed := range []int64{-1, 0, 1, -(1 << 62), 1 << 62} {
+		require.Contains(t, splashRotation, splashRotationReroll(seed, splashVariantLegacy),
+			"legacy cur, seed %d", seed)
+	}
+}
+
+// TestSplashSelectionConcurrent is TestRenderSplashFieldConcurrent's counterpart
+// for the mutable selection: renderSplashField is pure and provably safe, but
+// SetSplashVariant / RerollSplashVariant write process-wide state that a
+// sync.OnceValue used to make safe by construction. Under -race this pins
+// splashSelMu actually covering them; without it the package's own
+// concurrent-render posture would rest on a comment.
+//
+// splashActiveVariant short-circuits on the env override TestMain pins, so this
+// exercises the writers plus a locked read rather than the lazy-seed path.
+func TestSplashSelectionConcurrent(t *testing.T) {
+	resetSplashSelection(t)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				switch (g + i) % 3 {
+				case 0:
+					SetSplashVariant("random")
+				case 1:
+					SetSplashVariant("julia")
+				default:
+					RerollSplashVariant()
+				}
+				_ = splashActiveVariant()
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	splashSelMu.Lock()
+	defer splashSelMu.Unlock()
+	require.True(t, splashPicked, "every path above picks")
+	require.Contains(t, append(slices.Clone(splashRotation), splashVariantJulia), splashPick,
+		"the selection must never be torn into an out-of-pool value")
 }
 
 // TestSplashEnvOverrideTrumpsSelection relies on TestMain pinning

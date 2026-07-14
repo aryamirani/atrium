@@ -737,6 +737,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyScreensaver:
 		// The full-window splash easter egg. Silently ignored when the window
 		// is below the splash floor (nothing legible to show).
+		//
+		// Deliberately absent from keyAllowedWhileBusy, unlike the other
+		// read-only view key (KeyHelp): this one blanks the whole frame, and
+		// the frame is where an in-flight action's busy text and spinner live.
+		// Hiding the feedback for work the user is waiting on is worth the
+		// busy notice, even though the screensaver itself touches no tmux/git.
 		if !ui.SplashFits(m.windowWidth, m.windowHeight) {
 			return m, nil
 		}

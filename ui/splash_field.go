@@ -14,6 +14,7 @@ package ui
 import (
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -114,14 +115,21 @@ var splashEnvVariant = sync.OnceValues(func() (splashVariant, bool) {
 	return splashDefaultVariant, true
 })
 
-// splashPick holds the process-wide variant selection: lazily a per-launch
-// rotation draw, or whatever SetSplashVariant last pinned or re-rolled.
-// splashRandomMode records whether the config asked for random, which is what
-// lets the screensaver re-roll per showing while a pinned choice stays put.
-// Plain vars, deliberately unsynchronized: they are only touched from Bubble
-// Tea's single update/view goroutine (renderSplashField takes the variant as
-// a parameter, so the concurrent-render path never reads them).
+// The process-wide variant selection: lazily a per-launch rotation draw, or
+// whatever SetSplashVariant last pinned or re-rolled. splashRandomMode records
+// whether the config asked for random, which is what lets the screensaver
+// re-roll per showing while a pinned choice stays put.
+//
+// splashSelMu guards them. Bubble Tea drives every caller from its single
+// update/view goroutine, so the lock is uncontended insurance rather than a
+// live need — but it is the same insurance splashLUTFor buys one file over,
+// and TerminalPane.String() already takes its own mutex before reaching
+// splashScene, i.e. that pane is treated as multi-goroutine-reachable. These
+// vars replaced a sync.OnceValue that was safe by construction; a leaf mutex
+// keeps the invariant enforced instead of merely documented, at one
+// uncontended lock per frame.
 var (
+	splashSelMu      sync.Mutex
 	splashRandomMode = true
 	splashPicked     bool
 	splashPick       splashVariant
@@ -137,6 +145,8 @@ func splashActiveVariant() splashVariant {
 	if v, ok := splashEnvVariant(); ok {
 		return v
 	}
+	splashSelMu.Lock()
+	defer splashSelMu.Unlock()
 	if !splashPicked {
 		splashPick, splashPicked = splashRotationPick(time.Now().UnixNano()), true
 	}
@@ -149,6 +159,8 @@ func splashActiveVariant() splashVariant {
 // a live settings change — with the settings panel open over the idle empty
 // state, cycling the enum previews each pattern in place.
 func SetSplashVariant(name string) {
+	splashSelMu.Lock()
+	defer splashSelMu.Unlock()
 	if v, ok := splashVariantNames[name]; ok {
 		splashRandomMode, splashPick, splashPicked = false, v, true
 		return
@@ -159,24 +171,49 @@ func SetSplashVariant(name string) {
 
 // RerollSplashVariant draws a fresh random pick when in random mode (a pinned
 // config keeps its pattern). The screensaver calls it on activation so each
-// showing within a launch can differ.
+// showing within a launch differs from the last: the draw deliberately excludes
+// the current pattern, since a re-roll that lands back on it reads as a dead
+// keypress rather than a fresh look.
 func RerollSplashVariant() {
+	splashSelMu.Lock()
+	defer splashSelMu.Unlock()
 	if splashRandomMode {
-		splashPick, splashPicked = splashRotationPick(time.Now().UnixNano()), true
+		splashPick, splashPicked = splashRotationReroll(time.Now().UnixNano(), splashPick), true
 	}
 }
 
 // splashRotationPick maps a launch-time nanosecond seed to a rotation variant.
-// Go's % preserves the dividend's sign, so a clock set before the Unix epoch
-// (a negative UnixNano) could yield a negative index and panic; fold any
-// negative remainder back into [0, len) instead.
 func splashRotationPick(nano int64) splashVariant {
-	n := int64(len(splashRotation))
-	idx := nano % n
-	if idx < 0 {
-		idx += n
+	return splashRotation[splashRotationIdx(nano, len(splashRotation))]
+}
+
+// splashRotationReroll maps a seed to a rotation variant other than cur, so a
+// re-roll always visibly changes the pattern. It draws over the pool minus cur
+// (len-1 slots) and steps past cur's slot, which keeps the result uniform over
+// the remaining variants rather than biased toward cur's neighbour. A cur
+// outside the pool (the unpicked zero value, or the legacy baseline — pinnable
+// but never drawn) has nothing to exclude, so it falls back to a plain draw.
+func splashRotationReroll(nano int64, cur splashVariant) splashVariant {
+	ci := slices.Index(splashRotation, cur)
+	if ci < 0 || len(splashRotation) < 2 {
+		return splashRotationPick(nano)
+	}
+	idx := splashRotationIdx(nano, len(splashRotation)-1)
+	if idx >= ci {
+		idx++
 	}
 	return splashRotation[idx]
+}
+
+// splashRotationIdx folds a nanosecond seed into [0, n). Go's % preserves the
+// dividend's sign, so a clock set before the Unix epoch (a negative UnixNano)
+// would otherwise yield a negative index and panic.
+func splashRotationIdx(nano int64, n int) int {
+	idx := nano % int64(n)
+	if idx < 0 {
+		idx += int64(n)
+	}
+	return int(idx)
 }
 
 // The domain-warped fBm field ("a" and its derivatives). Frequencies are per
