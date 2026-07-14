@@ -20,19 +20,29 @@ func pane(transcriptBody, footerLine string) string {
 	}, "\n")
 }
 
-// Footer status lines captured verbatim from a live claude 2.1.178 pane, one
-// per --permission-mode (the "/rc active" right-aligned status is elided; only
-// the left content matters to detection).
+// Footer status lines captured verbatim from a live claude 2.1.209 pane by
+// cycling shift+tab, one per --permission-mode (the right-aligned status is
+// elided; only the left content matters to detection).
 const (
-	footerDefault     = "  ? for shortcuts · ← for agents"
+	footerManual      = "  ⏸ manual mode on · ? for shortcuts · ← for agents"
 	footerPlan        = "  ⏸ plan mode on (shift+tab to cycle) · ← for agents"
 	footerAcceptEdits = "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
 	footerAuto        = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
-	footerBypass      = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
-	// A special mode persists its indicator while the turn is in flight, beside
-	// the busy hint (registry_test.go fixture shape).
+	// bypassPermissions sits outside the shift+tab cycle, so this one is still
+	// the 2.1.178 capture (see claudePermissionModeMarkers).
+	footerBypass = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+	// Every mode keeps its indicator while the turn is in flight; only the
+	// trailing hint swaps ("? for shortcuts" → "esc to interrupt"), which is
+	// why a busy footer can still name its mode.
 	footerAutoWorking = "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents"
-	// Default mode while working shows the busy hint and no mode indicator.
+	// Default mode while working: the swap costs it "? for shortcuts" at any
+	// width, so its own indicator is the only thing naming the mode.
+	footerManualWorking = "  ⏸ manual mode on · esc to interrupt · ← for agents"
+	// Pre-2.1.209 claude rendered no mode line for default, naming it only by
+	// the idle hint; the fall-through below the marker loop still covers it.
+	footerDefaultLegacy = "  ? for shortcuts · ← for agents"
+	// A footer that names no mode and shows no idle hint stays indeterminate.
+	// (Pre-2.1.209 shape: 2.1.209 renders the spinner above the input box.)
 	footerBusyNoMode = "  ✻ Cogitating… (5s · esc to interrupt)"
 )
 
@@ -43,13 +53,15 @@ func TestClaudePermissionMode(t *testing.T) {
 		wantMode  string
 		wantKnown bool
 	}{
-		{"default idle", footerDefault, "default", true},
+		{"default idle", footerManual, "default", true},
 		{"plan", footerPlan, "plan", true},
 		{"accept edits", footerAcceptEdits, "acceptEdits", true},
 		{"auto", footerAuto, "auto", true},
 		{"bypass permissions", footerBypass, "bypassPermissions", true},
 		{"special mode persists while working", footerAutoWorking, "auto", true},
-		{"busy default footer is indeterminate", footerBusyNoMode, "", false},
+		{"default persists while working", footerManualWorking, "default", true},
+		{"legacy default idle hint", footerDefaultLegacy, "default", true},
+		{"footer naming no mode is indeterminate", footerBusyNoMode, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -66,7 +78,7 @@ func TestClaudePermissionMode(t *testing.T) {
 // must not be read as the live mode: only footerRegion, below the box, counts.
 func TestClaudePermissionMode_ConfinedToFooter(t *testing.T) {
 	// The conversation discusses "auto mode on", but the live footer is default.
-	content := pane("Assistant: I'll switch to auto mode on the next turn.", footerDefault)
+	content := pane("Assistant: I'll switch to auto mode on the next turn.", footerManual)
 	if mode, known := claudePermissionMode(content); mode != "default" || !known {
 		t.Errorf("transcript mention leaked into detection: got (%q, %v), want (default, true)", mode, known)
 	}
@@ -116,7 +128,10 @@ func TestDetectPermissionMode_AdapterWiring(t *testing.T) {
 // Every mode the detector can emit must be a value the CLI accepts, so the chip
 // never renders a label the create form / flag composition would reject.
 func TestClaudePermissionMode_EmitsValidEnum(t *testing.T) {
-	for _, footer := range []string{footerPlan, footerAcceptEdits, footerAuto, footerBypass, footerDefault} {
+	for _, footer := range []string{
+		footerPlan, footerAcceptEdits, footerAuto, footerBypass,
+		footerManual, footerManualWorking, footerDefaultLegacy,
+	} {
 		mode, known := claudePermissionMode(pane("x", footer))
 		if !known {
 			t.Fatalf("footer %q unexpectedly indeterminate", footer)

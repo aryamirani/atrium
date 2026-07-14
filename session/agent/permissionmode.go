@@ -91,12 +91,24 @@ func WithPermissionModeFlag(program, mode string) string {
 // claudePermissionModeMarkers maps a stable footer token to the enum value of
 // the mode it indicates. The tokens are the mode-name words claude renders in
 // its status-bar line below the input box — captured verbatim from a live
-// claude 2.1.178 pane (see permissionmode_detect_test.go fixtures):
+// claude 2.1.209 pane by cycling shift+tab (see permissionmode_detect_test.go
+// fixtures):
 //
-//	⏸ plan mode on (shift+tab to cycle)
-//	⏵⏵ accept edits on (shift+tab to cycle)
-//	⏵⏵ auto mode on (shift+tab to cycle)
-//	⏵⏵ bypass permissions on (shift+tab to cycle)
+//	⏸ manual mode on · ? for shortcuts · ← for agents
+//	⏸ plan mode on (shift+tab to cycle) · ← for agents
+//	⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
+//	⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+//
+// bypassPermissions is outside that cycle — it is reached only via
+// --dangerously-skip-permissions, whose startup acceptance dialog Atrium does
+// not drive — so its token remains the 2.1.178 capture:
+//
+//	⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+//
+// Every mode holds its indicator for the whole turn, busy or idle; only the
+// trailing hint swaps ("? for shortcuts" → "esc to interrupt"). Since the mode
+// is cyclable mid-turn, that persistence is what lets a busy footer track a
+// switch instead of stalling on the pre-turn value.
 //
 // Matching the words, not the leading glyph, keeps detection robust to a glyph
 // restyle and disambiguates the three ⏵⏵ modes. dontAsk has no interactive
@@ -105,6 +117,7 @@ func WithPermissionModeFlag(program, mode string) string {
 // permission_mode before falling back to the pinned flag (tmux.Session.Poll's
 // arbitration, #324).
 var claudePermissionModeMarkers = []struct{ token, mode string }{
+	{"manual mode on", "default"},
 	{"plan mode on", "plan"},
 	{"accept edits on", "acceptEdits"},
 	{"auto mode on", "auto"},
@@ -112,12 +125,20 @@ var claudePermissionModeMarkers = []struct{ token, mode string }{
 }
 
 // claudePermissionMode reports the permission mode shown in the live pane
-// footer. known=false (mode "") means the footer is indeterminate — a busy turn
-// whose footer shows neither a mode indicator nor the idle shortcuts hint, or a
-// startup/degenerate capture — so the caller keeps its last known value rather
-// than flicker. The default (normal) mode renders no mode line, so it is
-// recognized by the idle "? for shortcuts" hint instead; reporting it as a real
-// "default" lets the chip clear when a session is switched back to normal.
+// footer. known=false (mode "") means the footer is indeterminate — it names no
+// mode and shows no idle shortcuts hint, or the capture is startup/degenerate —
+// so the caller keeps its last known value rather than flicker.
+//
+// As of claude 2.1.209 the default mode names itself like any other, as "⏸
+// manual mode on", so the marker table recognizes it directly and reporting it
+// as a real "default" lets the chip clear when a session is switched back to
+// normal. The "? for shortcuts" fall-through below the loop is what remains of
+// the older contract: pre-2.1.209 claude rendered no mode line for default, and
+// the idle hint was the only thing that named it. Keeping the fall-through
+// keeps detection working against an older installed CLI; it is no longer the
+// sole detector for the mode, which matters because that hint is a low-priority
+// segment of a responsive area — a busy turn swaps it for "esc to interrupt" at
+// any width, and #308's crowd-out precedent can drop it at a narrow one.
 //
 // Detection is confined to footerBelowBox — the live chrome below the input
 // box's bottom border — so a mode phrase quoted in the scrolled-back transcript
