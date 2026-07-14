@@ -7,7 +7,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 )
 
@@ -529,16 +531,59 @@ func BenchmarkSplashValNoise(b *testing.B) {
 	_ = sink
 }
 
-// BenchmarkRenderSplashVariants tracks the ≤3ms/frame budget per variant at
-// the reference 80×30 pane (checked manually; never a timed assertion).
+// BenchmarkRenderSplashVariants tracks the ≤3ms/frame budget per variant
+// (checked manually; never a timed assertion — a timed assertion would flake on
+// shared CI).
+//
+// Truecolor is forced because the profile decides what this measures. A
+// benchmark binary's stdout is not a TTY, so termenv resolves to Ascii, every
+// SGR affix is the empty string, and the emitter is timed with nothing to emit.
+// That skews less than it used to — the affix cache made emission cheap either
+// way — but it is exactly why the colorless default is the wrong budget check:
+// the Render-per-run cost the cache replaced measured 3.7ms/frame at 240×60
+// under Ascii and 6.3ms in a real terminal. Time the frame the user actually
+// renders, or a regression of that shape reads ~40% cheaper than it is.
+//
+// Two sizes, because they answer different questions. 80×30 is the reference
+// preview pane. 240×60 is the *screensaver*, which renders full-window: it is
+// ~6× the cells but ~8× the cost, and it is measured against a 16.7ms/60fps
+// frame — so a variant can sit comfortably inside the 80×30 budget and still be
+// a slideshow full-screen. Benchmark both before shipping one.
 func BenchmarkRenderSplashVariants(b *testing.B) {
+	forceBenchTrueColor(b)
 	pal := splashTestPalette()
-	for name, v := range splashTestVariants() {
-		b.Run(name, func(b *testing.B) {
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				_ = renderSplashField(80, 30, i, pal, centeredClearing(30, 20, 4), v)
-			}
-		})
+	sizes := []struct {
+		name string
+		w, h int
+	}{
+		{"80x30", 80, 30},
+		{"240x60", 240, 60}, // the full-window screensaver
+	}
+	for _, s := range sizes {
+		for name, v := range splashTestVariants() {
+			b.Run(s.name+"/"+name, func(b *testing.B) {
+				b.ReportAllocs()
+				clearing := centeredClearing(s.h, 20, 4)
+				for i := 0; i < b.N; i++ {
+					_ = renderSplashField(s.w, s.h, i, pal, clearing, v)
+				}
+			})
+		}
+	}
+}
+
+// forceBenchTrueColor pins the color profile for a benchmark so the SGR path
+// runs, and asserts it took — a silent degrade would turn every number the
+// benchmark reports into a measurement of the wrong code.
+func forceBenchTrueColor(b *testing.B) {
+	b.Helper()
+	prof := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	b.Cleanup(func() { lipgloss.SetColorProfile(prof) })
+
+	out := renderSplashField(80, 30, 1, splashTestPalette(),
+		centeredClearing(30, 20, 4), splashVariantLegacy)
+	if !strings.Contains(out, "\x1b[38;2;") {
+		b.Fatal("no truecolor SGR emitted: benchmark would measure the colorless path")
 	}
 }
