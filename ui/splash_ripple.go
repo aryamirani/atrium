@@ -35,12 +35,15 @@ const (
 	// The rendered structure is |cos| of the carrier, whose period is
 	// rippleW/rippleCyc aspect units — here 6.67, i.e. 3.3 rows vertically and
 	// 6.7 columns horizontally, which is the same distance on a 2:1 cell and is
-	// exactly what cellAspect exists to make true. That leaves ~3.3 samples per
-	// band on the worse axis, and what settles whether that is enough is a
-	// measurement rather than the ratio: sweeping the row grid through every
-	// alignment against a ring, the worst one still lands within 90% of the
-	// crest's true peak, so a ring cannot fall between two rows and blink. Narrow
-	// the packet and that capture falls off — see
+	// exactly what cellAspect exists to make true.
+	//
+	// That leaves ~3.3 samples per band on the worse axis, and what settles
+	// whether that is enough is the crest's own width rather than the ratio. The
+	// row grid steps x = (d-crest)/rippleW by cellAspect/rippleW = 0.2, so the
+	// worst alignment straddles the peak at x = ±0.1 and reads
+	// (1-0.1^2)^2 * cos(0.15pi) = 87.3% of it — comfortably enough that a ring
+	// cannot fall between two rows and blink, which is what rain's heads did.
+	// Narrow the packet and that capture falls off (at rippleW 6 it is 67%); see
 	// TestSplashRippleCrestSurvivesTheRowPitch, which pins it.
 	rippleW = 10.0
 	// rippleCyc is how many carrier half-cycles fit between the crest and the
@@ -75,9 +78,14 @@ const (
 	//
 	// Per frame a crest moves 0.165 units against a band period of 6.67, so a
 	// cell takes ~40 frames to cross one. That continuity is also what keeps the
-	// frame-to-frame contract safe: the field is smooth in age everywhere, so
-	// consecutive frames differ across the whole pool rather than only where some
-	// quantized counter happened to tick.
+	// frame-to-frame contract safe: a ring's radius is a continuous function of
+	// phase, so consecutive frames differ everywhere a ring is passing rather
+	// than only where some quantized counter happened to tick.
+	//
+	// Note that is a statement about a ring in flight, not about the field as a
+	// whole: a drop's birth is a genuine discontinuity in time — its packet
+	// appears at full flash amplitude in a single frame. That is the impact, and
+	// it is the one place this field steps on purpose (see rippleFlashAmp).
 	rippleSpeed = 11.0
 	// rippleLife is how long a drop's ring lasts, in phase units — ~2.7 seconds
 	// at 60fps. It has to be at most ripplePeriod; see rippleEpochs.
@@ -173,8 +181,9 @@ const (
 //
 // The int32 narrowing is defined here rather than merely convenient: e is
 // floor(phase/ripplePeriod) and phase advances driftPerFrame a frame, so the
-// epoch counter needs ~2.8e11 frames — some centuries of animation — to reach
-// int32's range, and it can never be an Inf or a NaN to begin with.
+// epoch counter climbs at driftPerFrame/ripplePeriod = 1/160 per frame and needs
+// ~3.4e11 frames — 180 years at 60fps — to reach int32's range. It can never be
+// an Inf or a NaN to begin with.
 func rippleEpochSeed(base uint32, e int) uint32 {
 	return base ^ lowbias32(splashU32(int32(e))) //nolint:gosec // G115: see above — the epoch counter is centuries from this bound
 }

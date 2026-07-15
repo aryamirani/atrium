@@ -192,11 +192,19 @@ func TestSplashRippleCrestTravelsAtRippleSpeed(t *testing.T) {
 // at all and the stream blinked.
 //
 // So: sweep every alignment of the row grid against the ring, and require even
-// the worst one to still land on most of the crest's true peak. At the shipped
-// packet that worst case measures ~90% across the ring's life, so the 75% floor
-// here has real margin under it rather than being fitted to the current numbers.
-// It is a statement about rippleW/rippleCyc — narrow the packet and the capture
-// falls off.
+// the worst one to still land on most of the crest's true peak.
+//
+// At the shipped packet that worst case is 87.3%, and it is a closed form rather
+// than a measurement: the grid steps x by cellAspect/rippleW = 0.2, so the worst
+// alignment straddles the peak at x = ±0.1 and reads (1-0.1^2)^2*cos(0.15pi) of
+// it. Age cancels out of the ratio — fade and flash scale both samples alike —
+// which is why every age below reports the identical number. The ages are swept
+// anyway so that the guard keeps telling the truth if the packet ever becomes a
+// function of age; today they are one constant measured four times.
+//
+// The 75% floor therefore has real margin under it (87.3 against 75) rather than
+// being fitted to the current numbers, and it still bites where it should:
+// rippleW 6 gives 67% and rippleCyc 2.3 gives 74%.
 func TestSplashRippleCrestSurvivesTheRowPitch(t *testing.T) {
 	px, py, ts := rippleDropAt(0, 0, 0)
 	for _, age := range []float64{0.4, 0.9, 1.4, 1.9} {
