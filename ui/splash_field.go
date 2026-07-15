@@ -268,6 +268,18 @@ func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float6
 	case variant == splashVariantLegacy:
 		swirl := 0.5 + 0.5*math.Sin(aux+dRaw*colorSwirlF-phase*colorSwirlSpeed)
 		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
+	case variant == splashVariantTunnel:
+		// Hue is depth, and nothing else. aux already *is* the mipped depth band
+		// (see splashTunnelAt), so it is spent straight: rings of colour receding
+		// down the corridor, each one a surface of constant distance.
+		//
+		// Explicitly not the default mix. Its radius and swirl terms are screen
+		// position, which on this variant would paint a stationary rosette over a
+		// moving wall and pin the hue to the pane instead of to the tunnel — the
+		// rings would stop receding, which is the entire effect. The mix would also
+		// re-introduce the angle, and with it a hue seam at a = ±π that the wall's
+		// own wrap exists to prevent.
+		colorT = clamp01(aux)
 	case variant.isFractal():
 		theta := math.Atan2(dy, dx)
 		swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
@@ -391,7 +403,17 @@ type splashPointFn func(col, row int, dx, dy, phase float64) (val, aux float64)
 // splashFieldAt returns the per-point field evaluator for a variant. Exposed
 // as a point function (not just a buffer fill) so sub-cell techniques can
 // re-sample the same field at finer positions.
-func splashFieldAt(v splashVariant) splashPointFn {
+// maxD is the pane's focal-point-to-farthest-corner radius, and only a variant
+// whose subject is a single object needs it. The fields are scale-free: the
+// nebula's filaments and rain's streams are drawn in absolute cells on purpose,
+// so a bigger pane shows *more* gas and more streams, which is what more window
+// should buy. The tunnel is one corridor rather than a field of many things, so
+// the same rule would instead show more of it — and since perspective bunches all
+// of its detail near the vanishing point, a small pane would land entirely inside
+// the mipped core and render a vague dark blob with no rings at all. Measured at
+// 90×28: the whole pane reaches r≈53 while the wall only resolves past r≈32.
+// Scaling it to the pane makes it the same tunnel at every size.
+func splashFieldAt(v splashVariant, maxD float64) splashPointFn {
 	switch v {
 	case splashVariantLegacy:
 		return splashLegacyAt
@@ -401,6 +423,8 @@ func splashFieldAt(v splashVariant) splashPointFn {
 		return splashMandalaAt
 	case splashVariantRain:
 		return splashRainAt
+	case splashVariantTunnel:
+		return splashTunnelAtFor(maxD)
 	default:
 		return splashFBMAt
 	}
@@ -453,7 +477,7 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	marginY := math.Max(1, float64(h)*edgeVignetteFrac)
 	phase := float64(frame) * driftPerFrame
 
-	at := splashFieldAt(variant)
+	at := splashFieldAt(variant, maxD)
 	fld := splashEvalField(w, h, cx, cyFocal, phase, at)
 	if variant.isFractal() {
 		splashBloom(fld, w, h)
@@ -488,17 +512,31 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	// ~24 allocations a frame and 4. A colorless profile emits ~1 byte/cell and
 	// merely over-seeds — one buffer, no copies.
 	//
-	// A luminance-shaded field lands far higher and the seed has to know it: 9.9–10.8
-	// at 240×60 across lumRange 0.35–0.7, and 7.2 for rain. Brightness stepping per
-	// cell is why — a run breaks when *either* hue or luminance changes, and runs
-	// already coalesced at only ~1.14 cells, so nearly every cell pays its own SGR
-	// bracket. Seeded at 4 the Builder doubled twice more and copied ~150KB a frame
-	// for nothing; rain was paying that on the 4-byte seed too, at 6 allocations a
-	// frame rather than 4. One constant over-seeds rain by half a buffer and buys
-	// both of them a single allocation, which is the trade this seed exists to make.
+	// A luminance-shaded field lands far higher and the seed has to know it.
+	// Brightness stepping per cell is why — a run breaks when *either* hue or
+	// luminance changes, and runs already coalesced at only ~1.14 cells, so nearly
+	// every cell pays its own SGR bracket. Seeded at 4 the Builder doubled twice
+	// more and copied ~150KB a frame for nothing; rain was paying that on the
+	// 4-byte seed too, at 6 allocations a frame rather than 4.
+	//
+	// Measured at 240×60: 7.2 bytes/cell for rain, 9.9–10.8 for a shaded nebula
+	// across lumRange 0.35–0.7, and 17.5 for tunnel (17.1 at 90×28). Tunnel is the
+	// high-water mark because it is the first field that is *both* shaded and
+	// dense: nearly every cell is lit and nearly every one steps a channel, so
+	// almost none share a bracket.
+	//
+	// One constant serves all of them, and it is sized for that worst case rather
+	// than the average — which is the trade this seed exists to make. At 11 (rain's
+	// figure plus headroom) tunnel took two further doublings: 893KB and 7
+	// allocations a frame against 508KB and 5. Sizing for 18 costs sparse rain
+	// ~98KB of transient buffer it never fills, at no change to its allocation
+	// count, and saves the dense variant ~385KB a frame — ~23MB/s of garbage at
+	// 60fps. Neither shows up in the frame time; both sit well inside budget. It is
+	// a seed, not a bound: undershooting costs copies, overshooting costs a page
+	// that is never touched, and the asymmetry is why it rounds up.
 	perCell := 4
 	if ops.lumRange > 0 {
-		perCell = 11
+		perCell = 18
 	}
 	sb.Grow(w*h*perCell + h)
 	for row := 0; row < h; row++ {
