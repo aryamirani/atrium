@@ -42,7 +42,7 @@ type TerminalPane struct {
 	// by String() against the live pane width (see fallbackBlock).
 	fallbackMessage string
 	// splash is true only for the idle empty screen (nil instance): String() then
-	// renders the animated nebula behind the wordmark. Implies fallback.
+	// renders the animated field behind the wordmark. Implies fallback.
 	splash        bool
 	splashMessage string
 	splashFrame   int
@@ -121,7 +121,7 @@ func (t *TerminalPane) setFallbackState(message string) {
 }
 
 // setSplashState is setFallbackState for the idle empty screen (nil instance),
-// additionally flagging the splash so String() renders the animated nebula behind
+// additionally flagging the splash so String() renders the animated field behind
 // the wordmark. Every other empty state keeps the plain fallback. Caller holds t.mu.
 func (t *TerminalPane) setSplashState(message string) {
 	t.setFallbackState(message)

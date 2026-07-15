@@ -10,6 +10,10 @@ func TestGetSplashDefaultsToRandom(t *testing.T) {
 		"nil config": nilCfg.GetSplash(),
 		"empty":      (&Config{}).GetSplash(),
 		"unknown":    (&Config{Splash: "sparkles"}).GetSplash(),
+		// A name that WAS a variant until V5 retired it. Same path as any other
+		// unknown value, and that is the whole decision: a stale pin degrades to
+		// random silently, with no migration and no notice.
+		"retired": (&Config{Splash: "nebula"}).GetSplash(),
 	} {
 		if got != SplashRandom {
 			t.Errorf("%s: GetSplash() = %q, want %q", name, got, SplashRandom)

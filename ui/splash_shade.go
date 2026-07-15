@@ -39,15 +39,19 @@ const splashLumStops = 16
 // about pixels: each channel spends its share through its own non-linear curve (a
 // glyph index, a dot count, an L* ramp), so rendered brightness is preserved only
 // approximately — the identity removes the systematic error, not the curvature. And
-// it only reaches the screen for a caller that actually spends dens; splashBrailleMask
-// is the one branch that does not, and says there why that is a decision.
+// it only reaches the screen for a caller that actually spends dens. Every caller
+// does now: the one that did not was the braille band, which halftoned its own dot
+// count and so dimmed without its density rising to pay for it, and it was retired
+// with its variant in V5.
 //
 // The two endpoints are exact and transcendental-free, and that is load-bearing
-// twice over. They are the shading every shipped variant already uses — lumRange 0
-// is the density ramp, lumRange 1 is rain — so reproducing them by construction,
-// rather than by a float landing where it should, is what makes "byte-identical
-// until opted in" a property instead of a hope. It also means nothing shipped pays
-// for a channel it does not use.
+// twice over. lumRange 0 is the pure density ramp and 1 is rain's pure luminance,
+// so reproducing them by construction rather than by a float landing where it
+// should is what made "byte-identical until opted in" a property instead of a
+// hope while the roster was being moved onto this channel one variant at a time.
+// It also means a variant at an endpoint pays nothing for the channel it does not
+// use. Note the roster has since moved past them: rain and the tunnel sit at 1,
+// but ripple ships 0.75 and spends both.
 //
 // The interior is a gamma split: dens = lit^(1-lumRange), lum = lit^lumRange. It
 // is written as one Log and one Exp rather than two math.Pow because each Pow does
@@ -87,10 +91,14 @@ func splashShade(lit, lumRange float64) (dens, lumT float64) {
 // branch rather than a multiply that happens to come out to the top stop.
 //
 // The false is the luminance gate, and at lumRange > 0 it is load-bearing in a way
-// worth naming: it, not ditherAmp < 1, is what keeps a dark cell blank. A lifted
-// density reaches glyph 2 or 3 even at lit ≈ 0, so the density ramp alone would
+// worth naming: it, not the density ramp's floor, is what keeps a dark cell blank.
+// A lifted density reaches glyph 2 or 3 even at lit ≈ 0, so the ramp alone would
 // paint the vignette's edges; what blanks them is that stop 0 is near-black ink on
-// a dark pane and never worth emitting.
+// a dark pane and never worth emitting. Every variant that reaches here ships a
+// lumRange above 0, so this gate rather than the ramp is what holds their border.
+// Rain is not one of them — it never calls this, drawing from its own ramp — but
+// it holds its border the same way, on the same argument, at its own gate in
+// renderSplashField.
 func shadeAt(hue int, lumT float64, ops splashOps, lut *splashLUT) (int, bool) {
 	// <= 0 rather than == 0 to match splashShade's own endpoint predicate: the two
 	// decide the same question about the same value and must not be able to
@@ -135,8 +143,9 @@ func splashLumHexAt(base colorful.Color, u, chromaHold float64) string {
 //
 // The shade grid cannot afford that. Its whole point is 20 hues, and at the linear
 // law the bottom of every column collapses to slate: 8% of the hue's chroma at
-// stop 1, 33% at stop 4, so a shaded nebula rendered as coloured ridges over a grey
-// haze — the exact "downsampled photo" failure this variant risked. The square root
+// stop 1, 33% at stop 4, so the shaded nebula it was measured on rendered as
+// coloured ridges over a grey haze — the exact "downsampled photo" failure the
+// luminance channel risked, and still risks. The square root
 // holds ~4x the chroma at the faint end (26% at stop 1) and still clips nothing:
 // verified across all 20 hues x 16 stops, zero gamut violations.
 const (

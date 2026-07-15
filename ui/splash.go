@@ -35,51 +35,11 @@ const (
 	// twelve times smoother along the way.
 	driftPerFrame = 0.015
 
-	// The field is a small sum of sines evaluated per cell: two domain-warped
-	// concentric ring octaves + rotationally-symmetric petals + an isotropic
-	// fine texture. Every term is direction-free (radial, or a set of plane waves
-	// whose directions cancel), so the plasma reads rich but never skewed.
-	plasmaFreq1 = 0.55  // primary ring spacing
-	plasmaFreq2 = 0.31  // second ring octave (drifts at a different rate)
-	plasmaFreq3 = 0.14  // slow ring that pulses the angular petals
-	petalCount  = 6.0   // even → rotationally symmetric petals, no directional lean
-	plasmaWarp  = 3.6   // domain-warp amplitude in cells: wavy, organic filaments
-	plasmaWarpF = 0.055 // domain-warp spatial frequency
-	// isoFreq/isoSpeed drive three plane waves 120° apart (iso*Cos/Sin below);
-	// their directions sum to zero, so the fine texture shimmers isotropically
-	// with no diagonal grain — the fix for the field looking skewed.
-	isoFreq   = 0.13
-	isoSpeed  = 0.8
-	isoWeight = 0.20
-	iso1Cos   = -0.5
-	iso1Sin   = 0.8660254037844386
-	iso2Cos   = -0.5
-	iso2Sin   = -0.8660254037844386
-	// plasmaAmp is the sum of the term weights below; normalizes v into [0,1].
-	plasmaAmp = 1.0 + 0.55 + 0.40 + 3*isoWeight
-
 	// edgeVignetteFrac is the fraction of each dimension over which the full-bleed
 	// field fades to black at the pane border, so it softens into the edges
 	// instead of hard-clipping into a rectangle.
 	edgeVignetteFrac = 0.16
-	// radialDim is how much the field dims from the wordmark (core) out to the
-	// farthest corner — enough to read as a glow emanating from ATRIUM while the
-	// field still reaches the edges.
-	radialDim = 0.42
-
-	// Contrast curve applied to intensity: values below Lo fade toward blank,
-	// above Hi saturate — so bright ridges read as filaments against darker
-	// voids instead of a uniform mid-tone wash, and the top of the ramp is used.
-	splashContrastLo = 0.20
-	splashContrastHi = 0.86
-	// Color mixing: how much the gradient follows radius vs. a slow angular
-	// swirl. A lower radius weight makes the hue wander so the field reads as a
-	// multi-hued nebula rather than one flat band.
-	colorRadialMix  = 0.50
-	colorSwirlF     = 0.045
-	colorSwirlSpeed = 0.30
-
-	// The starfield: sparse, fixed, twinkling points scattered through the plasma
+	// The starfield: sparse, fixed, twinkling points scattered through the field
 	// (including its dark voids) for depth. starThreshold sets rarity (higher →
 	// fewer stars), starRamp maps twinkle→glyph, and stars are drawn in a bright
 	// near-white so they read as starlight in front of the colored gas.
@@ -87,11 +47,6 @@ const (
 	starTwinkleSpeed = 1.7
 	starPhaseScatter = 137.0 // desyncs twinkles so stars don't pulse in unison
 	starRamp         = " ·+*"
-
-	// Breathing: a slow global brightness swell so the whole nebula feels alive
-	// (inhaling) rather than only drifting outward.
-	breatheDepth = 0.16
-	breatheSpeed = 0.33
 
 	// splashRamp maps intensity to a glyph, light→heavy. Index 0 (space) is
 	// "nothing here"; every glyph is terminal-width 1 (downsample-safe). A longer
@@ -156,10 +111,7 @@ func SplashScreensaver(width, height, frame int) string {
 // an uninterrupted field, which is the screensaver (see SplashScreensaver). Both
 // panes always pass one.
 func splashScene(width, height, frame int, message string) string {
-	// Resolved once: the variant picks both the field generator and whether its
-	// field wants a clearing around the text at all (see splashVariant.textPad).
 	variant := splashActiveVariant()
-	pad, clears := variant.textPad()
 
 	word := trimBlankLines(FallbackBanner())
 	wordW, wordH := lipgloss.Width(word), lipgloss.Height(word)
@@ -169,33 +121,19 @@ func splashScene(width, height, frame int, message string) string {
 	wordX := (width - wordW) / 2
 	wordY := max(0, cy-wordH/2) // wordmark centered on the pane
 
-	// wordCenterRow is set unconditionally: it doubles as the field's focal row
-	// (renderSplashField), so it is not the clearing's to skip. Only the
-	// half-extents are — zero disables an ellipse (see splashClearing.blanks).
-	clearing := splashClearing{wordCenterRow: wordY + wordH/2}
-	if clears {
-		clearing.wordHalfW = wordW/2 + pad.wordX
-		clearing.wordHalfH = wordH/2 + pad.wordY
-	}
+	// The wordmark's centre row is the field's focal row: what the pattern
+	// emanates from, and what its gradient is normalized around.
+	focalRow := wordY + wordH/2
 
-	// Sized only when there is a message: the zero-value msg half-extents left
-	// behind otherwise disable that ellipse, so the field flows unbroken below
-	// the wordmark instead of being blanked for text nobody passed.
 	var msg string
 	var msgX, msgY int
 	if message != "" {
 		msg = theme.Current().FgStyle().Render(message)
-		msgW, msgH := lipgloss.Width(msg), lipgloss.Height(msg)
-		msgX = (width - msgW) / 2
+		msgX = (width - lipgloss.Width(msg)) / 2
 		msgY = wordY + wordH + gap
-		if clears {
-			clearing.msgHalfW = msgW/2 + pad.msgX
-			clearing.msgHalfH = msgH/2 + pad.msgY
-			clearing.msgCenterRow = msgY + msgH/2
-		}
 	}
 
-	field := renderSplashField(width, height, frame, theme.Current().Palette, clearing, variant)
+	field := renderSplashField(width, height, frame, theme.Current().Palette, focalRow, variant)
 	scene := overlayAt(field, word, wordX, wordY)
 	if message != "" {
 		scene = overlayAt(scene, msg, msgX, msgY)
@@ -415,34 +353,6 @@ func rainRampHexAt(pal theme.Palette, i int) string {
 	// Head: the stream hue → white.
 	u := (t - rainRampHeadAt) / (1 - rainRampHeadAt)
 	return base.BlendHcl(head, u).Clamped().Hex()
-}
-
-// splashClearing marks the cells to leave blank for the composited text: a tight
-// ellipse hugging the wordmark, plus a shorter, wider one around the message,
-// each centered on its own row. Keeping them separate (rather than one clearing
-// sized to the whole text block) is what lets the rings hug the narrow wordmark
-// instead of being pushed out by the wider message. Half-extents are in cells; a
-// zero half-extent disables that ellipse. Both are centered on the field's
-// horizontal axis, since the text is centered horizontally.
-type splashClearing struct {
-	wordHalfW, wordHalfH, wordCenterRow int
-	msgHalfW, msgHalfH, msgCenterRow    int
-}
-
-// blanks reports whether the cell at horizontal offset dx (from the field axis)
-// and absolute row lies inside either clearing ellipse. Uses raw cell distance
-// (not the aspect-corrected dy) so each ellipse hugs its text rectangle —
-// deliberately distinct from the round vignette metric.
-func (c splashClearing) blanks(dx float64, row int) bool {
-	inEllipse := func(halfW, halfH, centerRow int) bool {
-		if halfW <= 0 || halfH <= 0 {
-			return false
-		}
-		dy := float64(row - centerRow)
-		return (dx*dx)/float64(halfW*halfW)+(dy*dy)/float64(halfH*halfH) < 1
-	}
-	return inEllipse(c.wordHalfW, c.wordHalfH, c.wordCenterRow) ||
-		inEllipse(c.msgHalfW, c.msgHalfH, c.msgCenterRow)
 }
 
 // splashRunAffix resolves a run's SGR bracket from its style index, per the

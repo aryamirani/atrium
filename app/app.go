@@ -219,7 +219,7 @@ type home struct {
 	// 60fps frame units, advanced by the dedicated splash tick (see
 	// handleSplashTick) in steps sized to the actual tick interval — so an
 	// ATRIUM_SPLASH_FPS override changes smoothness, never speed. The floor
-	// is pushed to the panes that render the nebula (splashFrame mirrors it
+	// is pushed to the panes that render the field (splashFrame mirrors it
 	// for tests). It only ever advances while the splash is on screen, so an
 	// overlay freezes the field exactly where it was. Zero value is fine.
 	splashClock float64

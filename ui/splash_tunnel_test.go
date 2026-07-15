@@ -58,8 +58,8 @@ func TestSplashValNoiseWrapYIsPeriodic(t *testing.T) {
 // below must arrive at the value the field starts with, so no radial tear shows
 // down the tunnel at a = ±π.
 //
-// Mutation-tested: swapping splashValNoiseWrapY's body for plain splashValNoise
-// fails this. Dropping the negative fold does not, and that is not a hole — this
+// Mutation-tested: swapping splashValNoiseWrapY's body for the unwrapped
+// reference (unwrappedValNoise, below) fails this. Dropping the negative fold does not, and that is not a hole — this
 // test asks about continuity, and a bare % stays continuous at y = 0 (the fade
 // weight selects row 0 from either side). The fold protects periodicity, which
 // is TestSplashValNoiseWrapYIsPeriodic's question, and the ±π tear it prevents
@@ -94,6 +94,64 @@ func TestSplashValNoiseWrapYRange(t *testing.T) {
 	}
 }
 
+// unwrappedValNoise is plain bilinear value noise with a smoothstep fade: the
+// reference splashValNoiseWrapY is a wrap *of*, and the oracle the equivalence
+// test below measures against.
+//
+// It used to be production code (splashValNoise), shared with the fBm nebula and
+// its relatives. V5 retired those, and the tunnel's wrapped variant is the only
+// noise that ships — so rather than keep an unwrapped copy alive in the package
+// for a test to call, the reference lives here, where its one caller is. That is
+// also the stronger shape: the assertion is now production code against a
+// test-owned reference, not against its own sibling.
+func unwrappedValNoise(x, y float64, seed uint32) float64 {
+	xi, yi := math.Floor(x), math.Floor(y)
+	xf, yf := x-xi, y-yi
+	u := xf * xf * (3 - 2*xf)
+	v := yf * yf * (3 - 2*yf)
+	ix, iy := int32(xi), int32(yi)
+	return splashLerp(
+		splashLerp(latticeVal(ix, iy, seed), latticeVal(ix+1, iy, seed), u),
+		splashLerp(latticeVal(ix, iy+1, seed), latticeVal(ix+1, iy+1, seed), u),
+		v)
+}
+
+// TestSplashValNoiseWrapYIsContinuous checks the smoothstep interpolation away
+// from the seam: a small step in the domain must produce a small step in the
+// value (no jumps at lattice boundaries), which is what keeps the rendered wall
+// free of grid seams. The seam itself is TestSplashValNoiseWrapYClosesTheSeam's
+// question; this is the interior, which is most of the field.
+func TestSplashValNoiseWrapYIsContinuous(t *testing.T) {
+	const eps = 1e-4
+	for i := 0; i < 400; i++ {
+		// March across several lattice cells, deliberately crossing integers.
+		x := -3.0 + float64(i)*0.017
+		y := 2.5 + float64(i)*0.011
+		a := splashValNoiseWrapY(x, y, 64, 0x165667B1)
+		b := splashValNoiseWrapY(x+eps, y+eps, 64, 0x165667B1)
+		require.InDeltaf(t, a, b, 0.01, "discontinuity near (%f,%f)", x, y)
+	}
+}
+
+// TestSplashValNoiseWrapYAnchorsLattice pins the interpolation contract: at exact
+// lattice points inside the period the noise equals the lattice value itself.
+func TestSplashValNoiseWrapYAnchorsLattice(t *testing.T) {
+	for _, p := range [][2]int32{{0, 0}, {3, 2}, {-7, 5}} {
+		require.InDelta(t, latticeVal(p[0], p[1], 42),
+			splashValNoiseWrapY(float64(p[0]), float64(p[1]), 64, 42), 1e-12)
+	}
+}
+
+// BenchmarkSplashValNoiseWrapY tracks the field's inner primitive: every octave
+// of every cell of the tunnel's wall is one of these.
+func BenchmarkSplashValNoiseWrapY(b *testing.B) {
+	var sink float64
+	for i := 0; i < b.N; i++ {
+		sink += splashValNoiseWrapY(float64(i)*0.13, float64(i%97)*0.29, 64, 0x9E3779B9)
+	}
+	_ = sink
+}
+
 // TestSplashValNoiseWrapYMatchesUnwrappedInside proves the wrap only changes the
 // field where it must. Away from any multiple of the period the wrapped and
 // plain noises index the same lattice rows, so they must agree exactly — which
@@ -108,7 +166,7 @@ func TestSplashValNoiseWrapYMatchesUnwrappedInside(t *testing.T) {
 	// identity.
 	for _, y := range []float64{0.5, 3.25, 9.9, 14.5} {
 		for _, x := range []float64{-1.5, 0.25, 6.75} {
-			require.Equalf(t, splashValNoise(x, y, seed), splashValNoiseWrapY(x, y, p, seed),
+			require.Equalf(t, unwrappedValNoise(x, y, seed), splashValNoiseWrapY(x, y, p, seed),
 				"inside the period the wrap must be the identity (x=%v, y=%v)", x, y)
 		}
 	}
@@ -404,20 +462,26 @@ func TestSplashTunnelHueMipQuietsTheVanishingPoint(t *testing.T) {
 	require.Greaterf(t, far, 0.8, "the far field must still sweep the gradient (spread %.3f)", far)
 }
 
-// TestSplashTunnelIsNotTheNebula guards the nastiest silent failure in the
-// variant surface. splashFieldAt's switch falls through to splashFBMAt, so a
+// TestSplashTunnelReachesItsOwnField guards the nastiest silent failure in the
+// variant surface. splashFieldAt's switch falls through to the fallback, so a
 // tunnel registered in the enum, the rotation, the names, the ops and both test
-// maps — but missing that one case — renders the nebula's field wearing the
-// tunnel's Pass-2 policy. The contract loop only checks determinism, bounds and
-// animation, all of which the nebula satisfies perfectly.
+// maps — but missing that one case — renders rain's field wearing the tunnel's
+// Pass-2 policy. The contract loop only checks determinism, bounds and animation,
+// all of which rain satisfies perfectly.
 //
 // It samples the point function, and that is load-bearing rather than
-// incidental: the tunnel's ops already differ from the nebula's on six fields
-// (contrastLo/Hi, dither, stars, lumRange, dimToRim, breathes), so two
-// ops-applied renders differ whatever field is underneath them. An earlier
-// version of this test compared renders and passed with the case deleted — it
-// was measuring the ops table, not the wiring it named.
-func TestSplashTunnelIsNotTheNebula(t *testing.T) {
+// incidental. An earlier version compared two *renders* and passed with the case
+// deleted, because it was measuring the ops table rather than the wiring it named
+// — and against rain a render comparison is worse than useless: rain has its own
+// Pass-2 branch and its own ramp (see renderSplashField), so a rain-vs-tunnel
+// render differs whatever field is underneath either of them. Their ops would not
+// save it either; rain and the tunnel ship identical ops.
+//
+// Sampling rain is not arbitrary: it is what splashFieldAt's default arm returns,
+// which is the whole point — this asks "am I getting the fallback's field". Move
+// that arm to another variant without moving this probe and the test still passes
+// while testing nothing about the fallback.
+func TestSplashTunnelReachesItsOwnField(t *testing.T) {
 	const phase = 5 * driftPerFrame
 	sample := func(v splashVariant) []float64 {
 		at := splashFieldAt(v, tunRefD)
@@ -430,9 +494,9 @@ func TestSplashTunnelIsNotTheNebula(t *testing.T) {
 		}
 		return out
 	}
-	require.NotEqual(t, sample(splashVariantFBM), sample(splashVariantTunnel),
-		"tunnel must reach splashTunnelAtFor — an unregistered variant silently "+
-			"falls through to the nebula's field")
+	require.NotEqual(t, sample(splashVariantRain), sample(splashVariantTunnel),
+		"tunnel must reach splashTunnelAtFor — a variant with no case in "+
+			"splashFieldAt silently falls through to the fallback's field")
 }
 
 // TestSplashTunnelRendersDepthAsLuminance is the Pass-2 half of

@@ -62,12 +62,12 @@ const (
 	// stays exactly black.
 	tunFogGain = 1.35
 	// tunWallGain opens the fBm's middle: the octaves average toward their mean, so
-	// the raw field has no contrast to fly past. It is a linear gain rather than the
-	// nebula's smoothstep window, and that is load-bearing now that the mip is
-	// per-octave: a gain scales (n-0.5) uniformly, so a half-mipped octave stays
-	// half-mipped, while an S-curve re-expands it. Measured on the old order, a
-	// mipped 0.56 came back out of smoothstep(0.36,0.64) at 0.80 — the window would
-	// have undone most of the mip it was meant to sit behind.
+	// the raw field has no contrast to fly past. It is a linear gain rather than a
+	// smoothstep window, and that is load-bearing now that the mip is per-octave: a
+	// gain scales (n-0.5) uniformly, so a half-mipped octave stays half-mipped,
+	// while an S-curve re-expands it. Measured on the old order, a mipped 0.56 came
+	// back out of the retired organic window (smoothstep(0.36,0.64)) at 0.80 — the
+	// window would have undone most of the mip it was meant to sit behind.
 	tunWallGain = 1.8
 	// tunWallFloor is the wall's unlit reflectance: the surface is lit, and its
 	// texture modulates down from full rather than all the way to black. At 0 the
@@ -131,9 +131,9 @@ const (
 var (
 	// tunSeedOct decorrelates the octaves' values.
 	tunSeedOct = [tunOctaves]uint32{0x3B1E5F07, 0xA4D91C6B, 0x7E2F84D3, 0x1C6E9A45, 0xD82B37F1}
-	// tunLacU is the depth axis's lacunarity, kept detuned off 2 exactly as the
-	// shared fBm does (IQ: avoids octave self-alignment). Only the depth axis may
-	// be detuned — the angular axis must double exactly or the wrap tears.
+	// tunLacU is the depth axis's lacunarity, detuned off 2 (IQ: avoids octave
+	// self-alignment). Only the depth axis may be detuned — the angular axis must
+	// double exactly or the wrap tears.
 	tunLacU = [tunOctaves - 1]float64{2.01, 2.02, 2.01, 2.03}
 	// tunVOff offsets each octave along the angular axis. The angular lacunarity
 	// is pinned to exactly 2, so the octaves would otherwise share lattice
@@ -144,11 +144,16 @@ var (
 )
 
 // splashTunnelFBM is the wall texture: a wrapped, rotation-free fBm over
-// (depth, angle). It is deliberately not splashFBMBody, which is unusable here
-// three times over — its ring term closes on math.Hypot(x,y) and is not periodic
-// in v, its per-octave rotation mixes fx into fy and destroys the wrap outright,
-// and its fbmLacun is detuned off 2 (octave 1 would span 2.01·P against a period
-// of 2·P, so the seam survives and tears ~0.5% per octave).
+// (depth, angle).
+//
+// It is its own stack rather than a call into a shared one, and deliberately so.
+// The package used to carry a general fBm for the organic fields (retired in V5),
+// and it was unusable here three times over — its ring term closed on
+// math.Hypot(x,y) and was not periodic in v, its per-octave rotation mixed fx
+// into fy and destroyed the wrap outright, and its lacunarity was detuned off 2
+// on *both* axes (octave 1 would span 2.01·P against a period of 2·P, so the seam
+// survives and tears ~0.5% per octave). Anything general enough to serve a
+// corridor and a nebula would have been neither.
 //
 // Dropping the rotation is a feature, not a concession. Value noise's
 // axis-aligned lattice artifacts are the thing a rotation normally exists to
@@ -289,8 +294,10 @@ func splashTunnelAtFor(maxD float64) splashPointFn {
 
 		// Real z-fog: fog = r/(r+A) is 1/(1+z/D) with z = K/r, and it reaches
 		// exactly 0, so the centre goes black on its own — no envelope term
-		// required, which matters because the only one available (dimToRim) would
-		// invert depth.
+		// required. That mattered when Pass 2 had one to offer: it dimmed by
+		// distance from the wordmark, which is the vanishing point, so it would have
+		// rendered the near wall at the rim dimmer than the far centre. It was
+		// retired in V5 for want of anyone who wanted it.
 		fog := clamp01(tunFogGain * r / (r + fogA))
 
 		// Hue takes the same lod, and that is not decoration: u = K/r compresses
@@ -350,4 +357,13 @@ func splashValNoiseWrapY(x, y float64, period int32, seed uint32) float64 {
 		splashLerp(latticeVal(ix, iy0, seed), latticeVal(ix+1, iy0, seed), u),
 		splashLerp(latticeVal(ix, iy1, seed), latticeVal(ix+1, iy1, seed), u),
 		v)
+}
+
+// splashTri is a triangle (ping-pong) wave in [0,1]: like fract, but it
+// reverses instead of wrapping, so values mapped through a linear gradient
+// never seam. It arrived here with the V5 deletion — the fractal variants it
+// used to live beside are gone, and the tunnel's hue band is its only caller.
+func splashTri(x float64) float64 {
+	f := x - math.Floor(x)
+	return 1 - math.Abs(2*f-1)
 }

@@ -29,12 +29,10 @@ func stripLines(s string) []string {
 	return strings.Split(ansi.Strip(s), "\n")
 }
 
-// centeredClearing builds a single wordmark ellipse centered vertically in an
-// h-row pane, so the field's focal center matches the pane center (keeping the
-// round-vignette assertions valid).
-func centeredClearing(h, halfW, halfH int) splashClearing {
-	return splashClearing{wordHalfW: halfW, wordHalfH: halfH, wordCenterRow: (h - 1) / 2}
-}
+// centeredFocalRow is the focal row for a pane whose wordmark sits at its
+// vertical centre — which is what splashScene builds, and what keeps the
+// round-vignette assertions valid.
+func centeredFocalRow(h int) int { return (h - 1) / 2 }
 
 // overlayCenter drops fg onto the center of bg via the production overlayAt. A
 // test-only convenience: the real render (renderSplashScene) positions the
@@ -50,8 +48,8 @@ func overlayCenter(bg, fg string) string {
 // the tick can drive it without hidden state).
 func TestRenderSplashFieldDeterministic(t *testing.T) {
 	pal := splashTestPalette()
-	a := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
-	b := renderSplashField(80, 30, 5, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
+	a := renderSplashField(80, 30, 5, pal, centeredFocalRow(30), splashDefaultVariant)
+	b := renderSplashField(80, 30, 5, pal, centeredFocalRow(30), splashDefaultVariant)
 	require.Equal(t, a, b, "same inputs must render identically")
 	require.NotEmpty(t, a)
 }
@@ -64,7 +62,7 @@ func TestRenderSplashFieldBounds(t *testing.T) {
 	sizes := [][2]int{{50, 18}, {66, 20}, {80, 30}, {120, 40}, {51, 19}, {73, 27}}
 	for _, s := range sizes {
 		w, h := s[0], s[1]
-		field := renderSplashField(w, h, 3, pal, centeredClearing(h, w/4, h/6), splashDefaultVariant)
+		field := renderSplashField(w, h, 3, pal, centeredFocalRow(h), splashDefaultVariant)
 		lines := strings.Split(field, "\n")
 		require.Lenf(t, lines, h, "%dx%d: line count", w, h)
 		for i, l := range lines {
@@ -77,8 +75,8 @@ func TestRenderSplashFieldBounds(t *testing.T) {
 // change the rendered field (otherwise the "slow drift" is dead).
 func TestRenderSplashFieldAnimates(t *testing.T) {
 	pal := splashTestPalette()
-	f0 := renderSplashField(80, 30, 3, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
-	f1 := renderSplashField(80, 30, 4, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
+	f0 := renderSplashField(80, 30, 3, pal, centeredFocalRow(30), splashDefaultVariant)
+	f1 := renderSplashField(80, 30, 4, pal, centeredFocalRow(30), splashDefaultVariant)
 	require.NotEqual(t, f0, f1, "consecutive frames must differ")
 }
 
@@ -88,7 +86,7 @@ func TestRenderSplashFieldAnimates(t *testing.T) {
 func TestRenderSplashFieldVignetteCorners(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 80, 30
-	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4), splashDefaultVariant))
+	lines := stripLines(renderSplashField(w, h, 3, pal, centeredFocalRow(h), splashDefaultVariant))
 	require.Len(t, lines, h)
 	// The border rows fade to zero, so the first and last rows are entirely blank.
 	require.Equal(t, strings.Repeat(" ", w), lines[0], "top row must be blank")
@@ -99,50 +97,43 @@ func TestRenderSplashFieldVignetteCorners(t *testing.T) {
 	}
 }
 
-// TestRenderSplashFieldFillsPane guards the full-bleed fix: on a wide pane the
-// field must span most of the width — not sit as a disc inscribed to the shorter
-// (here vertical) axis, which would only reach ~half the width. It measures the
-// horizontal span of lit cells (rune-indexed, since ramp glyphs like · are
-// multi-byte).
-func TestRenderSplashFieldFillsPane(t *testing.T) {
-	pal := splashTestPalette()
-	w, h := 120, 30
-	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, 20, 4), splashDefaultVariant))
-	minCol, maxCol := w, -1
-	for _, l := range lines {
-		for col, r := range []rune(l) {
-			if r != ' ' {
-				if col < minCol {
-					minCol = col
-				}
-				if col > maxCol {
-					maxCol = col
-				}
-			}
-		}
-	}
-	require.GreaterOrEqual(t, maxCol, 0, "field must render some glyphs")
-	span := maxCol - minCol
-	require.Greaterf(t, span, int(float64(w)*0.7),
-		"field must fill most of the width (span=%d of w=%d)", span, w)
+// TestOverlayIsOpaque is the fact the splash's whole text policy rests on: the
+// text does not need the field cleared out from under it. overlayAt writes each
+// overlaid line's cells wholesale — spaces included — so the text always covers
+// its own footprint whatever the field draws underneath.
+//
+// This is why no variant takes a clearing. The splash carried one for a long
+// time, and its name oversold it: it never prevented bleed-through, it only
+// opened a margin of quiet *around* the text. That margin was charm on a field
+// that faded into it and a defect on one that didn't — a band of missing streams
+// with nothing drawn to account for them — and V5 retired the fields it flattered.
+// If overlayAt ever became a fading or transparent composite, the field would
+// start showing through the message's spaces and this policy would need
+// revisiting.
+func TestOverlayIsOpaque(t *testing.T) {
+	bg := strings.Join([]string{
+		strings.Repeat("#", 20),
+		strings.Repeat("#", 20),
+	}, "\n")
+	// A foreground whose interior is a space: if overlays were transparent, the
+	// background's # would survive in the middle.
+	got := ansi.Strip(overlayAt(bg, "A B", 5, 0))
+	first := strings.Split(got, "\n")[0]
+	require.Equal(t, "#####A B############", first,
+		"overlayAt must write the overlaid line's spaces over the background, not through it")
 }
 
-// TestRenderSplashFieldClearing verifies the center clearing is blank, so the
-// composited wordmark+message always lands on emptiness (never over field glyphs).
-func TestRenderSplashFieldClearing(t *testing.T) {
-	pal := splashTestPalette()
-	w, h := 80, 30
-	chw, chh := 20, 4
-	lines := stripLines(renderSplashField(w, h, 3, pal, centeredClearing(h, chw, chh), splashDefaultVariant))
-	centerRow := (h - 1) / 2
-	cx := (w - 1) / 2
-	// Rune-index the row: the field now fills the whole width, so multi-byte
-	// glyphs (·) before the clearing shift byte offsets off the column.
-	row := []rune(lines[centerRow])
-	// Along the center row the clearing spans |dx| < chw — those cells are blank.
-	for col := cx - (chw - 1); col <= cx+(chw-1); col++ {
-		require.Equalf(t, ' ', row[col],
-			"clearing cell (%d,%d) must be blank", centerRow, col)
+// TestBannerIsSolid pins the other half of that fact. The banner fills with ░
+// rather than spaces, so it is opaque across its whole box on every row — there
+// are no letter gaps for a field to show through even in principle. If a future
+// banner introduced spaces, the field would start rendering inside the wordmark's
+// counters and the no-clearing policy would need revisiting.
+func TestBannerIsSolid(t *testing.T) {
+	banner := ansi.Strip(trimBlankLines(FallbackBanner()))
+	for i, line := range strings.Split(banner, "\n") {
+		require.NotContainsf(t, line, " ",
+			"banner row %d contains a space; the wordmark is assumed solid "+
+				"(see TestOverlayIsOpaque)", i)
 	}
 }
 
@@ -152,7 +143,7 @@ func TestRenderSplashFieldClearing(t *testing.T) {
 func TestOverlayCenterComposites(t *testing.T) {
 	pal := splashTestPalette()
 	w, h := 60, 20
-	field := renderSplashField(w, h, 3, pal, centeredClearing(h, 8, 3), splashDefaultVariant)
+	field := renderSplashField(w, h, 3, pal, centeredFocalRow(h), splashDefaultVariant)
 	fg := "ABCDEF"
 	out := overlayCenter(field, fg)
 	require.Contains(t, ansi.Strip(out), "ABCDEF", "fg must survive compositing")
@@ -163,11 +154,22 @@ func TestOverlayCenterComposites(t *testing.T) {
 	}
 }
 
-// fieldGlyphs are ramp glyphs that only the splash field emits — none appear in
-// the wordmark art (box-drawing + ░) or the onboarding message — so their
-// presence in a stripped render proves the field engaged, and their absence
-// proves the plain fallback did.
-const fieldGlyphs = "·:*"
+// fieldGlyphs are glyphs that only the splash field emits — none appear in the
+// wordmark art (box-drawing + ░) or the onboarding message — so their presence in
+// a stripped render proves the field engaged, and their absence proves the plain
+// fallback did.
+//
+// It is the tunnel's mark, because the tunnel is what TestMain pins. That is a
+// real coupling and worth stating: this probe reads whatever variant the
+// String()-path tests resolve to, and each of the three has its own vocabulary —
+// rain draws katakana, ripple the density ramp, and the tunnel exactly one glyph,
+// since its lumRange is 1 and every lit cell is a full-weight mark shaded purely
+// by colour. Re-pin TestMain and this must move with it. The tunnel is also the
+// variant that makes the probe honest at every size: its wall lights 81–85% of
+// the pane across the range these tests render (measured 80.8% at 50×18, 82.7% at
+// 80×30, 85.3% at 240×60), so "no field glyphs" cannot quietly mean "the field
+// rendered, somewhere else".
+const fieldGlyphs = "@"
 
 // TestPreviewSplashStringBounds drives the real idle path end to end
 // (UpdateContent(nil) → setSplashState → String) and locks the #251 box
@@ -236,7 +238,7 @@ func TestRenderSplashFieldExtremes(t *testing.T) {
 					t.Fatalf("renderSplashField(%d,%d) panicked: %v", w, h, r)
 				}
 			}()
-			out := renderSplashField(w, h, 2, pal, centeredClearing(h, maxInt(1, w/4), maxInt(1, h/4)), splashDefaultVariant)
+			out := renderSplashField(w, h, 2, pal, centeredFocalRow(h), splashDefaultVariant)
 			if out == "" {
 				return
 			}
@@ -294,8 +296,8 @@ func TestSplashAffixBracketsMatchRender(t *testing.T) {
 		"ansi":      termenv.ANSI,
 		"ascii":     termenv.Ascii,
 	}
-	// Spaces and braille included: the emitter brackets whatever the ramp
-	// produced, and lipgloss has space-sensitive paths for some attributes.
+	// Spaces and a wide glyph included: the emitter brackets whatever it is given,
+	// and lipgloss has space-sensitive paths for some attributes.
 	contents := []string{"x", "▓▓▓", "   ", "⠿⠿", "·-=#"}
 	for name, prof := range profiles {
 		t.Run(name, func(t *testing.T) {
@@ -349,7 +351,7 @@ func TestSplashLUTCacheTracksColorProfile(t *testing.T) {
 func TestRenderSplashFieldColorByProfile(t *testing.T) {
 	pal := splashTestPalette()
 	render := func() string {
-		return renderSplashField(60, 20, 3, pal, centeredClearing(20, 20, 4), splashVariantLegacy)
+		return renderSplashField(60, 20, 3, pal, centeredFocalRow(20), splashVariantTunnel)
 	}
 
 	withColorProfile(t, termenv.TrueColor)
@@ -390,21 +392,27 @@ func TestSplashScreensaverScene(t *testing.T) {
 	withMsg := splashScene(w, h, 7, "press n to start")
 	require.NotContains(t, ansi.Strip(out), "press n", "the screensaver has no message line")
 	require.NotEqual(t, out, withMsg,
-		"dropping the message must also drop its clearing, not just its text")
+		"the screensaver and the guided empty state must not render identically")
 }
 
-// TestWidestContrastWindowIsStillHermite pins the distinction splashVariant.ops
-// draws between a "full-range" window and an identity one. The widest window a
-// variant can ship — contrastLo 0, contrastHi 1 — clips nothing, which is the
-// property a self-shading field needs. It does not pass values through
-// untouched, and no window can: smoothstep is Hermite on the clamped parameter,
-// so a {0,1} window still bends every interior value through t*t*(3-2t).
+// TestFieldContrastIsStillHermite pins the distinction renderSplashField draws
+// between a "full-range" contrast curve and an identity one. The curve every
+// field now runs — smoothstep(0, 1, val) — clips nothing, which is the property a
+// self-shading field needs. It does not pass values through untouched, and no
+// window can: smoothstep is Hermite on the clamped parameter, so a {0,1} window
+// still bends every interior value through t*t*(3-2t).
 //
-// The name is the point. "Identity" invites a reader to skip the call, and it
-// would be a behaviour change — a variant whose own gradient carries meaning
-// (rain's streams, the tunnel's fog) is tuning its constants against an
-// S-curved version of its field, not against the generator's raw output.
-func TestWidestContrastWindowIsStillHermite(t *testing.T) {
+// The distinction is the point, and it is why the call is written out rather than
+// dropped. "Identity" invites a reader to skip it, and skipping it would be a
+// behaviour change — every surviving field carries its own gradient (rain's
+// streams, the tunnel's fog, ripple's ring decay) and is tuned against this
+// S-curved version of its output, not against its generator's raw values.
+//
+// It used to be a per-variant window in splashOps, ranging from the nebula's
+// narrow 0.36–0.64 to this. V5 retired the fields that wanted a narrow one, all
+// three survivors had independently chosen {0,1}, and the field became a constant
+// and then a literal at the one call site.
+func TestFieldContrastIsStillHermite(t *testing.T) {
 	// It clips nothing: the endpoints come back exact.
 	require.Zero(t, smoothstep(0, 1, 0), "the widest window must not lift the floor")
 	require.Equal(t, 1.0, smoothstep(0, 1, 1), "the widest window must not clip the ceiling")
@@ -421,26 +429,66 @@ func TestWidestContrastWindowIsStillHermite(t *testing.T) {
 	require.Less(t, smoothstep(0, 1, 0.25), 0.25, "the S-curve must darken the dim half")
 	require.Greater(t, smoothstep(0, 1, 0.75), 0.75, "the S-curve must brighten the bright half")
 
-	// And it is the window the full-range variants actually ship, so this stays
-	// bound to their claim rather than to a literal of its own.
-	for _, v := range []splashVariant{splashVariantRain, splashVariantTunnel} {
-		o := v.baseOps()
-		require.Zerof(t, o.contrastLo, "variant %d ships the widest window", int(v))
-		require.Equalf(t, 1.0, o.contrastHi, "variant %d ships the widest window", int(v))
-	}
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+// TestFieldContrastReachesTheRender is the wiring half of the claim above, and
+// both halves are needed. That test proves smoothstep(0, 1, ·) is an S-curve; it
+// cannot prove Pass 2 *calls* it. Nothing else could either: the curve has one
+// call site and every variant now takes the same one, so there is no second
+// behaviour to compare against and no ops field left to pin. A reader who
+// believes "full-range" means "identity" — which is exactly what the name invites,
+// and why renderSplashField argues against it in a comment — could drop the call
+// and every other test in this package would still pass.
+//
+// That is this package's signature bug: ops.dimToRim shipped declared and never
+// read, and the guard that should have caught it was measuring the ops table
+// instead of the wiring. So this decodes the emitted SGR back to a luminance stop
+// and compares it against the documented pipeline evaluated independently —
+// smoothstep, then splashShade's split — in rippleMeasurable's region, where the
+// envelope is exactly 1 and the arithmetic is therefore complete.
+//
+// The second assertion is what makes it able to fail rather than merely pass: it
+// counts the cells an identity contrast would land on a *different* stop, so the
+// test is only trusted where it can tell the two apart.
+func TestFieldContrastReachesTheRender(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	const w, h, frame = 240, 60, 300
+	stops, _ := shadeStopGrid(t, w, h, frame, splashTestPalette(), splashVariantRipple)
+	vals := rippleFieldVals(w, h, frame)
+	lumRange := splashVariantRipple.ops().lumRange
+
+	// The pipeline renderSplashField documents, from val to emitted luminance stop.
+	stopFor := func(intensity float64) int {
+		_, lumT := splashShade(intensity, lumRange)
+		return clampInt(int(lumT*float64(splashLumStops-1)), 0, splashLumStops-1)
 	}
-	return b
+
+	checked, separable := 0, 0
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; col++ {
+			if !rippleMeasurable(col, row, w, h) || stops[row][col] <= 0 {
+				continue
+			}
+			v := vals[row][col]
+			checked++
+			require.Equalf(t, stopFor(smoothstep(0, 1, v)), stops[row][col],
+				"cell (%d,%d) at val %.4f rendered a stop the contrast curve does not "+
+					"predict; Pass 2 is not running smoothstep(0, 1, val)", col, row, v)
+			if stopFor(clamp01(v)) != stopFor(smoothstep(0, 1, v)) {
+				separable++
+			}
+		}
+	}
+	require.Greaterf(t, checked, 2000, "only %d measurable lit cells", checked)
+	require.Greaterf(t, separable, 500,
+		"only %d of %d cells would render a different stop under an identity contrast, "+
+			"so this test cannot tell an S-curve from a passthrough", separable, checked)
 }
 
 func BenchmarkRenderSplash(b *testing.B) {
 	pal := splashTestPalette()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = renderSplashField(80, 30, i, pal, centeredClearing(30, 20, 4), splashDefaultVariant)
+		_ = renderSplashField(80, 30, i, pal, centeredFocalRow(30), splashDefaultVariant)
 	}
 }

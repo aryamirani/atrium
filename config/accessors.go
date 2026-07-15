@@ -66,12 +66,20 @@ const SplashRandom = "random"
 // import the other; app imports both and holds them to each other (see
 // TestSplashVocabularyAgrees against ui.SplashVariantNames).
 func SplashVariants() []string {
-	return []string{"nebula", "braille", "contours", "julia", "mandala", "plasma", "rain", "tunnel", "ripple"}
+	return []string{"rain", "tunnel", "ripple"}
 }
 
 // GetSplash returns the normalized splash mode: a known variant name when set
 // to one, else SplashRandom (including a nil Config, the empty default, and
 // unknown values from a hand-edited config).
+//
+// A *retired* name lands in that last case, and silently: V5 dropped six
+// patterns, so a config pinning "nebula" now reports random and the user gets a
+// fresh pattern each launch with no notice. That is the intended behaviour rather
+// than an oversight — it is how an unknown value has always behaved, it needs no
+// migration machinery, and the name stays on disk (Splash is omitempty and this
+// never writes back), so nothing is destroyed. Pinned by
+// TestGetSplashDefaultsToRandom.
 func (c *Config) GetSplash() string {
 	if c != nil && slices.Contains(SplashVariants(), c.Splash) {
 		return c.Splash

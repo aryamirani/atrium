@@ -4,8 +4,8 @@ package ui
 // flashing at impact and expanding into a ring that shifts hue as it ages and
 // interferes with every other ring it crosses.
 //
-// It is the only field where things *happen*. The nebula shimmers, rain falls
-// forever and the tunnel flies forever — all of them are steady states. A drop
+// It is the only field where things *happen*. Rain falls forever and the tunnel
+// flies forever; both are steady states, as was every organic field before them. A drop
 // has a birth, a life and a death, and the pool between drops is not a quiet
 // version of the field but the exact absence of one.
 //
@@ -250,8 +250,8 @@ func rippleDropPos(i, j, e int) (px, py float64) {
 // (see rippleLife) it has already faded to a third. Measured over the same
 // lives, 1 - t^2 holds 84% at t = 0.4 against (1-t)^2's 36%, which is what puts
 // the brightness on the *expanding* ring. It still reaches exactly 0 at t = 1,
-// so a drop dies out rather than popping — and there is no contrast window here
-// to hide a pop behind, since ops.contrastLo is 0.
+// so a drop dies out rather than popping — and there is no contrast window to
+// hide a pop behind: Pass 2 runs one full-range curve with no floor under it.
 //
 // There is deliberately no separate spatial decay, though the design called for
 // one. On the crest d == rippleSpeed*age, so a decay in d and a decay in age are
