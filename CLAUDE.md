@@ -95,6 +95,14 @@ field declared for an assertion you meant to write compiles fine and only CI
 notices. `revive`'s `exported` (doc comments on exported symbols) and
 `redefines-builtin-id` (don't name things `max`/`min`/`len`) bite the same way.
 
+**Read the paths in a lint failure before believing it.** `golangci-lint`'s cache is
+*global*, and Atrium's own workflow means many worktrees of this repo — so a stale
+entry makes `run` report issues against files in **another worktree**, including
+ones that no longer exist. If the reported path is not the tree you are standing
+in, it is cache noise: `golangci-lint cache clean` and re-run. A merge that only
+pulls in already-green upstream code should not turn lint red; that shape is the
+tell.
+
 `just ci` does not cover everything CI runs: the race detector (`just test-race`),
 a macOS job, and `govulncheck` (`just vuln`, needs network) are CI-only. And a
 local gate is not a green CI — on a PR, read `gh pr checks <n>` before calling it
