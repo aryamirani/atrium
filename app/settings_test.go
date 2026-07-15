@@ -220,7 +220,7 @@ func TestGroupMode_GroupMoveWithinClusterPerformsMove(t *testing.T) {
 
 // J/K within-group reordering works while account-grouped (no status sort), so
 // pressing K performs the swap rather than emitting a hint.
-func TestGroupMode_ManualMoveWorksWhileAccountGrouped(t *testing.T) {
+func TestGroupMode_SessionMoveWorksWhileAccountGrouped(t *testing.T) {
 	h := accountGroupedHome(t)
 	// Two work sessions in one repo so there is a sibling to swap with.
 	inst, err := session.NewInstance(session.InstanceOptions{
