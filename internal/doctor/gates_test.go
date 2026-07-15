@@ -143,6 +143,61 @@ func TestInstalledGateDirsDedupes(t *testing.T) {
 	}, installedGateDirs(cfg))
 }
 
+// TestInstalledGateDirsDedupesUncleanPath pairs with the dedupe above: the two
+// paths being compared come from different places — doctor's own env and a
+// hand-written config_dir — so the same dir arrives spelled two ways. Comparing
+// raw strings would print it twice, once as "default" and once under the account,
+// as if there were two accounts to reason about.
+func TestInstalledGateDirsDedupesUncleanPath(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/personal")
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "personal", ConfigDir: "/personal/"},
+		{Name: "work", ConfigDir: "/work/./"},
+	}}
+
+	assert.Equal(t, []gateDir{
+		{Account: "personal", Dir: "/personal"},
+		{Account: "work", Dir: "/work"},
+	}, installedGateDirs(cfg))
+}
+
+// TestInstalledGateDirsKeepsEveryAccountSharingADir pins that dedupe never costs an
+// account its row. Two accounts on one config dir share one gate state, so the value
+// is reported twice — but under both names, because a row missing the name a user
+// routes by would leave that account looking unchecked on the command whose whole
+// job is saying which accounts were checked.
+func TestInstalledGateDirsKeepsEveryAccountSharingADir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/ambient")
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "personal", ConfigDir: "/shared"},
+		{Name: "work", ConfigDir: "/shared"},
+	}}
+
+	assert.Equal(t, []gateDir{
+		{Account: defaultAccount, Dir: "/ambient"},
+		{Account: "personal", Dir: "/shared"},
+		{Account: "work", Dir: "/shared"},
+	}, installedGateDirs(cfg))
+}
+
+// TestInstalledGateDirsAccountsSharingTheAmbientDir collides the two rules above:
+// only the FIRST account claims the ambient stand-in row, and the second is a real
+// configured account like any other, so it gets its own row instead of evicting the
+// first. The "default" label must not survive alongside them — it is the one label
+// here that names nothing the user configured.
+func TestInstalledGateDirsAccountsSharingTheAmbientDir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/home/dev")
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "personal", ConfigDir: "/home/dev"},
+		{Name: "work", ConfigDir: "/home/dev"},
+	}}
+
+	assert.Equal(t, []gateDir{
+		{Account: "personal", Dir: "/home/dev"},
+		{Account: "work", Dir: "/home/dev"},
+	}, installedGateDirs(cfg))
+}
+
 func TestInstalledGateDirsAmbientOnly(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/ambient")
 	assert.Equal(t, []gateDir{{Account: defaultAccount, Dir: "/ambient"}},
