@@ -69,12 +69,15 @@ func claudeSuggestionVisible(raw string) bool {
 // isBoxBorderLine reports whether the cleaned line is an input-box border for
 // the purposes of this detector: after an optional corner/side prefix it
 // begins with a run of at least 3 horizontal dashes. Deliberately looser than
-// chrome.go's isHorizontalRule (whose other callers depend on "pure rule
-// only"): a session with a named agent context renders the name INSIDE the
-// top border ("──── context-name ──", observed live 2026-06-12), which the
-// strict predicate rejects — and that would make every such session read as
+// chrome.go's isHorizontalRule (whose remaining callers, footerBelowBox and
+// inputBoxText, depend on "pure rule only" to find the box's own edges): a
+// session with a named agent context renders the name INSIDE the top border
+// ("──── context-name ──", observed live 2026-06-12), which the strict
+// predicate rejects — and that would make every such session read as
 // suggestion-less. The loosening is safe here because the border only locates
-// the box; the dim gate still decides.
+// the box; the dim gate still decides. footerVisibleInSegments uses it for the
+// same reason (#332): a named border it cannot see is a segment boundary it
+// cannot place, which lets a quoted footer read as live.
 func isBoxBorderLine(line string) bool {
 	line = strings.TrimSpace(line)
 	dashes := 0

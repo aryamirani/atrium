@@ -112,15 +112,22 @@ func TestClaudePrompts(t *testing.T) {
 	require.True(t, m.NoAutoTap, "selections are manual-only; autoyes must not answer them")
 
 	// A footer quoted in the transcript sits above the input box; the scan stops
-	// at the box interior, so the quote must not read as a live prompt.
-	_, ok = claude.DetectPrompt(strings.Join([]string{
-		"  The footer reads: Enter to select · ↑/↓ to navigate · Esc to cancel",
-		"╭────────────────────────────╮",
-		"│ >                          │",
-		"╰────────────────────────────╯",
-		"  ? for shortcuts",
-	}, "\n"))
-	require.False(t, ok, "a footer quote in the transcript must not match")
+	// at the box interior, so the quote must not read as a live prompt. The named
+	// top border is the regression #332 fixed: the segment scan used to delimit on
+	// the strict isHorizontalRule, which does not recognize a border carrying the
+	// agent-context/branch name, so the box never opened a segment of its own and
+	// the stop never fired. This matcher had the same latent false positive as
+	// permission-local; the delimiter fix (chrome.go footerVisibleInSegments) closes
+	// both, so pin it here rather than let it ride along untested.
+	for name, box := range map[string][]string{
+		"plain border": {"╭────────────────────────────╮", "│ >                          │", "╰────────────────────────────╯"},
+		"named border": {"──── zvi/issue-332 ─────────", "❯ ", "────────────────────────────"},
+	} {
+		_, ok = claude.DetectPrompt(strings.Join(append([]string{
+			"  The footer reads: Enter to select · ↑/↓ to navigate · Esc to cancel",
+		}, append(box, "  ? for shortcuts")...), "\n"))
+		require.False(t, ok, "a footer quote in the transcript (%s) must not match", name)
+	}
 
 	// Live idle/working footers must not classify as prompts.
 	for _, footer := range []string{
@@ -130,6 +137,130 @@ func TestClaudePrompts(t *testing.T) {
 		_, ok := claude.DetectPrompt(footer)
 		require.False(t, ok, "idle footer must not be a prompt: %q", footer)
 	}
+}
+
+// claudeWritePermissionPane is a live tool-permission dialog for a file write,
+// captured verbatim from claude 2.1.210 (tmux capture-pane, 2026-07-15) and
+// byte-identical on 2.1.207 — the version VerifiedVersion pinned while this
+// shape went undetected (#332). The decline option is a bare "3. No": the
+// "No, and tell Claude what to do differently" literal the "permission" matcher
+// requires belongs only to the WebFetch/network dialogs, never to this one. The
+// footer carries no "to navigate"/"to select" either, so the selection matcher
+// misses it too — pre-fix the whole pane read as idle, showing a blocked session
+// as Ready.
+var claudeWritePermissionPane = strings.Join([]string{
+	"● Write(hello.txt)",
+	"────────────────────────────────────────────────────────",
+	" Create file",
+	" hello.txt",
+	"╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+	"  1 hi",
+	"╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+	" Do you want to create hello.txt?",
+	" ❯ 1. Yes",
+	"   2. Yes, allow all edits during this session (shift+tab)",
+	"   3. No",
+	"",
+	" Esc to cancel · Tab to amend",
+}, "\n")
+
+// claudeBashPermissionPane is the same dialog for a shell command, captured from
+// live claude 2.1.210 (2026-07-15). Its options differ from the write dialog's
+// ("Yes, and always allow access to <dir> from this project") and it carries an
+// extra "ctrl+e to explain" hint, so the two shapes share only the question, the
+// bare "No", and the "Esc to cancel · Tab to amend" footer pair — which is what
+// the matcher keys on.
+var claudeBashPermissionPane = strings.Join([]string{
+	"● Running 1 shell command…",
+	"  ⎿  $ mkdir probedir",
+	"────────────────────────────────────────────────────────",
+	" Bash command",
+	"   mkdir probedir",
+	"   Create probedir directory",
+	" Do you want to proceed?",
+	" ❯ 1. Yes",
+	"   2. Yes, and always allow access to atr-bash-UT3JTK/ from this project",
+	"   3. No",
+	" Esc to cancel · Tab to amend · ctrl+e to explain",
+}, "\n")
+
+// TestClaudeLocalPermissionPrompt pins the tool-permission matcher against both
+// live shapes (#332). NoAutoTap: unlike the WebFetch dialog the "permission"
+// matcher auto-answers, these gate local file writes and shell commands, so
+// autoyes surfaces them as needs-input rather than Enter-approving them.
+func TestClaudeLocalPermissionPrompt(t *testing.T) {
+	for name, pane := range map[string]string{
+		"write": claudeWritePermissionPane,
+		"bash":  claudeBashPermissionPane,
+	} {
+		m, ok := claude.DetectPrompt(pane)
+		require.True(t, ok, "the live %s permission dialog must be detected", name)
+		require.Equal(t, "permission-local", m.Name)
+		require.True(t, m.NoAutoTap, "autoyes must not auto-approve a local %s permission", name)
+	}
+
+	// Ordering guard. This pane is CONSTRUCTED, not captured: the option labels
+	// are the bundle's fetch-dialog literals but its real footer was never
+	// observed, so the "Esc to cancel · Tab to amend" line here is the adversarial
+	// worst case — if the fetch dialog ever does carry that footer, "permission"
+	// must still win, or autoyes would silently stop answering a prompt it
+	// answers today. The assertion is about matcher order, not about the pane.
+	m, ok := claude.DetectPrompt(strings.Join([]string{
+		" Do you want to allow Claude to fetch this content?",
+		" ❯ 1. Yes",
+		"   2. Yes, and don't ask again for example.com",
+		"   3. No, and tell Claude what to do differently (esc)",
+		" Esc to cancel · Tab to amend",
+	}, "\n"))
+	require.True(t, ok)
+	require.Equal(t, "permission", m.Name, "the fetch dialog must keep the auto-tappable matcher")
+	require.False(t, m.NoAutoTap, "autoyes still answers the fetch dialog")
+
+	// The trust gate and the /model picker both carry "Esc to cancel" but no
+	// "Tab to amend"; requiring the pair keeps them out of this matcher.
+	for name, footer := range map[string]string{
+		"trust gate":   " ❯ 1. Yes, I trust this folder\n   2. No, exit\n Enter to confirm · Esc to cancel",
+		"model picker": "   5. Haiku\n Enter to set as default · s to use this session only · Esc to cancel",
+	} {
+		if m, ok := claude.DetectPrompt(footer); ok {
+			require.NotEqual(t, "permission-local", m.Name, "%s must not read as a tool permission", name)
+		}
+	}
+
+	// The footer quoted in the transcript of an IDLE session, close enough to the
+	// bottom to sit inside the matcher's window — the case that makes this matcher
+	// structural rather than a flat bottom-N match. Atrium's own agents print this
+	// exact string (it is in this file), and an idle pane never scrolls, so a flat
+	// match would pin the row at needs-input until the user typed. The segment scan
+	// stops at the input box, which a real dialog replaces while it is up.
+	//
+	// Both border forms must reject it. The NAMED one is the case that matters: claude
+	// renders the agent-context/branch name inside the top border, and while the segment
+	// scan delimited on the strict isHorizontalRule that border was invisible to it — the
+	// bottom segment then spanned transcript AND box, so the input-box stop never fired
+	// and this pane matched (#332). An Atrium session working on Atrium hits exactly this:
+	// branch name in the border, this footer in the transcript.
+	for name, top := range map[string]string{
+		"plain border": strings.Repeat("─", 40),
+		"named border": "──── zvi/issue-332 ───────────────────",
+	} {
+		_, ok = claude.DetectPrompt(strings.Join([]string{
+			"● The dialog's footer reads: Esc to cancel · Tab to amend",
+			"  so the matcher keys on that pair.",
+			"",
+			top,
+			"❯ ",
+			strings.Repeat("─", 40),
+			"  ⏸ manual mode on · ? for shortcuts · ← for agents",
+		}, "\n"))
+		require.False(t, ok, "idle pane quoting the footer (%s) must not read as a live prompt", name)
+	}
+
+	// The same quote pushed far above the box must stay out too.
+	_, ok = claude.DetectPrompt("  It said: Esc to cancel · Tab to amend\n" +
+		strings.Repeat("a transcript line\n", WindowPrompt) +
+		"╭───╮\n│ > │\n╰───╯\n  ⏸ manual mode on · ? for shortcuts")
+	require.False(t, ok, "a transcript mention must not match")
 }
 
 // claudePlanPane is a live plan-approval dialog captured from claude 2.1.170
