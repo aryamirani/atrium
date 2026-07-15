@@ -219,10 +219,31 @@ func splashTunnelAtFor(maxD float64) splashPointFn {
 		// vanishing point — precisely where the eye is drawn — and would alias into
 		// shimmering rings. Fading a band-limited function toward its mean as its
 		// rate outruns the grid is what a mip does; 0.5 is this texture's mean.
-		// spacing = r²/(K*freq) is how many screen cells one texture cell covers;
-		// the lod is that measured against Nyquist, so it is 1 wherever the wall is
-		// resolvable and falls to 0 as the rings outrun the grid.
-		lod := clamp01(r * r / (tunLODC * k * tunFreqU))
+		//
+		// It is anisotropic because the grid is. A column step moves dx by 1 but a
+		// row step moves dy by cellAspect, so the vertical axis samples the wall at
+		// half the horizontal rate and aliases at twice the radius. An isotropic mip
+		// tuned for the horizontal rate therefore leaves a band around the vertical
+		// axis — the top and bottom of the pane — 1.6-2x over Nyquist, where the
+		// rings crawl (wagon-wheel) instead of flowing outward. Measured before the
+		// fix at 240x60: 0.41 cycles/step horizontally at r=37 against 0.81
+		// vertically, and still 0.55 vertically out at r=45.
+		//
+		// step is the largest |dr| one cell step can cover here, so spacing —
+		// r³/(K*freq*step) — is cells-per-ring along whichever screen axis is
+		// currently worst. On the horizontal axis step == r and it reduces to the
+		// isotropic r²/(K*freq); on the vertical it is 2r and the mip bites a factor
+		// sqrt(cellAspect) further out, which is exactly the radius that axis can
+		// actually resolve.
+		step := math.Max(math.Abs(x), cellAspect*math.Abs(y))
+		lod := 0.0
+		if step > 0 {
+			// step is 0 only at the exact centre, where the wall is fully mipped
+			// anyway and the fog has already taken the cell to black. Guarded rather
+			// than epsilon'd because r³/step is 0/0 there, and NaN survives every
+			// comparison below it.
+			lod = clamp01(r * r * r / (tunLODC * k * tunFreqU * step))
+		}
 		tex := smoothstep(tunWallLo, tunWallHi, splashTunnelFBM(u, v))
 		tex = 0.5 + lod*(tex-0.5)
 		// A lit surface whose texture modulates it downward, never to black — see

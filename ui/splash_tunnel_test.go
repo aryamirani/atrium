@@ -236,18 +236,69 @@ func TestSplashTunnelMipQuietsTheVanishingPoint(t *testing.T) {
 			"(near-variance %.6g vs far %.6g)", near, far)
 }
 
-// hueSpreadOver walks radially between two radii and reports how much of the
-// gradient the hue channel sweeps. Radially, because hue is a function of depth
-// alone: its aliasing shows up as r moves, never as theta does.
-func hueSpreadOver(rLo, rHi float64) float64 {
+// probeTheta is the ray every mip probe below samples along. The mip is
+// anisotropic, so a radius alone does not name a lod — the angle is part of the
+// coordinate and tunnelMipR reads the same one.
+const probeTheta = 0.7
+
+// tunnelMipR is the radius at which the lod saturates along theta, i.e. where
+// the wall becomes fully resolvable. Derived from the same terms the field uses
+// so that retuning any of them moves the probes with it instead of quietly
+// leaving them somewhere the mip cannot be observed.
+func tunnelMipR(theta float64) float64 {
+	m := math.Max(math.Abs(math.Cos(theta)), cellAspect*math.Abs(math.Sin(theta)))
+	return math.Sqrt(tunLODC * tunDepthK * tunFreqU * m)
+}
+
+// hueSpreadOver walks radially along theta between two radii and reports how much
+// of the gradient the hue channel sweeps. Radially, because hue is a function of
+// depth alone: its aliasing shows up as r moves, never as theta does.
+//
+// It is the honest probe for the lod because hue carries no noise: aux is
+// 0.5 + lod*(splashTri(...)-0.5), a deterministic triangle, so across a walk that
+// covers a full cycle the spread *is* the lod. The wall cannot be measured this
+// way — two rays sample different lattice points, so any difference between them
+// is confounded with the noise realisation.
+func hueSpreadOver(rLo, rHi, theta float64) float64 {
 	lo, hi := math.Inf(1), math.Inf(-1)
 	const n = 4000
 	for i := 0; i <= n; i++ {
 		rr := rLo + (rHi-rLo)*float64(i)/n
-		_, aux := tunnelPolarAt(rr, 0.7, 0)
+		_, aux := tunnelPolarAt(rr, theta, 0)
 		lo, hi = math.Min(lo, aux), math.Max(hi, aux)
 	}
 	return hi - lo
+}
+
+// TestSplashTunnelMipIsAnisotropic pins the grid fact the mip exists to respect,
+// and the one an isotropic mip got wrong: a column step moves dx by 1 while a row
+// step moves dy by cellAspect, so the vertical axis samples the wall at half the
+// horizontal rate and must be faded a factor cellAspect harder at any given radius.
+//
+// Left isotropic, the band around the vertical axis sits ~2x over Nyquist (measured
+// at 240x60: 0.81 cycles/step vertically against 0.41 horizontally at r=37) and its
+// rings crawl instead of flowing — which reads as the animation expanding from the
+// top and bottom of the pane rather than from its centre. The user caught it before
+// this test existed.
+//
+// Mutation-tested against `step := r`, and an earlier version of this test did NOT
+// catch that: it compared tunnelMipR against itself, which is the test's own
+// arithmetic rather than the field's.
+func TestSplashTunnelMipIsAnisotropic(t *testing.T) {
+	// A band where both rays are still mipped (lod < 1 either way) and u is
+	// unclamped, or there is no lod left to measure. Derived, not written down.
+	rLo, rHi := 20.0, 28.0
+	require.Lessf(t, tunDepthK/tunUMax, rLo, "u must be unclamped across the probe band")
+	require.Greaterf(t, tunnelMipR(0), rHi, "the fine axis must still be mipped across the probe band")
+
+	fine := hueSpreadOver(rLo, rHi, 0)           // +x: step == r
+	coarse := hueSpreadOver(rLo, rHi, math.Pi/2) // +y: step == cellAspect*r
+
+	// lod ∝ 1/step, so the coarse axis must be damped by exactly cellAspect.
+	require.InDeltaf(t, cellAspect, fine/coarse, 0.15,
+		"the coarse (vertical) axis must be mipped cellAspect harder than the fine one — "+
+			"fine spread %.3f, coarse %.3f, ratio %.2f (isotropic would give 1.0)",
+		fine, coarse, fine/coarse)
 }
 
 // TestSplashTunnelHueMipQuietsTheVanishingPoint covers the trap the brief and its
@@ -266,8 +317,8 @@ func hueSpreadOver(rLo, rHi float64) float64 {
 // this out.
 func TestSplashTunnelHueMipQuietsTheVanishingPoint(t *testing.T) {
 	const probeLo, probeHi = 9.0, 14.0
-	uClampR := tunDepthK / tunUMax                    // below this, u is pinned
-	mipR := math.Sqrt(tunLODC * tunDepthK * tunFreqU) // above this, lod == 1
+	uClampR := tunDepthK / tunUMax // below this, u is pinned
+	mipR := tunnelMipR(probeTheta) // above this, lod == 1 along the probed ray
 	require.Lessf(t, uClampR, probeLo,
 		"the u clamp (r<%.1f) must stay below the probe band, or hue is flat there for the wrong reason", uClampR)
 	require.Greaterf(t, mipR, probeHi,
@@ -275,14 +326,14 @@ func TestSplashTunnelHueMipQuietsTheVanishingPoint(t *testing.T) {
 
 	// Across the band the depth term sweeps ~8 full gradient cycles, so an
 	// unmipped hue would cover essentially the whole gradient.
-	near := hueSpreadOver(probeLo, probeHi)
+	near := hueSpreadOver(probeLo, probeHi, probeTheta)
 	require.Lessf(t, near, 0.35,
 		"hue must stay near its mean where the bands compress (spread %.3f); "+
 			"unmipped this sweeps the full gradient and reads as confetti", near)
 
 	// And the mip must not be quietly killing hue everywhere: out where the lod
 	// saturates, the full sweep has to survive or there are no colour rings.
-	far := hueSpreadOver(40, 90)
+	far := hueSpreadOver(40, 90, probeTheta)
 	require.Greaterf(t, far, 0.8, "the far field must still sweep the gradient (spread %.3f)", far)
 }
 
