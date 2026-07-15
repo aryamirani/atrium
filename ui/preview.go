@@ -86,6 +86,12 @@ type previewState struct {
 	// splash. Kept separate from text so it can be overlaid at its own width
 	// (the field then hugs the narrower wordmark, not the wider message).
 	splashMessage string
+	// lines holds the fallback message as separate, uncomposed lines while
+	// fallback is true. String() lays them out, because String() is the only
+	// place the pane's width is known and current: a block composed at set time
+	// is already stale by the next resize, and composing without a width at all
+	// is what made the paused view unreadable on a narrow pane (#355).
+	lines []string
 	// text is the text displayed in the preview pane
 	text string
 }
@@ -110,12 +116,11 @@ func (p *PreviewPane) SetSize(width, maxHeight int) {
 // app's 60fps splash tick. It only affects the idle-splash render in String().
 func (p *PreviewPane) SetSplashFrame(n int) { p.splashFrame = n }
 
-// setFallbackState sets the preview state with fallback text and a message
-func (p *PreviewPane) setFallbackState(message string) {
-	p.previewState = previewState{
-		fallback: true,
-		text:     lipgloss.JoinVertical(lipgloss.Center, FallbackBanner(), "", message),
-	}
+// setFallbackState sets the preview state to show the given message lines over
+// the wordmark. The lines are stored, not composed: String() lays them out
+// against the live pane width (see fallbackBlock).
+func (p *PreviewPane) setFallbackState(lines ...string) {
+	p.previewState = previewState{fallback: true, lines: lines}
 }
 
 // setSplashState is setFallbackState for the idle empty screen (no agents),
@@ -167,11 +172,12 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 			return nil
 		}
 		// Nothing copies on pause (#173 dropped that unsolicited write), so the branch
-		// is offered with the key that copies it on request. The affordance sits on its
-		// own line deliberately: this block is composed width-unaware and JoinVertical
-		// pads every line out to the longest one, so folding it into the branch line
-		// would widen the block and cost the banner truncation on a narrow pane.
-		p.setFallbackState(lipgloss.JoinVertical(lipgloss.Center,
+		// is offered with the key that copies it on request. The lines are passed
+		// separately rather than pre-joined so fallbackBlock can wrap each one against
+		// the pane: the branch is interpolated and unbounded, and this block's fixed
+		// text already outruns the wordmark on its own ("Switch your main repo off
+		// this branch before resuming." is 54 cols against a 48-col banner).
+		p.setFallbackState(
 			"Session is paused. Press 'r' to resume.",
 			"",
 			theme.Current().AttentionStyle().
@@ -183,7 +189,7 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 				Render("(press 'y' to copy)"),
 			theme.Current().AttentionStyle().
 				Render("Switch your main repo off this branch before resuming."),
-		))
+		)
 		return nil
 	}
 
@@ -243,13 +249,15 @@ func (p *PreviewPane) String() string {
 	}
 
 	if p.previewState.fallback {
-		// Center the fallback in the pane's exact box, the same way the diff
-		// pane centers its placeholders. (The hand-rolled padding loop this
-		// replaces guessed at chrome offsets that no longer exist and sat the
-		// text slightly high.) centerInBox clamps to the box, so a fallback line
-		// wider than the pane (the empty-state message on a narrow terminal)
-		// can't inflate the frame and throw centered overlays off-center (#251).
-		return centerInBox(p.width, p.height, previewPaneStyle().Render(p.previewState.text))
+		// Composed here, against the live width, rather than back where the state was
+		// set (#355). Center it in the pane's exact box, the same way the diff pane
+		// centers its placeholders. (The hand-rolled padding loop this replaces guessed
+		// at chrome offsets that no longer exist and sat the text slightly high.)
+		// centerInBox still clamps: fallbackBlock already fits the block to the pane, so
+		// the clamp is now a backstop rather than the thing doing the fitting, and it
+		// keeps the #251 guarantee that this pane cannot inflate the frame.
+		return centerInBox(p.width, p.height,
+			previewPaneStyle().Render(fallbackBlock(p.width, p.height, p.previewState.lines...)))
 	}
 
 	// Hint mode: show the frozen decorated frame, clamped exactly like the

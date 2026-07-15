@@ -6,11 +6,15 @@ func TestAdaptersExposesSeededVersions(t *testing.T) {
 	want := map[Key]struct {
 		verified string
 		gran     Granularity
+		gates    map[string]bool
 	}{
-		KeyClaude: {"2.1.210", GranularityMinor},
-		KeyGemini: {"0.27", GranularityMinor},
-		KeyCodex:  {"", GranularityPatch},
-		KeyAider:  {"0.86.2", GranularityMinor},
+		// Claude is the only adapter whose UI is chosen by a remote gate rather than
+		// by its version; the pin records that every capture in registry.go came from
+		// the ungated (hint-list) footer branch. #337.
+		KeyClaude: {"2.1.210", GranularityMinor, map[string]bool{"tengu_copper_thistle": false}},
+		KeyGemini: {"0.27", GranularityMinor, nil},
+		KeyCodex:  {"", GranularityPatch, nil},
+		KeyAider:  {"0.86.2", GranularityMinor, nil},
 	}
 	got := Adapters()
 	if len(got) != len(want) {
@@ -26,6 +30,20 @@ func TestAdaptersExposesSeededVersions(t *testing.T) {
 		}
 		if a.DriftGranularity != w.gran {
 			t.Errorf("%s DriftGranularity = %d, want %d", a.Key, a.DriftGranularity, w.gran)
+		}
+		if len(a.VerifiedGates) != len(w.gates) {
+			t.Errorf("%s pins %d gates, want %d", a.Key, len(a.VerifiedGates), len(w.gates))
+			continue
+		}
+		for _, g := range a.VerifiedGates {
+			want, ok := w.gates[g.Name]
+			if !ok {
+				t.Errorf("%s pins unexpected gate %q", a.Key, g.Name)
+				continue
+			}
+			if g.Value != want {
+				t.Errorf("%s gate %s pinned %t, want %t", a.Key, g.Name, g.Value, want)
+			}
 		}
 	}
 }
