@@ -433,9 +433,21 @@ const permissionRegionCap = 20
 //     while no box has painted yet.
 //
 // The known limit inherited from the anchor — a rule rendered BELOW a live dialog steals it
-// (a custom statusLine's own ───, the shape chrome.go names) — costs a missed dialog, which
-// for permission-network/permission-local is needs-input downgraded to idle, and for
-// permission is one Enter autoyes does not send. Both fail safe here, unlike for the gate.
+// (a custom statusLine's own ───, the shape chrome.go names) — costs a missed dialog. The
+// choice above does not bear on it either way: a stolen anchor reports ok=true with the wrong
+// region, so a fallback keyed on !ok would never fire for it. The cost is not symmetric:
+//
+//   - For permission a miss is one Enter autoyes does not send. The human taps it: safe.
+//   - For permission-network/permission-local a miss reads as idle, and idle is what lets a
+//     queued prompt be typed into the live dialog (permission-network above; session/tmux
+//     AwaitingInput takes the dialog's "❯ 1. Yes" for a composer). That is the gate's
+//     dangerous direction, not a safe one.
+//
+// Accepted on the same ground claudeGateVisible accepts it, not on fail-safety: no captured
+// dialog renders a rule below itself — they replace the composer rather than sit above it — so
+// there is no pane to pin it from. Revisit if one is ever captured. The segment scan is not
+// the escape hatch here, for the reason claudeGateVisible gives: its input-box stop never
+// fires on a dialog's own segment, so it walks on into the transcript.
 func claudeLiveDialogRegion(content string) (string, bool) {
 	region, ok := footerBelowBox(content)
 	if !ok || strings.TrimSpace(region) == "" {

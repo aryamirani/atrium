@@ -218,12 +218,17 @@ func TestKeeperServiceSkipsIdleInstanceWithNothingToDo(t *testing.T) {
 }
 
 func TestKeeperServiceAutoYesTap(t *testing.T) {
-	// Claude's network-permission dialog, captured from a live 2.1.210 pane (2026-07-15,
-	// #343) — the one prompt autoyes answers with Enter. The header and rule are not
-	// decoration: the matcher requires its title below the pane's last box border, so a bare
-	// option list no longer reads as a live dialog. The "❯ 1. Yes" also makes InputBoxVisible
-	// true, which is what the second subtest needs — its queued prompt must be held back by
-	// DetectPrompt (the blocking-dialog gate it names), not by the accidental absence of a box.
+	// Claude's network-permission dialog — the one prompt autoyes answers with Enter.
+	// ABRIDGED from the live 2.1.210 capture (2026-07-15, #343), not a transcription of one:
+	// the verbatim panes are session/agent's claudeFetchPane (width 100) and
+	// claudeFetchNarrowPane (width 28), and that is where the matcher itself is pinned. This
+	// test drives the keeper, not the matcher, so it keeps only the shape the keeper's path
+	// needs — do not read the rule's width here as a captured one.
+	// That shape is still not decoration: the matcher requires its title below the pane's last
+	// box border, so a bare option list no longer reads as a live dialog. The "❯ 1. Yes" also
+	// makes InputBoxVisible true, which is what the second subtest needs — its queued prompt
+	// must be held back by DetectPrompt (the blocking-dialog gate it names), not by the
+	// accidental absence of a box.
 	permissionDialog := strings.Join([]string{
 		"● Fetch(https://example.net)",
 		strings.Repeat("─", 60),
