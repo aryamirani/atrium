@@ -38,12 +38,25 @@ func TestManagedConfigParsesUnderRealTmux(t *testing.T) {
 				t.Fatalf("write rendered config: %v", err)
 			}
 
-			// tmux puts the socket under $TMUX_TMPDIR (default /tmp), and never
-			// unlinks the file when the server dies — so without this the probe
-			// socket outlives kill-server and piles up in the shared /tmp/tmux-<uid>
-			// next to Atrium's live socket. Pointing it at the test's temp root lets
-			// t.TempDir's cleanup take the socket with it.
-			tmuxTmp := t.TempDir()
+			// tmux puts the socket under $TMUX_TMPDIR (default /tmp — it ignores
+			// TMPDIR), and never unlinks the file when the server dies — so without
+			// this the probe socket outlives kill-server and piles up in the shared
+			// /tmp/tmux-<uid> next to Atrium's live socket. A temp root of our own
+			// lets the cleanup below take the socket with it.
+			//
+			// The root has to stay short: tmux binds the socket at
+			// $TMUX_TMPDIR/tmux-<uid>/<sock>, and that path has to fit sockaddr_un's
+			// sun_path (104 bytes on darwin, 108 on linux) or the server dies with
+			// "File name too long". So neither t.TempDir() (names the dir after this
+			// long test) nor $TMPDIR (darwin's per-user one is ~56 chars on its own)
+			// works as the base. /tmp is where tmux would have put the socket anyway,
+			// so this keeps the filesystem it already used and only makes the dir
+			// unique and removable.
+			tmuxTmp, err := os.MkdirTemp("/tmp", "atr")
+			if err != nil {
+				t.Fatalf("tmux tmpdir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(tmuxTmp) })
 			t.Setenv("TMUX_TMPDIR", tmuxTmp)
 
 			// No '/' in the socket name: tmux reads -L as a path under
