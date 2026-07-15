@@ -404,7 +404,7 @@ func rainRampHexAt(pal theme.Palette, i int) string {
 	t := float64(i) / float64(splashRainStops-1)
 	if t < rainRampHeadAt {
 		// Tail: near-black → the stream hue, on rain's own axis.
-		return splashLumHexAt(base, t/rainRampHeadAt)
+		return splashLumHexAt(base, t/rainRampHeadAt, rainChromaHold)
 	}
 	// Head: the stream hue → white.
 	u := (t - rainRampHeadAt) / (1 - rainRampHeadAt)

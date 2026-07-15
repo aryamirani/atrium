@@ -134,7 +134,7 @@ func TestSharedLumCurveMatchesRainsTail(t *testing.T) {
 		if tt >= rainRampHeadAt {
 			continue // the head blend is rain's alone
 		}
-		require.Equalf(t, rainRampHexAt(pal, i), splashLumHexAt(base, tt/rainRampHeadAt),
+		require.Equalf(t, rainRampHexAt(pal, i), splashLumHexAt(base, tt/rainRampHeadAt, rainChromaHold),
 			"rain's tail stop %d must be the shared luminance curve, not a second copy of it", i)
 	}
 }

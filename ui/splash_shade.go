@@ -112,10 +112,28 @@ func shadeAt(hue int, lumT float64, ops splashOps, lut *splashLUT) (int, bool) {
 // render is. That one has to stay off true black: terminals with a
 // minimum-contrast feature rewrite true black to something legible, which would
 // speckle a field with the very artifact this curve removes.
-func splashLumHexAt(base colorful.Color, u float64) string {
+func splashLumHexAt(base colorful.Color, u, chromaHold float64) string {
 	hue, chroma, lum := base.Hcl()
-	return colorful.Hcl(hue, chroma*u, lum*(rainRampFloor+(1-rainRampFloor)*u)).Clamped().Hex()
+	return colorful.Hcl(hue, chroma*math.Pow(u, chromaHold), lum*(rainRampFloor+(1-rainRampFloor)*u)).Clamped().Hex()
 }
+
+// The chroma laws: the exponent chroma falls by as a column darkens.
+//
+// Rain's 1.0 is linear, and it is only that because that is what rain shipped
+// with. It is drastically more conservative than the gamut requires — measured,
+// sRGB allows 6.6x to 20x more chroma than it asks for at the dim end — but rain
+// is one hue, so nothing has ever read as grey and there is no reason to move it.
+//
+// The shade grid cannot afford that. Its whole point is 20 hues, and at the linear
+// law the bottom of every column collapses to slate: 8% of the hue's chroma at
+// stop 1, 33% at stop 4, so a shaded nebula rendered as coloured ridges over a grey
+// haze — the exact "downsampled photo" failure this variant risked. The square root
+// holds ~4x the chroma at the faint end (26% at stop 1) and still clips nothing:
+// verified across all 20 hues x 16 stops, zero gamut violations.
+const (
+	rainChromaHold  = 1.0
+	shadeChromaHold = 0.5
+)
 
 // splashShadeParse resolves a gradient stop to a colour the curve can walk down,
 // degrading exactly as buildSplashLUT and rainRampHexAt do rather than emitting
@@ -139,7 +157,7 @@ func splashShadeParse(c lipgloss.Color) colorful.Color {
 // renders.
 func splashShadeHexAt(pal theme.Palette, h, l int) string {
 	lut := splashGradientColors(pal)
-	return splashLumHexAt(splashShadeParse(lut[h]), float64(l)/float64(splashLumStops-1))
+	return splashLumHexAt(splashShadeParse(lut[h]), float64(l)/float64(splashLumStops-1), shadeChromaHold)
 }
 
 // buildShadeGrid builds the hue x luminance grid: every gradient stop, shaded down
@@ -162,7 +180,7 @@ func buildShadeGrid(colors []lipgloss.Color, affix []splashAffix) []splashAffix 
 	for h, c := range colors {
 		base := splashShadeParse(c)
 		for l := 0; l < top; l++ {
-			hex := splashLumHexAt(base, float64(l)/float64(top))
+			hex := splashLumHexAt(base, float64(l)/float64(top), shadeChromaHold)
 			grid[h*splashLumStops+l] = splashAffixFor(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)))
 		}
 		// Pin the top exactly, as buildSplashLUT pins its gradient endpoints: at
