@@ -1144,7 +1144,7 @@ func (l *List) AccountGrouped() bool {
 
 // AccountReorderEnabled reports whether [ / ] can move an account cluster: there must be
 // account clustering to reorder, and at least two clusters to swap. It mirrors
-// ManualReorderEnabled so the app can explain a refusal instead of leaving a silent
+// SessionReorderEnabled so the app can explain a refusal instead of leaving a silent
 // no-op. Unlike J/K this is not gated on the sort mode — cluster order and within-block
 // order are orthogonal, so a status sort leaves [ / ] available.
 //

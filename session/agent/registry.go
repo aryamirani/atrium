@@ -22,6 +22,15 @@ import (
 // pin; it was not, and could not — both truncate to 2.1.0. Nothing tells you a
 // heuristic went stale. Only driving it does.
 //
+// A version pin also can't express everything that moves. Claude picks between two
+// footer implementations in one binary on a server-resolved feature gate, so the
+// rendered UI can change with NO version change at all — and because Atrium routes
+// sessions to a per-account CLAUDE_CONFIG_DIR, two sessions on the same claude
+// version can resolve that gate differently and render differently. VerifiedGates
+// records which branch a capture came from; `atrium doctor` reads the value claude
+// last resolved per account and reports a mismatch. So provenance here names a
+// version AND a gate state: every capture in this file is an UNGATED capture.
+//
 // Remediation is ADDITIVE, never replace-in-place: when a CLI rewords a gating
 // string, ADD the new variant alongside the old in the same matcher list and
 // keep both through a deprecation window, e.g.
@@ -45,16 +54,22 @@ var claude = &Adapter{
 	// MCP-approval shapes. The one string a pane cannot show is the login-error separator
 	// (reaching it means revoking auth); it was confirmed present in the 2.1.210 bundle
 	// instead. #332 claimed the MCP titles were unreachable too — they are not, a
-	// project-scoped .mcp.json renders them on demand, and #340 drove them.
+	// project-scoped .mcp.json renders them on demand, and #340 drove them. The
+	// fetch/network dialog was the last shape never driven; #343 drove it (prompt a
+	// session to WebFetch a fresh domain) at widths 100 and 28.
 	//
-	// The sweep exists because the pin is a claim about the WHOLE surface, and twice now
-	// that claim was false at the version it named. #333 found the default footer
+	// The sweep exists because the pin is a claim about the WHOLE surface, and three times
+	// now that claim was false at the version it named. #333 found the default footer
 	// ("manual mode on") rendering on a live 2.1.207 pane the marker table did not know.
 	// #332 then found the tool-permission matcher keyed on a literal that belongs only to
 	// the fetch/network dialogs, so every Write/Edit/Bash approval read as idle — also
-	// reproducing at 2.1.207. Neither was newer-CLI drift; both were wrong at the pin. So
-	// re-verify by DRIVING each heuristic, and treat "the string is still in the bundle"
-	// as necessary but not sufficient — a literal can survive while nothing renders it.
+	// reproducing at 2.1.207. #343 then drove the fetch dialog that literal came from and
+	// found the fixture describing it was invented: it renders NO footer, and it renders
+	// the tool's own arguments inside itself, which is what made the literal forgeable.
+	// None was newer-CLI drift; all were wrong at the pin. So re-verify by DRIVING each
+	// heuristic, and treat "the string is still in the bundle" as necessary but not
+	// sufficient — a literal can survive while nothing renders it, and the bundle cannot
+	// tell you what surrounds it on screen.
 	//
 	// Minor granularity (matching gemini): claude ships patch releases every few days, so
 	// patch-level drift would fire the warning almost constantly — alert fatigue, not
@@ -67,6 +82,32 @@ var claude = &Adapter{
 	// tell you when to check again.
 	VerifiedVersion:  "2.1.210",
 	DriftGranularity: GranularityMinor,
+
+	// The footer's implementation is chosen by this gate, not by the version. The
+	// ungated branch (false) builds a hint LIST — hints concatenate, and "? for
+	// shortcuts" is pushed only when the list is otherwise empty. The gated branch is
+	// the single mutually-exclusive slot #333 described and mistook for ours. Live
+	// 2.1.210 resolves false, proven by a co-occurrence the slot branch cannot produce:
+	// "⏸ manual mode on · ? for shortcuts · ← for agents" carries the shortcuts hint
+	// and the agents hint at once. Every capture pinned in this package is therefore an
+	// UNGATED capture, and this field is what says so.
+	//
+	// What a flip would do to detection is NOT known, and cannot be found out here.
+	// The gated branch is the one heuristic-relevant surface in this file that cannot
+	// be driven at 2.1.210: the CLAUDE_INTERNAL_FC_OVERRIDES parse is dead code (A1r
+	// returns before it reads the env var) and the in-memory payload beats the on-disk
+	// map, so there is no supported way to make a pane render it. #337 read the gated
+	// source and expects "<label> on" and "esc to interrupt" to survive, which would
+	// leave BusyMarkers and the mode table spanning both branches — but that is a
+	// bundle reading of a branch nobody has rendered, and this file's own rule is that
+	// bundle presence is necessary and not sufficient. It is not a reason to skip
+	// re-verifying. (Sharpening the point: "esc to interrupt" is not even a contiguous
+	// literal in the 2.1.210 binary — it is assembled at runtime — so grepping for it
+	// proves nothing in either direction, on either branch.)
+	//
+	// Detecting a flip is therefore what we get instead of auditing for one, and why
+	// this is a pin rather than a comment — see internal/doctor/gates.go.
+	VerifiedGates: []VerifiedGate{{Name: "tengu_copper_thistle", Value: false}},
 
 	// The below-box footer renders "esc to interrupt" while working. #308 read its
 	// absence on a busy pane as a *responsive* hint area crowding the marker out at
@@ -97,13 +138,28 @@ var claude = &Adapter{
 	LiveSpinner: claudeSpinnerWorking,
 
 	Prompts: []PromptMatcher{
-		// The network-permission dialog's decline option. Despite the generic
-		// name this literal is the *fetch/network* family's alone — the bundle
-		// carries it only under "Do you want to allow Claude to fetch this
-		// content?" and the sandbox's "Do you want to allow this connection?".
-		// Local tool approvals use a bare "No" and are matched below instead.
-		{Name: "permission", Window: WindowPrompt,
-			All: []string{"No, and tell Claude what to do differently"}},
+		// The fetch/network permission dialog — the ONE prompt in this list autoyes
+		// still answers with Enter, so it is the only heuristic here whose failure
+		// performs an action rather than mislabeling a row. Keyed on the dialog's own
+		// title, positioned as the live question (claudeFetchPermissionVisible), and
+		// pinned against a live 2.1.210 capture at two widths (registry_test.go
+		// claudeFetchPane / claudeFetchNarrowPane).
+		//
+		// Until #343 it keyed on the decline option "No, and tell Claude what to do
+		// differently" in a flat bottom-15 window. That was wrong twice over, both
+		// captured live:
+		//   - The literal lives verbatim in this file, so a session merely reading or
+		//     grepping this repo printed it and read as a live prompt — on an idle pane,
+		//     which never scrolls, autoyes tapped Enter into the composer
+		//     (claudeQuotedPermissionPane).
+		//   - Worse, claude renders a tool's own arguments INSIDE the approval dialog,
+		//     below its top rule. So `grep "No, and tell Claude what to do differently"`
+		//     put the literal in LIVE CHROME, not the transcript: the Bash dialog matched
+		//     here, this matcher precedes permission-local, and autoyes Enter-approved
+		//     the shell command against a human's explicit gate (claudeBashForgedPane).
+		//     No liveness anchor can fix that one — the forged text is inside the live
+		//     dialog — which is why the title, not the option, is what this keys on.
+		{Name: "permission", Match: claudeFetchPermissionVisible},
 		// Local tool approvals: the Write/Edit/Bash dialogs. Their decline option
 		// is a bare "3. No" and their footer names no navigate/select token, so
 		// before #332 neither the matcher above nor the selection matcher below
@@ -127,6 +183,22 @@ var claude = &Adapter{
 		// Pinned against live 2.1.210 captures, byte-identical on 2.1.207
 		// (registry_test.go claudeWritePermissionPane / claudeBashPermissionPane).
 		{Name: "permission-local", NoAutoTap: true, Match: claudeLocalPermissionVisible},
+		// The rest of the fetch/network family: its decline option in live chrome,
+		// surfaced as needs-input but never tapped. The bundle carries that option
+		// under two titles — the fetch dialog above, and the sandbox's "Do you want
+		// to allow this connection?" — and only the first can be driven here (the
+		// second needs sandbox mode), so only the first is auto-answered. This net
+		// keeps the undriven sibling DETECTED, which is not cosmetic: the fetch
+		// dialog renders NO footer, so permission-local cannot see this family, and
+		// DetectPrompt is the only thing standing between a queued prompt and a live
+		// dialog (session/tmux AwaitingInput — the dialog's "❯ 1. Yes" reads as an
+		// input box, so InputBoxVisible does not stop it). Undetected, a queued
+		// prompt would be typed into the dialog and retried every cycle.
+		//
+		// It sits after permission-local only so the log names the right dialog:
+		// both are NoAutoTap, so a pane matching both behaves identically either way,
+		// and a forged Bash dialog (see above) is a Bash dialog, not a network one.
+		{Name: "permission-network", NoAutoTap: true, Match: claudeNetworkPermissionVisible},
 		// The plan-approval dialog ("Would you like to proceed?" after plan mode).
 		// Enter would accept the plan AND enable auto mode, so autoyes must not
 		// answer it. Tokens pinned against a live 2.1.170 pane (registry_test.go
@@ -338,6 +410,151 @@ func claudeGateVisible(content string) bool {
 // used to miss), so it never truncates a real gate, and bites only when the anchor turns out
 // not to be live chrome. Same role aboveBoxBlockCap plays for the upward scan (chrome.go).
 const gateRegionCap = 40
+
+// claudeFetchTitles are the fetch/network dialog's own question text, captured live at
+// 2.1.210 (registry_test.go claudeFetchPane). This is the dialog's OWN chrome, which is
+// what makes it a sound key — unlike the decline option it replaces, which is a label
+// shared with the sandbox dialog and, fatally, appears inside other dialogs' bodies.
+var claudeFetchTitles = []string{"Do you want to allow Claude to fetch this content?"}
+
+// claudeQuestionPrefix opens every claude tool-approval question: "Do you want to allow
+// Claude to fetch this content?" (fetch), "Do you want to proceed?" (bash), "Do you want
+// to create hello.txt?" (write) — all captured live at 2.1.210. It is the pivot
+// claudeFetchPermissionVisible uses to find the dialog's question rather than its body.
+const claudeQuestionPrefix = "Do you want to "
+
+// claudeNetworkDeclineOptions is the fetch/network family's decline option. The bundle
+// carries it only under the fetch title and the sandbox's "Do you want to allow this
+// connection?"; local tool approvals use a bare "No" (#332). It backs permission-network
+// — detection only. It must never gate an auto-tap again: it is this file's own text, and
+// it renders inside other dialogs' bodies (#343).
+var claudeNetworkDeclineOptions = []string{"No, and tell Claude what to do differently"}
+
+// permissionRegionCap bounds how many non-empty lines below the anchoring rule the
+// permission matchers match in. It plays the same role gateRegionCap does for the gate —
+// restoring a ceiling once the flat window's floor is gone, so transcript below a rule the
+// agent printed itself on a composer-less frame cannot match — but it is deliberately its
+// own constant at a much tighter value, because the two measure different things: the
+// gate's literal is a dialog TITLE at the top of its dialog (hence 40, clearing the tallest
+// capture), while these key on the question and options at the BOTTOM, which flattenChrome
+// reaches first. Measured on the live 2.1.210 captures: the fetch title sits 9 non-empty
+// lines above the region's bottom at width 28 (claudeFetchNarrowPane — the narrowest
+// reachable pane, since an agent's pane is atrium's PREVIEW pane), so 20 clears every
+// captured shape with better than 2x margin while exposing half the surface 40 would.
+const permissionRegionCap = 20
+
+// claudeLiveDialogRegion returns claude's live dialog region — the lines below the pane's
+// last box border, flattened — and whether the pane has that anchor at all. It is
+// footerBelowBox's contract ("the border proves everything below it is live chrome, never
+// scrolled-back transcript") applied to the permission matchers: on a pane with a composer
+// the last rule is the composer's own bottom edge, so the region is just the footer and a
+// phrase QUOTED in the transcript above can never reach it; on a dialog pane the last rule
+// is the dialog's own top rule and the region is the dialog itself. Every captured claude
+// dialog and gate leads with that rule (registry_test.go), and every captured composer ends
+// with one, which is what makes the anchor's absence meaningful.
+//
+// !ok is returned for no anchor AND for an anchor with nothing under it (footerBelowBox
+// reports ok=true for a pane whose last line is the rule — ok means "an anchor exists", not
+// "the region is meaningful"). Both are hard false at the callers, with NO fallback to the
+// flat window — the opposite of claudeGateVisible, deliberately:
+//
+//   - For the gate a miss is the dangerous direction (a queued prompt typed into a trust
+//     screen), so its fallback's false positives are the cheaper failure and worth keeping.
+//   - Here the fallback could only ever hurt. Every borderless claude pane is one where no
+//     dialog can be up — a pre-box boot frame, a --continue replay before the box paints, a
+//     degenerate capture — because every captured dialog carries its own top rule. So the
+//     flat window has no miss to rescue on such a pane, and one real false positive to
+//     cause: a --continue replay of an Atrium session's transcript quotes these literals
+//     while no box has painted yet.
+//
+// The known limit inherited from the anchor — a rule rendered BELOW a live dialog steals it
+// (a custom statusLine's own ───, the shape chrome.go names) — costs a missed dialog. The
+// choice above does not bear on it either way: a stolen anchor reports ok=true with the wrong
+// region, so a fallback keyed on !ok would never fire for it. The cost is not symmetric:
+//
+//   - For permission a miss is one Enter autoyes does not send. The human taps it: safe.
+//   - For permission-network/permission-local a miss reads as idle, and idle is what lets a
+//     queued prompt be typed into the live dialog (permission-network above; session/tmux
+//     AwaitingInput takes the dialog's "❯ 1. Yes" for a composer). That is the gate's
+//     dangerous direction, not a safe one.
+//
+// Accepted on the same ground claudeGateVisible accepts it, not on fail-safety: no captured
+// dialog renders a rule below itself — they replace the composer rather than sit above it — so
+// there is no pane to pin it from. Revisit if one is ever captured. The segment scan is not
+// the escape hatch here, for the reason claudeGateVisible gives: its input-box stop never
+// fires on a dialog's own segment, so it walks on into the transcript.
+func claudeLiveDialogRegion(content string) (string, bool) {
+	region, ok := footerBelowBox(content)
+	if !ok || strings.TrimSpace(region) == "" {
+		return "", false
+	}
+	return flattenChrome(region, permissionRegionCap), true
+}
+
+// claudeFetchPermissionVisible backs the claude "permission" matcher — the only prompt
+// autoyes answers with Enter, so it is written to fire on the fetch dialog and nothing else.
+//
+// Two conditions, each doing one job, because #343 proved one is not enough:
+//
+//   - The region must be live chrome (claudeLiveDialogRegion). This is what stops the
+//     reported bug: the literals live verbatim in this file, so an agent working on Atrium
+//     prints them, and on an idle pane — which never scrolls — a flat bottom-N match stuck
+//     at needs-input until a human typed, with autoyes tapping Enter into the composer.
+//
+//   - The region's LAST question must be the fetch title. The anchor alone cannot do this,
+//     and that is the sharper half of #343: claude renders a tool's own arguments inside the
+//     approval dialog, BELOW its top rule, so `grep "No, and tell Claude what to do
+//     differently"` forges the old key inside live chrome and autoyes approved the shell
+//     command (claudeBashForgedPane, captured live). Body text is not transcript; no anchor
+//     separates it. Position does: every captured dialog renders its body ABOVE its
+//     question, so the LAST "Do you want to …" on the pane is always the dialog's own, and a
+//     forged title in a Bash command or an Edit diff is never it. The Bash dialog's real
+//     question is "Do you want to proceed?", so it falls through to permission-local and
+//     surfaces as needs-input instead of being tapped.
+//
+// LastIndex over the FLATTENED region, not a per-line scan: at width 28 the title reflows
+// across three physical lines ("Do you want to allow" / "Claude to fetch this" / "content?"
+// — claudeFetchNarrowPane), and only flattening reconstructs it.
+//
+// Residual, accepted and unpinnable: text rendered BELOW a dialog's own question would
+// forge the title. No captured dialog does that — the question always sits last, directly
+// above the options — so there is no pane to pin it from. It also needs a filename or an
+// argument crafted to end in this exact sentence, which is an adversarial agent, not the
+// accidental quoting this fix is about.
+func claudeFetchPermissionVisible(content string) bool {
+	flat, ok := claudeLiveDialogRegion(content)
+	if !ok {
+		return false
+	}
+	i := strings.LastIndex(flat, claudeQuestionPrefix)
+	if i < 0 {
+		return false
+	}
+	return hasAnyPrefix(flat[i:], claudeFetchTitles)
+}
+
+// claudeNetworkPermissionVisible backs the claude "permission-network" matcher: the
+// fetch/network family's decline option anywhere in the live dialog region. Detection only
+// (NoAutoTap), which is the whole point — it is deliberately looser than the fetch matcher
+// above so the family's undriven sibling (the sandbox's connection dialog) still blocks
+// prompt delivery and surfaces needs-input, while nothing it matches is ever tapped.
+func claudeNetworkPermissionVisible(content string) bool {
+	flat, ok := claudeLiveDialogRegion(content)
+	if !ok {
+		return false
+	}
+	return containsAny(flat, claudeNetworkDeclineOptions)
+}
+
+// hasAnyPrefix reports whether s begins with any of prefixes.
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // selectionFooterTokens reports whether the flattened text carries claude's selection
 // footer's co-occurring key hints: "Esc to cancel" plus a navigate/select token.

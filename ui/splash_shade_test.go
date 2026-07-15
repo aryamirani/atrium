@@ -180,6 +180,10 @@ func TestShippedVariantsLumRange(t *testing.T) {
 		// Rain is the one field whose own gradient is the point: a constant-weight
 		// katakana cannot shade by size, so all of its brightness rides the colour.
 		splashVariantRain: 1,
+		// The tunnel's fog is the other such gradient, and it has no stipple to
+		// spend on the trade. A literal rather than the constant baseOps reads, so
+		// this stays a change-detector instead of comparing a name to itself.
+		splashVariantTunnel: 1,
 	}
 	require.Len(t, want, int(splashVariantCount),
 		"every variant needs an explicit lumRange here — a new one must make a choice, "+

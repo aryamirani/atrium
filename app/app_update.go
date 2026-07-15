@@ -854,7 +854,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// off" therefore contradicted what the user just read there (#346). "session"
 		// matches the ladder hiddenNeighborNotice names, and , opens the setting that
 		// lifts this — the same key the [ / ] refusal below points at.
-		if !m.list.ManualReorderEnabled() {
+		if !m.list.SessionReorderEnabled() {
 			return m, m.handleInfoNotice("session reorder is off while sorting by status (, to switch)")
 		}
 		// Refuse a swap with a sibling that is not on screen, and say so: the order would

@@ -54,6 +54,12 @@ const (
 	// variant with persistent directional motion — and the only one that shades
 	// by luminance rather than by glyph density.
 	splashVariantRain
+	// splashVariantTunnel ("g") is a textured wall flying past a vanishing point
+	// that sits on the wordmark: screen position maps to (depth, angle), so a
+	// plain noise lookup becomes an infinite corridor. The roster's depth entry —
+	// z-fog carries distance in luminance, and hue bands by depth into coloured
+	// rings receding down the wall.
+	splashVariantTunnel
 
 	// splashVariantCount is the enum's cardinality, not a variant — it must
 	// stay last. It exists so the tests can prove they cover every variant:
@@ -81,6 +87,7 @@ const splashDefaultVariant = splashVariantFBM
 var splashRotation = []splashVariant{
 	splashVariantFBM, splashVariantBraille, splashVariantFlow,
 	splashVariantJulia, splashVariantMandala, splashVariantRain,
+	splashVariantTunnel,
 }
 
 // splashVariantNames maps the user-facing pattern names (config.SplashVariants,
@@ -94,6 +101,7 @@ var splashVariantNames = map[string]splashVariant{
 	"mandala":  splashVariantMandala,
 	"plasma":   splashVariantLegacy,
 	"rain":     splashVariantRain,
+	"tunnel":   splashVariantTunnel,
 }
 
 // structured reports whether a variant's field carries directional geometry
@@ -102,8 +110,13 @@ var splashVariantNames = map[string]splashVariant{
 // its relatives drift and fade, so a soft void around the wordmark reads as gas
 // thinning out, while rain's streams are long, straight and vertical — a band
 // with no streams in it reads as a band, and the eye asks what put it there.
+//
+// The tunnel is the same story in polar form: its wall is built from concentric
+// rings and radial spokes, so an ellipse bitten out of them reads as a rendering
+// fault rather than as space. It needs the clearing least of all — the fog
+// already opens a black core exactly where the wordmark sits.
 func (v splashVariant) structured() bool {
-	return v == splashVariantRain
+	return v == splashVariantRain || v == splashVariantTunnel
 }
 
 // splashOps is a variant's Pass-2 policy: how its raw field is turned into
@@ -153,8 +166,17 @@ type splashOps struct {
 // flattened the brightest 22%, and crushed the fade into the third that was
 // left. With dither scattering the survivors, streams rendered as loose
 // confetti — no visible trails, and so no parallax to see either, since there
-// were no streams to be nearer or further away. An identity window keeps the
+// were no streams to be nearer or further away. A full-range window keeps the
 // tail the generator drew.
+//
+// Full-range, and not identity — the distinction is worth naming because the
+// name "identity" invites an optimizer to skip the call. smoothstep is Hermite
+// on the *clamped* parameter, so a {0,1} window still bends every value through
+// t*t*(3-2t): it clips nothing, which is the property a self-shading field needs,
+// but it does not pass values through untouched, and no window can. A variant
+// whose own gradient carries meaning is therefore reading an S-curved version of
+// it, and should tune its constants against that rather than against the
+// generator's raw output. Pinned by TestWidestContrastWindowIsStillHermite.
 func (v splashVariant) ops() splashOps {
 	o := v.baseOps()
 	if r, ok := splashLumRangeOverride(); ok {
@@ -174,7 +196,8 @@ func (v splashVariant) baseOps() splashOps {
 		}
 	case v == splashVariantRain:
 		return splashOps{
-			// Identity: pass the tail through untouched (see above).
+			// The widest window: clip nothing, so the whole tail survives (see
+			// above — it is still an S-curve, not an identity).
 			contrastLo: 0, contrastHi: 1,
 			// Dither is for banding on a smooth wash. A stream is a thin line of
 			// cells, so per-cell noise does not smooth it — it eats it.
@@ -191,6 +214,34 @@ func (v splashVariant) baseOps() splashOps {
 			// thing the eye tracks. dimToRim would also actively undo the depth —
 			// it dims by distance from the centre, so a near stream at the rim
 			// would render dimmer than a far one at the middle.
+			dimToRim: 0,
+			breathes: false,
+		}
+	case v == splashVariantTunnel:
+		return splashOps{
+			// Same reason as rain: the fog IS the field's gradient, and the fBm
+			// window would erase the far wall and flatten the near one — which is
+			// to say, erase the depth. Clip nothing.
+			contrastLo: 0, contrastHi: 1,
+			// The wall is built from rings and spokes. Per-cell noise does not
+			// smooth structure, it eats it.
+			dither: false,
+			// Screen-fixed stars punching through a moving wall destroy vection —
+			// the reflex that makes a receding texture read as self-motion rather
+			// than as a pattern. This is the variant's whole premise, so it is not
+			// a preference.
+			stars: false,
+			// The fog is a gradient with no stipple to spend, so it is exactly what
+			// the luminance channel was built for. Density cannot carry depth here:
+			// "dim" would mean "small", and a far wall would read as a scatter of
+			// dots rather than as distance. Chosen from a rendered sweep of
+			// {0, 0.5, 0.75, 1}, not from the arithmetic — at 1 the glyph is a
+			// constant '@' and every bit of the corridor is drawn in colour.
+			lumRange: 1,
+			// dimToRim would invert depth outright — it dims by distance from the
+			// wordmark, and the wordmark is the vanishing point, so the near wall at
+			// the rim would render dimmer than the far centre. breathes would swell
+			// the whole corridor at once, which reads as a flicker, not as flight.
 			dimToRim: 0,
 			breathes: false,
 		}
@@ -291,6 +342,8 @@ var splashEnvVariant = sync.OnceValues(func() (splashVariant, bool) {
 		return splashVariantMandala, true
 	case "f", "rain":
 		return splashVariantRain, true
+	case "g":
+		return splashVariantTunnel, true
 	}
 	return splashDefaultVariant, true
 })
