@@ -158,10 +158,15 @@ var brailleBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x
 //
 // It deliberately does not spend splashShade's dens, and is the only branch that
 // does not: at lumRange > 0 a braille cell dims without its dot count rising to pay
-// for it (measured at 120x40, lumRange 0 -> 0.5: dots 3394 -> 3382, i.e. only the
-// gate, while the mean luminance stop falls 15.0 -> 9.2). Braille's density *is*
-// that dot count, so the lift would have to land here, per sub-cell, rather than on
-// a glyph index.
+// for it. Measured at 120x40, lumRange 0 -> 0.5, over the braille cells themselves:
+// dots 3394 -> 3382 (i.e. only the gate moved) while their mean luminance stop falls
+// 15.0 -> 5.4. Braille's density *is* that dot count, so the lift would have to land
+// here, per sub-cell, rather than on a glyph index.
+//
+// Take that mean over the braille cells and no others. Averaged across the whole
+// render it reads 9.2, because the variant is only braille *below* brailleBandHi and
+// the brighter ramp cells above it — which this function never sees — carry the top
+// of the axis. The band is what dims, and measuring the pane hides most of it.
 //
 // That asymmetry is a decision, not an oversight. The screenshot gate on the shaded
 // nebula found that lifting density to decouple brightness necessarily makes density
