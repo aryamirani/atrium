@@ -22,15 +22,23 @@ func pane(transcriptBody, footerLine string) string {
 
 // Footer status lines captured verbatim from a live claude 2.1.209 pane by
 // cycling shift+tab, one per --permission-mode (the right-aligned status is
-// elided; only the left content matters to detection).
+// elided; only the left content matters to detection). The two uncycled modes
+// are noted where they differ in provenance.
 const (
 	footerManual      = "  ⏸ manual mode on · ? for shortcuts · ← for agents"
 	footerPlan        = "  ⏸ plan mode on (shift+tab to cycle) · ← for agents"
 	footerAcceptEdits = "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
 	footerAuto        = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
 	// bypassPermissions sits outside the shift+tab cycle, so this one is still
-	// the 2.1.178 capture (see claudePermissionModeMarkers).
+	// the 2.1.178 capture — its token re-confirmed against the installed
+	// bundle's mode table rather than live (see claudePermissionModeMarkers).
 	footerBypass = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+	// dontAsk is likewise uncycled and its startup path is not one Atrium
+	// drives, so this line is composed from the bundle's mode table (indicator
+	// "don't ask" + the shared " on" suffix) rather than captured. It is the
+	// case the fall-through gets wrong: naming a mode the table misses, while
+	// still showing the idle hint, it would be misreported as "default".
+	footerDontAsk = "  ⏵⏵ don't ask on · ? for shortcuts · ← for agents"
 	// Every mode keeps its indicator while the turn is in flight; only the
 	// trailing hint swaps ("? for shortcuts" → "esc to interrupt"), which is
 	// why a busy footer can still name its mode.
@@ -38,11 +46,12 @@ const (
 	// Default mode while working: the swap costs it "? for shortcuts" at any
 	// width, so its own indicator is the only thing naming the mode.
 	footerManualWorking = "  ⏸ manual mode on · esc to interrupt · ← for agents"
-	// Pre-2.1.209 claude rendered no mode line for default, naming it only by
+	// The 2.1.178-era CLI rendered no mode line for default, naming it only by
 	// the idle hint; the fall-through below the marker loop still covers it.
+	// By 2.1.206 default names itself, so this shape predates that changeover.
 	footerDefaultLegacy = "  ? for shortcuts · ← for agents"
 	// A footer that names no mode and shows no idle hint stays indeterminate.
-	// (Pre-2.1.209 shape: 2.1.209 renders the spinner above the input box.)
+	// (Legacy shape: current claude renders the spinner above the input box.)
 	footerBusyNoMode = "  ✻ Cogitating… (5s · esc to interrupt)"
 )
 
@@ -58,6 +67,7 @@ func TestClaudePermissionMode(t *testing.T) {
 		{"accept edits", footerAcceptEdits, "acceptEdits", true},
 		{"auto", footerAuto, "auto", true},
 		{"bypass permissions", footerBypass, "bypassPermissions", true},
+		{"dont ask", footerDontAsk, "dontAsk", true},
 		{"special mode persists while working", footerAutoWorking, "auto", true},
 		{"default persists while working", footerManualWorking, "default", true},
 		{"legacy default idle hint", footerDefaultLegacy, "default", true},
@@ -129,7 +139,7 @@ func TestDetectPermissionMode_AdapterWiring(t *testing.T) {
 // never renders a label the create form / flag composition would reject.
 func TestClaudePermissionMode_EmitsValidEnum(t *testing.T) {
 	for _, footer := range []string{
-		footerPlan, footerAcceptEdits, footerAuto, footerBypass,
+		footerPlan, footerAcceptEdits, footerAuto, footerBypass, footerDontAsk,
 		footerManual, footerManualWorking, footerDefaultLegacy,
 	} {
 		mode, known := claudePermissionMode(pane("x", footer))

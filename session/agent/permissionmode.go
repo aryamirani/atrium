@@ -99,11 +99,15 @@ func WithPermissionModeFlag(program, mode string) string {
 //	⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
 //	⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 //
-// bypassPermissions is outside that cycle — it is reached only via
-// --dangerously-skip-permissions, whose startup acceptance dialog Atrium does
-// not drive — so its token remains the 2.1.178 capture:
+// Two modes sit outside that cycle, so their tokens were read off the installed
+// bundle's mode table rather than captured live: bypassPermissions (reached only
+// via --dangerously-skip-permissions, whose startup acceptance dialog Atrium
+// does not drive) and dontAsk (the non-interactive CI mode). The footer builds
+// every indicator from one template — symbol, then the table's indicator string,
+// then a literal " on" — so both follow the same shape as the cycled modes:
 //
 //	⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+//	⏵⏵ don't ask on · ? for shortcuts · ← for agents
 //
 // Every mode holds its indicator for the whole turn, busy or idle; only the
 // trailing hint swaps ("? for shortcuts" → "esc to interrupt"). Since the mode
@@ -111,8 +115,11 @@ func WithPermissionModeFlag(program, mode string) string {
 // switch instead of stalling on the pre-turn value.
 //
 // Matching the words, not the leading glyph, keeps detection robust to a glyph
-// restyle and disambiguates the three ⏵⏵ modes. dontAsk has no interactive
-// footer indicator and is intentionally absent. A footer no token here names
+// restyle and is what disambiguates at all: ⏸ covers both default and plan, and
+// ⏵⏵ covers the other four, so the glyph alone names nothing. The table must
+// stay exhaustive over the modes that render an indicator, because an unlisted
+// one does not merely go unknown — it falls through to the "? for shortcuts"
+// check below and is misreported as "default". A footer no token here names
 // yields known=false, which for a claude session now consults the hook record's
 // permission_mode before falling back to the pinned flag (tmux.Session.Poll's
 // arbitration, #324).
@@ -122,6 +129,7 @@ var claudePermissionModeMarkers = []struct{ token, mode string }{
 	{"accept edits on", "acceptEdits"},
 	{"auto mode on", "auto"},
 	{"bypass permissions on", "bypassPermissions"},
+	{"don't ask on", "dontAsk"},
 }
 
 // claudePermissionMode reports the permission mode shown in the live pane
@@ -129,16 +137,19 @@ var claudePermissionModeMarkers = []struct{ token, mode string }{
 // mode and shows no idle shortcuts hint, or the capture is startup/degenerate —
 // so the caller keeps its last known value rather than flicker.
 //
-// As of claude 2.1.209 the default mode names itself like any other, as "⏸
-// manual mode on", so the marker table recognizes it directly and reporting it
-// as a real "default" lets the chip clear when a session is switched back to
-// normal. The "? for shortcuts" fall-through below the loop is what remains of
-// the older contract: pre-2.1.209 claude rendered no mode line for default, and
-// the idle hint was the only thing that named it. Keeping the fall-through
-// keeps detection working against an older installed CLI; it is no longer the
-// sole detector for the mode, which matters because that hint is a low-priority
-// segment of a responsive area — a busy turn swaps it for "esc to interrupt" at
-// any width, and #308's crowd-out precedent can drop it at a narrow one.
+// Current claude names the default mode like any other, as "⏸ manual mode on",
+// so the marker table recognizes it directly, and reporting it as a real
+// "default" lets the chip clear when a session is switched back to normal. The
+// "? for shortcuts" fall-through below the loop is what remains of an older
+// contract: the 2.1.178-era CLI rendered no mode line for default, and the idle
+// hint was the only thing that named it. The changeover landed somewhere in
+// (2.1.178, 2.1.206] — 2.1.206 already renders the indicator, so every version
+// Atrium has verified against does, including the 2.1.207 VerifiedVersion pin.
+// Keeping the fall-through keeps detection working against a CLI older than
+// that; it is no longer the sole detector for the mode, which matters because
+// that hint is a low-priority segment of a responsive area — a busy turn swaps
+// it for "esc to interrupt" at any width, and #308's crowd-out precedent can
+// drop it at a narrow one.
 //
 // Detection is confined to footerBelowBox — the live chrome below the input
 // box's bottom border — so a mode phrase quoted in the scrolled-back transcript
