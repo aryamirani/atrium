@@ -55,13 +55,14 @@ const (
 	// actually matters untouched, since anything times 0 is still 0 and the centre
 	// stays exactly black.
 	tunFogGain = 1.35
-	// tunWallLo/tunWallHi open the fBm's middle. Three octaves average toward
-	// their mean, so the raw field spans roughly 0.2–0.8 and a wall built straight
-	// from it has no contrast to fly past. This is the same trick the nebula's
-	// contrast window plays, applied here rather than in ops — where it would hit
-	// wall*fog and eat the depth along with the flatness.
-	tunWallLo = 0.36
-	tunWallHi = 0.64
+	// tunWallGain opens the fBm's middle: the octaves average toward their mean, so
+	// the raw field has no contrast to fly past. It is a linear gain rather than the
+	// nebula's smoothstep window, and that is load-bearing now that the mip is
+	// per-octave: a gain scales (n-0.5) uniformly, so a half-mipped octave stays
+	// half-mipped, while an S-curve re-expands it. Measured on the old order, a
+	// mipped 0.56 came back out of smoothstep(0.36,0.64) at 0.80 — the window would
+	// have undone most of the mip it was meant to sit behind.
+	tunWallGain = 1.8
 	// tunWallFloor is the wall's unlit reflectance: the surface is lit, and its
 	// texture modulates down from full rather than all the way to black. At 0 the
 	// texture's dark patches would be as black as the far end of the corridor, and
@@ -76,10 +77,14 @@ const (
 	// "fade in at N cells per ring" instead of naming an opaque radius, and keeps
 	// it correct for free when the ring spacing is retuned.
 	tunLODC = 2.5
-	// tunFreqU is the wall texture's frequency along depth. It only ever acts on
-	// screen through its product with tunDepthK — see there. The angular axis
-	// deliberately has no frequency of its own — see splashTunnelFBM.
-	tunFreqU = 2.0
+	// tunFreqU is the *coarsest* octave's frequency along depth, and with tunDepthK
+	// it sets where the wall stops resolving at all — the dead zone around the
+	// vanishing point, inside which nothing moves. It is low because that zone is
+	// what the eye reads as the tunnel failing to spread from its centre: at 2.0 the
+	// mip flattened everything inside r=53 vertically on a pane that only reaches
+	// r=61, so the whole middle was frozen and the only visible flow was at the
+	// edges. The fine octaves carry the rim, so the base is free to be coarse.
+	tunFreqU = 0.35
 	// tunHueF is how fast hue cycles with depth: one full gradient sweep every
 	// 1/tunHueF units of u, which is what makes the corridor read as coloured
 	// rings receding rather than as a single wash.
@@ -107,23 +112,29 @@ const (
 	// both the float64 divisor in v and the int32 period in the noise.
 	tunWrapP = 8
 
-	tunOctaves = 3
-	tunGain    = 0.55
+	// Five octaves, not the shared field's three, and the reason is the mip. Each
+	// octave is faded on its own frequency (see splashTunnelFBM), so the stack is
+	// what lets detail exist at every radius: near the vanishing point every octave
+	// is unresolvable and the wall is its own mean, out at the rim the fine ones
+	// carry the rings while the coarse ones are a broad wash. Three octaves spanning
+	// 4x could not cover a pane whose ring spacing varies by ~100x.
+	tunOctaves = 5
+	tunGain    = 0.7
 )
 
 var (
 	// tunSeedOct decorrelates the octaves' values.
-	tunSeedOct = [tunOctaves]uint32{0x3B1E5F07, 0xA4D91C6B, 0x7E2F84D3}
+	tunSeedOct = [tunOctaves]uint32{0x3B1E5F07, 0xA4D91C6B, 0x7E2F84D3, 0x1C6E9A45, 0xD82B37F1}
 	// tunLacU is the depth axis's lacunarity, kept detuned off 2 exactly as the
 	// shared fBm does (IQ: avoids octave self-alignment). Only the depth axis may
 	// be detuned — the angular axis must double exactly or the wrap tears.
-	tunLacU = [tunOctaves - 1]float64{2.01, 2.02}
+	tunLacU = [tunOctaves - 1]float64{2.01, 2.02, 2.01, 2.03}
 	// tunVOff offsets each octave along the angular axis. The angular lacunarity
 	// is pinned to exactly 2, so the octaves would otherwise share lattice
 	// alignment on every spoke and stack into one hard ribbing; a constant offset
 	// decorrelates their lattice *positions* while preserving periodicity for
 	// free. Seeds cannot do this — they decorrelate values, not positions.
-	tunVOff = [tunOctaves]float64{0, 0.37, 0.71}
+	tunVOff = [tunOctaves]float64{0, 0.37, 0.71, 0.19, 0.53}
 )
 
 // splashTunnelFBM is the wall texture: a wrapped, rotation-free fBm over
@@ -147,16 +158,29 @@ var (
 // It takes no phase: u already carries the fly, and each octave scales it, so the
 // octaves parallax against each other for free — which is also the physically
 // right answer, since a rigid wall flies past as one piece.
-func splashTunnelFBM(u, v float64) float64 {
+// mipBase carries the sampling geometry: an octave at frequency f is faded by
+// clamp01(mipBase/f), which is that octave's own ring spacing measured against
+// Nyquist. Each band therefore dies exactly when it stops being resolvable, which
+// is what a mip is; fading the whole stack on the base octave's schedule — as this
+// did at first — leaves every finer octave aliasing at full amplitude long before
+// the mip notices. Measured at 240x60 with three octaves, the finest one aliased
+// below r=95 vertically on a pane that only reaches r=61, i.e. everywhere.
+func splashTunnelFBM(u, v, mipBase float64) float64 {
 	sum, norm, amp := 0.0, 0.0, 1.0
 	fu, fv := u*tunFreqU, v
+	freq := tunFreqU
 	period := int32(tunWrapP)
 	for o := 0; o < tunOctaves; o++ {
-		sum += amp * splashValNoiseWrapY(fu, fv+tunVOff[o], period, tunSeedOct[o])
+		n := splashValNoiseWrapY(fu, fv+tunVOff[o], period, tunSeedOct[o])
+		// Toward this octave's mean as its own rings outrun the grid. 0.5 is the
+		// mean of value noise, so a fully faded octave contributes its DC and
+		// nothing else — the stack stays normalized either way.
+		sum += amp * (0.5 + clamp01(mipBase/freq)*(n-0.5))
 		norm += amp
 		amp *= tunGain
 		if o < tunOctaves-1 {
 			fu *= tunLacU[o]
+			freq *= tunLacU[o]
 			// Exactly 2, matching the period's doubling: the angular axis is the
 			// one that must tile.
 			fv *= 2
@@ -236,16 +260,21 @@ func splashTunnelAtFor(maxD float64) splashPointFn {
 		// sqrt(cellAspect) further out, which is exactly the radius that axis can
 		// actually resolve.
 		step := math.Max(math.Abs(x), cellAspect*math.Abs(y))
-		lod := 0.0
+		mipBase := 0.0
 		if step > 0 {
-			// step is 0 only at the exact centre, where the wall is fully mipped
+			// step is 0 only at the exact centre, where every octave is unresolvable
 			// anyway and the fog has already taken the cell to black. Guarded rather
 			// than epsilon'd because r³/step is 0/0 there, and NaN survives every
 			// comparison below it.
-			lod = clamp01(r * r * r / (tunLODC * k * tunFreqU * step))
+			//
+			// Divided by a frequency this is that band's cells-per-ring over Nyquist:
+			// the one number both the wall's octaves and the hue need, each with its
+			// own f. Hue is not tunFreqU and must not borrow the wall's lod — doing so
+			// mipped the colour rings twice as hard as their own frequency asks.
+			mipBase = r * r * r / (tunLODC * k * step)
 		}
-		tex := smoothstep(tunWallLo, tunWallHi, splashTunnelFBM(u, v))
-		tex = 0.5 + lod*(tex-0.5)
+		// Linear, so it commutes with the per-octave mip — see tunWallGain.
+		tex := clamp01(0.5 + tunWallGain*(splashTunnelFBM(u, v, mipBase)-0.5))
 		// A lit surface whose texture modulates it downward, never to black — see
 		// tunWallFloor.
 		wall := tunWallFloor + (1-tunWallFloor)*tex
@@ -261,7 +290,7 @@ func splashTunnelAtFor(maxD float64) splashPointFn {
 		// wall, and the wall's mip does nothing for a channel it does not touch.
 		// The fog blanks most of that region, but the band where fog is small and
 		// non-zero would alias into dim rainbow confetti. One mip, both channels.
-		hue := 0.5 + lod*(splashTri(u*tunHueF+phase*tunHueSpd)-0.5)
+		hue := 0.5 + clamp01(mipBase/tunHueF)*(splashTri(u*tunHueF+phase*tunHueSpd)-0.5)
 
 		return clamp01(wall * fog), clamp01(hue)
 	}

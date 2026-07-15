@@ -241,13 +241,15 @@ func TestSplashTunnelMipQuietsTheVanishingPoint(t *testing.T) {
 // coordinate and tunnelMipR reads the same one.
 const probeTheta = 0.7
 
-// tunnelMipR is the radius at which the lod saturates along theta, i.e. where
-// the wall becomes fully resolvable. Derived from the same terms the field uses
-// so that retuning any of them moves the probes with it instead of quietly
-// leaving them somewhere the mip cannot be observed.
-func tunnelMipR(theta float64) float64 {
+// tunnelMipR is the radius at which a band of frequency freq becomes fully
+// resolvable along theta. The mip is per-octave, so a radius alone names nothing
+// — the frequency is part of the question, and hue (tunHueF) and the wall's
+// coarsest octave (tunFreqU) saturate at different radii. Derived from the same
+// terms the field uses, so retuning any of them moves the probes with it instead
+// of quietly leaving them somewhere the mip cannot be observed.
+func tunnelMipR(theta, freq float64) float64 {
 	m := math.Max(math.Abs(math.Cos(theta)), cellAspect*math.Abs(math.Sin(theta)))
-	return math.Sqrt(tunLODC * tunDepthK * tunFreqU * m)
+	return math.Sqrt(tunLODC * tunDepthK * freq * m)
 }
 
 // hueSpreadOver walks radially along theta between two radii and reports how much
@@ -270,6 +272,66 @@ func hueSpreadOver(rLo, rHi, theta float64) float64 {
 	return hi - lo
 }
 
+// tunnelFBMDetail walks the depth axis at a step far finer than the finest
+// octave's wavelength and reports two numbers: the mean step-to-step change,
+// which is carried almost entirely by the highest frequency present, and the
+// total range, which is carried by the coarsest. Together they say *which bands*
+// survive a given mipBase rather than merely how much signal does.
+func tunnelFBMDetail(mipBase float64) (roughness, span float64) {
+	const (
+		u0, u1, du = 3.0, 23.0, 0.01
+		v          = 1.234
+	)
+	lo, hi := math.Inf(1), math.Inf(-1)
+	sum, n := 0.0, 0
+	prev := splashTunnelFBM(u0, v, mipBase)
+	for u := u0 + du; u <= u1; u += du {
+		cur := splashTunnelFBM(u, v, mipBase)
+		sum += math.Abs(cur - prev)
+		prev = cur
+		lo, hi = math.Min(lo, cur), math.Max(hi, cur)
+		n++
+	}
+	return sum / float64(n), hi - lo
+}
+
+// TestSplashTunnelMipIsPerOctave is the guard on what a mip actually is: each
+// frequency band must die when *that band* outruns the grid, not when the
+// coarsest one does.
+//
+// Fading the whole stack on the base frequency is the bug this replaced, and it
+// is invisible to every other test here — the wall still fades near the centre,
+// still passes the anisotropy ratio, still renders. What it leaves behind is every
+// finer octave aliasing at full amplitude across a wide band: measured at 240x60
+// with the old three-octave stack, the finest octave aliased below r=95 vertically
+// on a pane that only reaches r=61, i.e. across the whole of it. Aliased rings
+// crawl instead of flowing, which is what the animation looked like.
+//
+// Probed at mipBase == tunFreqU, where the coarsest octave is exactly resolvable
+// (lod 1) and every finer one is not (lod = tunFreqU/f_o < 1). A base-frequency
+// mip gives all of them lod 1 there and so keeps its full roughness.
+func TestSplashTunnelMipIsPerOctave(t *testing.T) {
+	fullRough, fullSpan := tunnelFBMDetail(1e6) // every octave resolvable
+	rough, span := tunnelFBMDetail(tunFreqU)    // only the coarsest is
+
+	require.Lessf(t, rough, 0.5*fullRough,
+		"the fine octaves must already be damped where only the coarsest resolves "+
+			"(roughness %.5f vs %.5f unmipped) — a base-frequency mip leaves them at full amplitude",
+		rough, fullRough)
+
+	// And it must be a mip rather than a fade: the coarse structure is resolvable
+	// here and has to survive, or the wall just goes flat and there is nothing to
+	// fly past.
+	require.Greaterf(t, span, 0.5*fullSpan,
+		"the coarse octave must survive its own resolvable band (span %.4f vs %.4f unmipped)",
+		span, fullSpan)
+
+	// The endpoint stays exact: no band at all is the field's mean, not noise.
+	r0, s0 := tunnelFBMDetail(0)
+	require.Zero(t, r0, "a fully mipped stack must be perfectly flat")
+	require.Zero(t, s0, "a fully mipped stack must be perfectly flat")
+}
+
 // TestSplashTunnelMipIsAnisotropic pins the grid fact the mip exists to respect,
 // and the one an isotropic mip got wrong: a column step moves dx by 1 while a row
 // step moves dy by cellAspect, so the vertical axis samples the wall at half the
@@ -287,9 +349,9 @@ func hueSpreadOver(rLo, rHi, theta float64) float64 {
 func TestSplashTunnelMipIsAnisotropic(t *testing.T) {
 	// A band where both rays are still mipped (lod < 1 either way) and u is
 	// unclamped, or there is no lod left to measure. Derived, not written down.
-	rLo, rHi := 20.0, 28.0
+	rLo, rHi := 12.0, 18.0
 	require.Lessf(t, tunDepthK/tunUMax, rLo, "u must be unclamped across the probe band")
-	require.Greaterf(t, tunnelMipR(0), rHi, "the fine axis must still be mipped across the probe band")
+	require.Greaterf(t, tunnelMipR(0, tunHueF), rHi, "the fine axis must still be mipped across the probe band")
 
 	fine := hueSpreadOver(rLo, rHi, 0)           // +x: step == r
 	coarse := hueSpreadOver(rLo, rHi, math.Pi/2) // +y: step == cellAspect*r
@@ -317,8 +379,8 @@ func TestSplashTunnelMipIsAnisotropic(t *testing.T) {
 // this out.
 func TestSplashTunnelHueMipQuietsTheVanishingPoint(t *testing.T) {
 	const probeLo, probeHi = 9.0, 14.0
-	uClampR := tunDepthK / tunUMax // below this, u is pinned
-	mipR := tunnelMipR(probeTheta) // above this, lod == 1 along the probed ray
+	uClampR := tunDepthK / tunUMax          // below this, u is pinned
+	mipR := tunnelMipR(probeTheta, tunHueF) // above this, hue's lod == 1 along the probed ray
 	require.Lessf(t, uClampR, probeLo,
 		"the u clamp (r<%.1f) must stay below the probe band, or hue is flat there for the wrong reason", uClampR)
 	require.Greaterf(t, mipR, probeHi,
