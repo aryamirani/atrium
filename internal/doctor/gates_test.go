@@ -180,6 +180,25 @@ func TestInstalledGateDirsKeepsEveryAccountSharingADir(t *testing.T) {
 	}, installedGateDirs(cfg))
 }
 
+// TestInstalledGateDirsInheritEnvAccountRidesTheAmbientRow pins the one place the
+// "a row per named dir" rule bottoms out. An inherit-env account names no dir, so
+// it has no row of its own and rides the ambient one — and if a later account
+// claims that row, the inherit account is reported under THAT account's name.
+// Pinned because it looks like the label-drop bug this file exists to prevent and
+// is not: both accounts read the same dir, so the value is right for both and only
+// the name is missing. Giving inherit-env accounts their own row would fix the
+// label; nobody has asked, and a wrong name here costs less than machinery.
+func TestInstalledGateDirsInheritEnvAccountRidesTheAmbientRow(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/home/dev")
+	cfg := &config.Config{ClaudeAccounts: []config.ClaudeAccount{
+		{Name: "inherit", ConfigDir: ""},
+		{Name: "work", ConfigDir: "/home/dev"},
+	}}
+
+	assert.Equal(t, []gateDir{{Account: "work", Dir: "/home/dev"}}, installedGateDirs(cfg),
+		`"inherit" reads /home/dev too, and is reported by the row now named "work"`)
+}
+
 // TestInstalledGateDirsAccountsSharingTheAmbientDir collides the two rules above:
 // only the FIRST account claims the ambient stand-in row, and the second is a real
 // configured account like any other, so it gets its own row instead of evicting the

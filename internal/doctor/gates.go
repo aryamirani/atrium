@@ -168,18 +168,26 @@ func CheckGatesInstalled() []GateResult {
 }
 
 // installedGateDirs enumerates the config dirs whose gate state matters, ambient
-// first. The rule is one row per thing the user configured: every ClaudeAccount
-// keeps its own row, so a reader finds the state under the name they routed
-// sessions to rather than having to know which accounts share a dir. Two accounts
-// on one dir therefore report it twice (same dir, same value, two names) — an
-// absurd config, but the honest rendering of it, and one extra read of one small
-// file.
+// first. The rule is one row per config dir the user named: every ClaudeAccount
+// with a config_dir of its own keeps its row, so a reader finds the state under
+// the name they routed sessions to rather than having to know which accounts
+// share a dir. Two accounts on one dir therefore report it twice (same dir, same
+// value, two names) — an absurd config, but the honest rendering of it, and one
+// extra read of one small file.
 //
 // The lone dedupe is against defaultAccount, which is the one label here the user
 // did NOT configure: it is a stand-in for "whatever dir an unrouted session
 // inherits", so the moment a real account names that dir the stand-in has nothing
 // left to say and yields its row. Only the first such account claims it; a second
 // gets its own row like any other.
+//
+// The rule says "named a config dir" and not "configured" because an inherit-env
+// account (config_dir "") names none: it injects nothing, so it reads whatever an
+// unrouted session inherits and has no dir of its own to report. It rides the
+// ambient row and is skipped here — which means it is reported under whatever name
+// that row ends up carrying, "default" or the first account to claim it, never its
+// own. Only a label is ever wrong: the dir read, and so the value, is the one that
+// account's sessions actually see either way.
 //
 // Comparison is by CLEANED path, because the two spellings meeting here come from
 // different places — doctor's own env and a hand-written config_dir — and a
@@ -197,7 +205,7 @@ func installedGateDirs(cfg *config.Config) []gateDir {
 	for _, a := range cfg.ClaudeAccounts {
 		dir := a.ResolvedConfigDir()
 		if dir == "" {
-			continue // inherit-env account: already covered by the ambient entry
+			continue // inherit-env account: no dir of its own; rides the ambient row
 		}
 		dir = filepath.Clean(dir)
 		if ambient >= 0 && dirs[ambient].Dir == dir {
