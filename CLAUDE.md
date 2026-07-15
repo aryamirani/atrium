@@ -58,14 +58,16 @@ All development tasks go through the `justfile` — discover them with `just --l
 
 | Task | Command |
 |------|---------|
+| **Verify (the local gate — mirrors CI)** | **`just ci`** = build + vet + fmt-check + lint + test + cover |
 | Build (stamps version from git) | `just build` → `./bin/atrium` |
 | Run | `just run -- <args>` |
 | Test (hermetic — safe anywhere) | `just test` |
 | Test with race detector | `just test-race` |
 | Coverage | `just cover` |
-| Lint | `just lint` (golangci-lint) |
+| Lint | `just lint` (golangci-lint; must be on `PATH`) |
 | Format | `just fmt` / check with `just fmt-check` |
 | Vet | `just vet` |
+| Vulnerability scan | `just vuln` (govulncheck; needs network) |
 | Local release snapshot | `just snapshot` (GoReleaser) |
 | Tag a release | `just release <X.Y.Z>` |
 
@@ -74,9 +76,29 @@ All development tasks go through the `justfile` — discover them with `just --l
 
 ## Verifying your work
 
-Always confirm a change with `just build` **and** `just test` before claiming it
-works. `just test` is the source of truth for correctness; `just build` proves the
-binary still compiles and version-stamps.
+Confirm a change with **`just ci`** before claiming it works or pushing. It is the
+local gate that mirrors CI: `build vet fmt-check lint test cover`. `just test` alone
+is the inner loop while you iterate — it is the source of truth for *correctness*,
+but it is not the gate, because it cannot see the checks CI fails on.
+
+**`just ci` needs `golangci-lint` on `PATH`.** `go install
+github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` puts it in
+`$(go env GOPATH)/bin`, which is often not on `PATH` even when `go` itself is — so
+the tool can be installed and still not resolve. When it doesn't, the sweep runs
+build, vet and fmt-check green and *then* dies at `lint` with `not found` (exit
+127), which reads like a broken recipe rather than a missing tool.
+
+Lint is the part of the gate the rest cannot substitute for. `build`, `vet` and
+`fmt-check` all pass happily while `golangci-lint` fails, so a lint break is
+invisible to every other command here. `unused` is the usual culprit — a const or
+field declared for an assertion you meant to write compiles fine and only CI
+notices. `revive`'s `exported` (doc comments on exported symbols) and
+`redefines-builtin-id` (don't name things `max`/`min`/`len`) bite the same way.
+
+`just ci` does not cover everything CI runs: the race detector (`just test-race`),
+a macOS job, and `govulncheck` (`just vuln`, needs network) are CI-only. And a
+local gate is not a green CI — on a PR, read `gh pr checks <n>` before calling it
+merge-ready.
 
 Some `session/tmux` tests (e.g. `TestSessionDeathStopsProbing`) drive a **real**
 tmux server, so they self-skip when `tmux` is not on `PATH`. They run all tmux
