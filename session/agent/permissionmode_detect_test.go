@@ -29,16 +29,17 @@ const (
 	footerPlan        = "  ⏸ plan mode on (shift+tab to cycle) · ← for agents"
 	footerAcceptEdits = "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
 	footerAuto        = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
-	// bypassPermissions sits outside the shift+tab cycle, so this one is still
-	// the 2.1.178 capture — its token re-confirmed against the installed
-	// bundle's mode table rather than live (see claudePermissionModeMarkers).
+	// bypassPermissions is the one mode not captured live — reaching it means
+	// accepting its startup responsibility dialog, which Atrium does not drive.
+	// The token is confirmed against the installed bundle's mode table; the hint
+	// text around it is inferred (see claudePermissionModeMarkers).
 	footerBypass = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
-	// dontAsk is likewise uncycled and its startup path is not one Atrium
-	// drives, so this line is composed from the bundle's mode table (indicator
-	// "don't ask" + the shared " on" suffix) rather than captured. It is the
-	// case the fall-through gets wrong: naming a mode the table misses, while
-	// still showing the idle hint, it would be misreported as "default".
-	footerDontAsk = "  ⏵⏵ don't ask on · ? for shortcuts · ← for agents"
+	// dontAsk is outside the shift+tab cycle (one-way door: you can cycle out,
+	// never back in), so it was captured by launching --permission-mode dontAsk.
+	// It advertises the cycle chord and shows no "? for shortcuts" — so without
+	// its marker this footer is indeterminate, not misread. Reading the bundle's
+	// mode table alone would have predicted the wrong shape here.
+	footerDontAsk = "  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents"
 	// Every mode keeps its indicator while the turn is in flight; only the
 	// trailing hint swaps ("? for shortcuts" → "esc to interrupt"), which is
 	// why a busy footer can still name its mode.

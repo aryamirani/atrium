@@ -90,39 +90,46 @@ func WithPermissionModeFlag(program, mode string) string {
 
 // claudePermissionModeMarkers maps a stable footer token to the enum value of
 // the mode it indicates. The tokens are the mode-name words claude renders in
-// its status-bar line below the input box — captured verbatim from a live
-// claude 2.1.209 pane by cycling shift+tab (see permissionmode_detect_test.go
-// fixtures):
+// its status-bar line below the input box — captured verbatim from live claude
+// 2.1.209 panes, the first four by cycling shift+tab and dontAsk by launching
+// --permission-mode dontAsk (see permissionmode_detect_test.go fixtures):
 //
 //	⏸ manual mode on · ? for shortcuts · ← for agents
 //	⏸ plan mode on (shift+tab to cycle) · ← for agents
 //	⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
 //	⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+//	⏵⏵ don't ask on (shift+tab to cycle) · ← for agents
 //
-// Two modes sit outside that cycle, so their tokens were read off the installed
-// bundle's mode table rather than captured live: bypassPermissions (reached only
-// via --dangerously-skip-permissions, whose startup acceptance dialog Atrium
-// does not drive) and dontAsk (the non-interactive CI mode). The footer builds
-// every indicator from one template — symbol, then the table's indicator string,
-// then a literal " on" — so both follow the same shape as the cycled modes:
+// dontAsk is a one-way door — shift+tab cycles out of it but the cycle
+// (default → acceptEdits → plan → auto) never returns, so it is reachable only
+// by pinning the flag, which a profile program can do. It still advertises the
+// cycle chord, which is why its footer is not the shape a reading of the mode
+// table alone would predict.
+//
+// bypassPermissions is the one token not observed live: reaching it means
+// accepting the "you accept all responsibility" startup dialog, which Atrium
+// does not drive. Its token is read off the installed bundle's mode table
+// (indicator:"bypass permissions"), which the footer renders through the same
+// one template every mode uses — symbol, then the indicator string, then a
+// literal " on". Only the token is verified; the hint text around it is a guess:
 //
 //	⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
-//	⏵⏵ don't ask on · ? for shortcuts · ← for agents
 //
 // Every mode holds its indicator for the whole turn, busy or idle; only the
-// trailing hint swaps ("? for shortcuts" → "esc to interrupt"). Since the mode
-// is cyclable mid-turn, that persistence is what lets a busy footer track a
-// switch instead of stalling on the pre-turn value.
+// hint beside it swaps. Since the mode is cyclable mid-turn, that persistence is
+// what lets a busy footer track a switch instead of stalling on the pre-turn
+// value.
 //
 // Matching the words, not the leading glyph, keeps detection robust to a glyph
 // restyle and is what disambiguates at all: ⏸ covers both default and plan, and
 // ⏵⏵ covers the other four, so the glyph alone names nothing. The table must
-// stay exhaustive over the modes that render an indicator, because an unlisted
-// one does not merely go unknown — it falls through to the "? for shortcuts"
-// check below and is misreported as "default". A footer no token here names
-// yields known=false, which for a claude session now consults the hook record's
-// permission_mode before falling back to the pinned flag (tmux.Session.Poll's
-// arbitration, #324).
+// stay exhaustive over the modes that render an indicator: an unlisted mode
+// whose footer also carries the "? for shortcuts" hint would fall through to the
+// check below and be misreported as "default" rather than merely go unknown —
+// default's own footer is the proof those two can co-occur. A footer no token
+// here names yields known=false, which for a claude session now consults the
+// hook record's permission_mode before falling back to the pinned flag
+// (tmux.Session.Poll's arbitration, #324).
 var claudePermissionModeMarkers = []struct{ token, mode string }{
 	{"manual mode on", "default"},
 	{"plan mode on", "plan"},
@@ -147,9 +154,11 @@ var claudePermissionModeMarkers = []struct{ token, mode string }{
 // Atrium has verified against does, including the 2.1.207 VerifiedVersion pin.
 // Keeping the fall-through keeps detection working against a CLI older than
 // that; it is no longer the sole detector for the mode, which matters because
-// that hint is a low-priority segment of a responsive area — a busy turn swaps
-// it for "esc to interrupt" at any width, and #308's crowd-out precedent can
-// drop it at a narrow one.
+// the hint is one branch of a single mutually-exclusive slot the footer fills
+// by state (interrupt / ctrl_t / agents / voice / shortcuts). "? for shortcuts"
+// is only ever one of those: a busy turn shows the interrupt hint instead, at
+// any width, and #308's crowd-out precedent can drop it at a narrow one. Keying
+// a mode off it was always keying off something that is not about the mode.
 //
 // Detection is confined to footerBelowBox — the live chrome below the input
 // box's bottom border — so a mode phrase quoted in the scrolled-back transcript
