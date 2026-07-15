@@ -15,8 +15,9 @@ func freshHeartbeat() int64 { return time.Now().Unix() }
 func staleHeartbeat() int64 { return time.Now().Unix() - int64(2*heartbeatTTL/time.Second) }
 
 // TestPollHeartbeatFreshHoldsWorking is the core #311 behavior: with the pane showing no
-// busy marker and no live spinner (the 2.1.207 footer reflow crowding "esc to interrupt"
-// out, or a future spinner reword), a hook that fired within heartbeatTTL still proves the
+// busy marker and no live spinner (claude lighting "esc to interrupt" off its narrowest
+// notion of busy — see agent/spinner.go — or a future spinner reword), a hook that fired
+// within heartbeatTTL still proves the
 // MAIN turn is live — read from Atrium's own authoritative hook file, not the pane. So the
 // row holds Working. When the writer stops bumping (a crash/kill mid-tool), the heartbeat
 // goes stale, the hold releases, and the bounded marker-absent grace self-heals to Idle —

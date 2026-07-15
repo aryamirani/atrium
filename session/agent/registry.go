@@ -11,8 +11,16 @@ import (
 //
 // Heuristic strings are version-sensitive by nature. When editing, add a fixture
 // to registry_test.go pinning the new string against a captured pane, and bump
-// the adapter's VerifiedVersion to the version you captured against (the drift
-// guard in internal/doctor warns when an installed CLI moves past it).
+// the adapter's VerifiedVersion to the version you captured against.
+//
+// Read VerifiedVersion as a RECORD of what was last driven against a live pane,
+// not as a tripwire. The drift guard in internal/doctor only warns once an
+// installed CLI passes the pin at the adapter's DriftGranularity, so for the
+// minor-granularity adapters here every patch release inside the pinned minor
+// series reports "ok" no matter how far it has moved. #332 was filed on the
+// premise that `atrium doctor` was flagging installed 2.1.209 against a 2.1.207
+// pin; it was not, and could not — both truncate to 2.1.0. Nothing tells you a
+// heuristic went stale. Only driving it does.
 //
 // Remediation is ADDITIVE, never replace-in-place: when a CLI rewords a gating
 // string, ADD the new variant alongside the old in the same matcher list and
@@ -29,43 +37,99 @@ var claude = &Adapter{
 	DisplayName: "Claude Code",
 	aliases:     []string{"claude"},
 
-	// Heuristic strings confirmed against live claude 2.1.207 sessions (2026-07-12):
-	// the busy marker "esc to interrupt" and the selection prompt matcher were seen
-	// firing correctly across many real sessions in production (the #290 status
-	// trace), and no structural reword has surfaced since the detailed 2.1.185
-	// fixture capture (2026-06-22) — whose per-string provenance is carried forward:
-	// the folder-trust dialog reworded since 2.1.170 and matched in both forms (see
-	// the Gates comment + registry_test.go claudeTrustPane); the login-error "Please
-	// run /login ·" separator (bundle render "Please run /login \xB7 …"); and the
-	// permission / plan / model-error / MCP literals. Minor granularity (matching
-	// gemini): claude ships patch releases every few days, so patch-level drift would
-	// fire the warning almost constantly — alert fatigue, not signal. A patch reword
-	// is already handled additively (both old and new variants kept in the same
-	// matcher's union, so matching never depends on the version), and a missed reword
-	// fails gracefully to "idle", never a wrong action. So only a minor/major bump —
-	// where structural UI changes are likelier — counts as drift worth re-verifying.
-	VerifiedVersion:  "2.1.207",
+	// Every heuristic below was driven against a live claude 2.1.210 pane in the #332
+	// sweep (2026-07-15) — busy marker (at widths 200/60/56/30), live spinner, plan
+	// approval, model-error, AskUserQuestion selection, folder-trust gate, all six
+	// permission-mode footers, the "? for shortcuts" fall-through, the collapsed-paste
+	// chip, the dim ghost-text suggestion, and the --settings capability probe. The two
+	// strings a pane cannot show — the login-error separator and the MCP-approval
+	// titles — were confirmed present in the 2.1.210 bundle instead.
+	//
+	// The sweep exists because the pin is a claim about the WHOLE surface, and twice now
+	// that claim was false at the version it named. #333 found the default footer
+	// ("manual mode on") rendering on a live 2.1.207 pane the marker table did not know.
+	// #332 then found the tool-permission matcher keyed on a literal that belongs only to
+	// the fetch/network dialogs, so every Write/Edit/Bash approval read as idle — also
+	// reproducing at 2.1.207. Neither was newer-CLI drift; both were wrong at the pin. So
+	// re-verify by DRIVING each heuristic, and treat "the string is still in the bundle"
+	// as necessary but not sufficient — a literal can survive while nothing renders it.
+	//
+	// Minor granularity (matching gemini): claude ships patch releases every few days, so
+	// patch-level drift would fire the warning almost constantly — alert fatigue, not
+	// signal. A patch reword is already handled additively (both old and new variants kept
+	// in the same matcher's union, so matching never depends on the version), and a missed
+	// reword fails gracefully to "idle", never a wrong action. So only a minor/major bump —
+	// where structural UI changes are likelier — counts as drift worth re-verifying. Note
+	// the corollary the two misses above make concrete: within a minor series this pin
+	// warns about nothing, so it is a record of what was checked, not a tripwire that will
+	// tell you when to check again.
+	VerifiedVersion:  "2.1.210",
 	DriftGranularity: GranularityMinor,
 
-	// The below-box footer renders "esc to interrupt" while working — but only when the
-	// 2.1.207 responsive hint area has room; contextual chips (a PR link, "ctrl+t to hide
-	// tasks", background "N shell"/"N monitor", "↓ to manage") crowd it out on a busy
-	// foreground turn. It stays a valid positive marker for the states that still show it.
+	// The below-box footer renders "esc to interrupt" while working. #308 read its
+	// absence on a busy pane as a *responsive* hint area crowding the marker out at
+	// narrow widths; that was wrong, and the sweep in #332 corrected it. The hint list
+	// is built by plain concatenation with no width term and no priority — the interrupt
+	// hint and the "ctrl+t to hide tasks" chip render together, so a chip never displaces
+	// the marker. Confirmed live at 2.1.210: a busy pane keeps "esc to interrupt" intact
+	// at widths 200, 60 and 56.
+	//
+	// Two real reasons the marker can still go missing on a working pane:
+	//   - The footer gates it on the CLI's narrowest notion of busy. The bundle tracks
+	//     isLoading / isExternalLoading / betweenCalls separately and only isLoading
+	//     lights the hint, so a turn can be underway with no marker at all. That is the
+	//     shape the #308 bug pane actually captured (session/tmux/spinner_poll_test.go).
+	//   - The whole footer line is rendered with truncate-on-overflow, so a *narrow
+	//     enough* pane cuts the tail off mid-word — at width 30 a busy 2.1.210 pane
+	//     reads "⏸ manual mode on · esc to …", losing the marker. This is one composed
+	//     line overflowing, not hint selection: the hint is present, just clipped.
+	// Both fail safe — a missing marker reads idle, never a wrong action — and the live
+	// spinner below covers them, so the marker stays a valid positive signal.
 	BusyMarkers:  []string{"esc to interrupt"},
 	MarkerWindow: 0, // status hints render below the input box border
 
-	// The above-box spinner status line ("<glyph> <Gerund>… (<elapsed> · …)") survives the
-	// footer reflow and proves work even when "esc to interrupt" is crowded out (spinner.go).
+	// The above-box spinner status line ("<glyph> <Gerund>… (<elapsed> · …)") proves work
+	// when the footer marker is absent (spinner.go). It survives both causes above: it
+	// tracks a broader notion of busy than the interrupt hint, and its signature sits at
+	// the head of its own line, where truncation reaches last.
 	LiveSpinner: claudeSpinnerWorking,
 
 	Prompts: []PromptMatcher{
-		// The tool-permission dialog's decline option.
+		// The network-permission dialog's decline option. Despite the generic
+		// name this literal is the *fetch/network* family's alone — the bundle
+		// carries it only under "Do you want to allow Claude to fetch this
+		// content?" and the sandbox's "Do you want to allow this connection?".
+		// Local tool approvals use a bare "No" and are matched below instead.
 		{Name: "permission", Window: WindowPrompt,
 			All: []string{"No, and tell Claude what to do differently"}},
+		// Local tool approvals: the Write/Edit/Bash dialogs. Their decline option
+		// is a bare "3. No" and their footer names no navigate/select token, so
+		// before #332 neither the matcher above nor the selection matcher below
+		// saw them and a blocked session read as *idle* — Ready, with autoyes
+		// walking past it. Keyed on the footer pair rather than the options,
+		// which vary per tool ("Yes, allow all edits during this session" for a
+		// write, "Yes, and always allow access to <dir> from this project" for a
+		// command); "Tab to amend" is the discriminator, since "Esc to cancel"
+		// alone also appears under the trust gate and the /model picker.
+		// Structural, not a flat window: this footer is the most quotable string
+		// in the adapter — an agent working on Atrium itself prints it — and a
+		// flat bottom-N match reads that quote as a live prompt. Unlike the
+		// model-error notice, which scrolls away on the next turn, the quote sits
+		// on an IDLE pane that never scrolls, so it would stick at needs-input
+		// until the user typed. The segment scan stops at the input box, and the
+		// dialog replaces that box while it is up, so the live shape matches and
+		// a quote above the box cannot.
+		// NoAutoTap: Enter here approves a file write or a shell command against
+		// a human's explicit gate. The fetch dialog above stays auto-tappable —
+		// this matcher sits after it, so that behavior is unchanged.
+		// Pinned against live 2.1.210 captures, byte-identical on 2.1.207
+		// (registry_test.go claudeWritePermissionPane / claudeBashPermissionPane).
+		{Name: "permission-local", NoAutoTap: true, Match: claudeLocalPermissionVisible},
 		// The plan-approval dialog ("Would you like to proceed?" after plan mode).
 		// Enter would accept the plan AND enable auto mode, so autoyes must not
 		// answer it. Tokens pinned against a live 2.1.170 pane (registry_test.go
-		// fixture): the rendered options are "Yes, and use auto mode" / "Yes,
+		// fixture) and re-confirmed verbatim on a live 2.1.210 dialog (#332): the
+		// rendered options are "Yes, and use auto mode" / "Yes,
 		// manually approve edits" / "No, refine with Ultraplan…" / "Tell Claude
 		// what to change" — and the dialog carries NO selection footer ("Esc to
 		// cancel"), so without this matcher it reads as *idle*, not even as a
@@ -79,7 +143,8 @@ var claude = &Adapter{
 			}},
 		// The model-error notice: the API rejected --model X (404 model_not_found,
 		// or the Pro-plan access restriction), strings pinned against the 2.1.170
-		// binary's error mapping. The session stays alive with an idle input box,
+		// binary's error mapping and re-confirmed on a live 2.1.210 pane (#332:
+		// `claude --model __atrium_probe__` then a prompt). The session stays alive with an idle input box,
 		// so without this it reads as Ready. NoAutoTap: there is nothing to answer
 		// — surface needs-input so the user attaches and fixes it via /model.
 		// Unlike a dismissable dialog this is *transcript* content, so after the
@@ -92,7 +157,8 @@ var claude = &Adapter{
 				"is not available with the Claude Pro plan",
 			}},
 		// Auth expiry/revocation: those error messages start "Please run /login ·"
-		// (same 2.1.170 provenance) and the session likewise sits idle-looking.
+		// (same 2.1.170 provenance; a pane cannot be driven into it without revoking
+		// auth, so #332 re-confirmed the literal in the 2.1.210 bundle instead) and the session likewise sits idle-looking.
 		// Same surfacing, nothing to auto-answer; same transcript-lingering note.
 		{Name: "login-error", Window: WindowPrompt, NoAutoTap: true,
 			All: []string{"Please run /login ·"}},
@@ -108,15 +174,21 @@ var claude = &Adapter{
 		// wants a human choice — and auto-Enter picks whatever option is
 		// highlighted, chaining through multi-question flows on repeated ticks.
 		// Permission/plan dialogs are unaffected: they match earlier in this
-		// list, so they never reach here. Side effect, accepted: a stray open
-		// selector (model/account picker) under autoyes surfaces needs-input
-		// instead of being blindly Enter-ed.
+		// list, so they never reach here. Scope, measured live at 2.1.210 (#332):
+		// this fires on AskUserQuestion, whose footer reads "Enter to select ·
+		// ↑/↓ to navigate · Esc to cancel". It does NOT fire on the /model
+		// picker, whose footer names no navigate/select token ("Enter to set as
+		// default · s to use this session only · Esc to cancel") — an earlier
+		// comment here claimed that picker surfaced needs-input; it does not,
+		// and reads as idle instead. Harmless (a stray picker is a rare,
+		// self-inflicted state) but not something to rely on.
 		{Name: "selection", NoAutoTap: true, Match: claudeSelectionFooterVisible},
 	},
 
 	// Ghost-text prompt suggestion in the idle input box (suggestion.go).
 	// Pinned against a live 2.1.17x capture (suggestion_test.go fixture,
-	// 2026-06-12). Version-sensitive like every heuristic here, but this one
+	// 2026-06-12); re-confirmed at 2.1.210 (#332), where an idle box still reads
+	// "❯" + U+00A0 + SGR dim + the suggested text. Version-sensitive like every heuristic here, but this one
 	// fails closed: a rewording/restyling upstream makes `a` do nothing on an
 	// idle claude — never sends a stray keystroke.
 	SuggestionVisible: claudeSuggestionVisible,
@@ -124,14 +196,18 @@ var claude = &Adapter{
 	// Collapsed-paste placeholder chip in the input box (claudePasteCollapsed). Claude
 	// renders a ≥4-line bracketed paste as "[Pasted text #N +L lines]", so a queued multi-line
 	// prompt never shows its first line for the delivery signature check — the chip is the
-	// only landing signal. Verified live against claude 2.1.207 (2026-07-13).
+	// only landing signal. Verified live against claude 2.1.207 (2026-07-13); re-confirmed
+	// against 2.1.210 (2026-07-15, #332).
 	PasteCollapsed: claudePasteCollapsed,
 
-	// Live permission mode from the footer's "⏵⏵ … on" / "⏸ plan mode on"
+	// Live permission mode from the footer's "⏵⏵ … on" / "⏸ manual mode on"
 	// indicator, so the list chip tracks an in-session mode switch instead of
-	// the stale launch-time flag. Pinned against a live 2.1.178 capture
-	// (permissionmode_detect_test.go); version-sensitive like every heuristic
-	// here, and fails safe — an unrecognized footer falls back to the flag.
+	// the stale launch-time flag. Every marker in the table is pinned against a
+	// live capture (permissionmode_detect_test.go): the shift+tab cycle and
+	// dontAsk at 2.1.209 (#333), re-confirmed at 2.1.210 along with
+	// bypassPermissions — which #333 could only read off the bundle — in #332.
+	// Version-sensitive like every heuristic here, and fails safe: an
+	// unrecognized footer falls back to the flag.
 	PermissionMode: claudePermissionMode,
 
 	Gates: []Gate{
@@ -139,7 +215,8 @@ var claude = &Adapter{
 		// "Do you trust the files in this folder?" is gone, replaced at 2.1.18x
 		// by a "Quick safety check…" dialog whose confirm button reads "Yes, I
 		// trust this folder" (pinned against a live 2.1.185 capture, see
-		// registry_test.go claudeTrustPane). Both are matched so the gate fires
+		// registry_test.go claudeTrustPane; re-confirmed verbatim on a live 2.1.210
+		// launch in a fresh dir, #332). Both are matched so the gate fires
 		// across the supported range; remove the old title once <2.1.18x is
 		// unsupported. Plus the MCP-approval prompt (capital- and lowercase-N
 		// variants).
@@ -169,6 +246,21 @@ func selectionFooterTokens(s string) bool {
 // segment scan (see footerVisibleInSegments) applied to claude's footer tokens.
 func claudeSelectionFooterVisible(content string) bool {
 	return footerVisibleInSegments(content, selectionFooterTokens)
+}
+
+// localPermissionFooterTokens reports whether the flattened text carries the local
+// tool-permission dialog's footer pair: "Esc to cancel" plus "Tab to amend". The
+// pair is what separates it from the trust gate and the /model picker, which show
+// "Esc to cancel" beside a different second hint.
+func localPermissionFooterTokens(s string) bool {
+	return strings.Contains(s, "Esc to cancel") && strings.Contains(s, "Tab to amend")
+}
+
+// claudeLocalPermissionVisible backs the claude "permission-local" matcher: the same
+// structural segment scan the selection matcher uses, so a footer quoted in the
+// transcript above the input box cannot read as a live prompt.
+func claudeLocalPermissionVisible(content string) bool {
+	return footerVisibleInSegments(content, localPermissionFooterTokens)
 }
 
 // claudePasteCollapsed backs the claude adapter's PasteCollapsed: it reports whether the input-box

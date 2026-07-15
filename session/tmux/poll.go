@@ -375,8 +375,8 @@ func (t *Session) Poll() PaneState {
 			t.stashEffort(rec)
 		}
 
-		// A live spinner status line above the box (2.1.207's footer reflow can crowd
-		// "esc to interrupt" out of the below-box footer while the agent works — spinner.go).
+		// A live spinner status line above the box (claude lights "esc to interrupt" off its
+		// narrowest notion of busy, so the footer can carry no marker mid-turn — spinner.go).
 		// It outranks the hook record like the esc-to-interrupt marker does: a spinning main
 		// turn is Working, not Pending, even with sub-agents in flight. But the above-box band
 		// is NOT structurally guaranteed live chrome (the transcript tail can quote the same
@@ -414,8 +414,8 @@ func (t *Session) Poll() PaneState {
 			// Version-independent corroborating freshness (#311). We are here with a record, an
 			// empty in-flight set, and a non-"ready" latch (a working edge fired). A hook that
 			// fired within heartbeatTTL proves the MAIN turn is live — read from Atrium's own
-			// hook file, not scraped — so hold working even when the below-box marker is crowded
-			// out AND the above-box spinner is absent/reworded. This is HOLD-ONLY and self-healing:
+			// hook file, not scraped — so hold working even when the below-box marker is absent
+			// AND the above-box spinner is absent/reworded. This is HOLD-ONLY and self-healing:
 			//   - It never declares done/dead; ready+empty (above), tmux liveness (PaneDead, before
 			//     the record is read), and the pending watchdog remain the only authorities on those.
 			//   - A stale/zero heartbeat — a crashed writer, or a Phase-1 bare-word file — does
@@ -554,8 +554,9 @@ func (t *Session) PollNow() PaneState {
 			return PaneIdle
 		}
 	}
-	// No hook record. A live spinner above the box still proves work (the footer marker can
-	// be crowded out on 2.1.207 — spinner.go); at face value it reads working. The resuming
+	// No hook record. A live spinner above the box still proves work (the footer marker is
+	// absent whenever claude does not consider the turn "loading" — spinner.go); at face
+	// value it reads working. The resuming
 	// tick loop applies the animation gate, so a one-shot scrollback match self-heals.
 	if t.adapter.LiveSpinner != nil && t.adapter.LiveSpinner(content) {
 		t.monitor.lastReported = PaneWorking

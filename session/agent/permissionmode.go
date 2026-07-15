@@ -90,9 +90,9 @@ func WithPermissionModeFlag(program, mode string) string {
 
 // claudePermissionModeMarkers maps a stable footer token to the enum value of
 // the mode it indicates. The tokens are the mode-name words claude renders in
-// its status-bar line below the input box — captured verbatim from live claude
-// 2.1.209 panes, the first four by cycling shift+tab and dontAsk by launching
-// --permission-mode dontAsk (see permissionmode_detect_test.go fixtures):
+// its status-bar line below the input box — every one captured verbatim from a
+// live pane (see permissionmode_detect_test.go fixtures). The cycle and dontAsk
+// were captured at 2.1.209 (#333) and re-confirmed at 2.1.210 (#332):
 //
 //	⏸ manual mode on · ? for shortcuts · ← for agents
 //	⏸ plan mode on (shift+tab to cycle) · ← for agents
@@ -106,14 +106,17 @@ func WithPermissionModeFlag(program, mode string) string {
 // cycle chord, which is why its footer is not the shape a reading of the mode
 // table alone would predict.
 //
-// bypassPermissions is the one token not observed live: reaching it means
+// bypassPermissions was the last token with no live evidence — reaching it means
 // accepting the "you accept all responsibility" startup dialog, which Atrium
-// does not drive. Its token is read off the installed bundle's mode table
-// (indicator:"bypass permissions"), which the footer renders through the same
-// one template every mode uses — symbol, then the indicator string, then a
-// literal " on". Only the token is verified; the hint text around it is a guess:
+// does not drive. #332 drove it once by hand (throwaway dir, footer captured,
+// no prompt ever sent) and the line the bundle's mode table implied turned out
+// to be exactly right, at 2.1.210:
 //
 //	⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+//
+// Note what that does and does not settle. It confirms this token; it does not
+// license predicting the next footer from the table — dontAsk above is the
+// standing counter-example, where the same reasoning produced the wrong line.
 //
 // Every mode holds its indicator for the whole turn, busy or idle; only the
 // hint beside it swaps. Since the mode is cyclable mid-turn, that persistence is
@@ -151,14 +154,26 @@ var claudePermissionModeMarkers = []struct{ token, mode string }{
 // contract: the 2.1.178-era CLI rendered no mode line for default, and the idle
 // hint was the only thing that named it. The changeover landed somewhere in
 // (2.1.178, 2.1.206] — 2.1.206 already renders the indicator, so every version
-// Atrium has verified against does, including the 2.1.207 VerifiedVersion pin.
+// Atrium has verified against does, up to and including the VerifiedVersion pin.
 // Keeping the fall-through keeps detection working against a CLI older than
 // that; it is no longer the sole detector for the mode, which matters because
-// the hint is one branch of a single mutually-exclusive slot the footer fills
-// by state (interrupt / ctrl_t / agents / voice / shortcuts). "? for shortcuts"
-// is only ever one of those: a busy turn shows the interrupt hint instead, at
-// any width, and #308's crowd-out precedent can drop it at a narrow one. Keying
-// a mode off it was always keying off something that is not about the mode.
+// "? for shortcuts" is not about the mode at all — the footer pushes it only as
+// a fallback, when no other hint applies, so a busy turn shows the interrupt
+// hint in its place (live 2.1.210, at any width). Keying a mode off it was
+// always keying off something that is not about the mode.
+//
+// #333 described that hint area as a single mutually-exclusive slot selected by
+// state (interrupt / ctrl_t / agents / voice / shortcuts). The #332 sweep found
+// that reading came from the wrong branch: the bundle has two footer
+// implementations behind the remote gate `tengu_copper_thistle`, and the
+// single-slot one is the *gated* branch. What we render is the ungated branch,
+// which builds a hint LIST — hints concatenate, and "? for shortcuts" is pushed
+// only when that list is otherwise empty. The live proof is co-occurrence the
+// single-slot branch cannot produce: "⏸ manual mode on · ? for shortcuts · ←
+// for agents" (2.1.210) carries the shortcuts hint and the agents hint at once.
+// Detection is unaffected — both branches render "<label> on" — but note that a
+// remote gate can swap this shape with no version change, which VerifiedVersion
+// cannot express.
 //
 // Detection is confined to footerBelowBox — the live chrome below the input
 // box's bottom border — so a mode phrase quoted in the scrolled-back transcript

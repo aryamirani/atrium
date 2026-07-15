@@ -90,7 +90,7 @@ func TestClaudeSpinnerWorking_PositiveAcrossVariants(t *testing.T) {
 		"✢ Billowing… (9m 36s · ↓ 23.3k tokens)",
 		"· Metamorphosing… (27m 26s · ↓ 95.3k tokens · almost done thinking with xhigh effort)",
 		"* Generating… (0s · ↓ 12 tokens)",
-		"✻ Cogitating… (5s · esc to interrupt)", // pre-reflow footer-in-spinner form
+		"✻ Cogitating… (5s · esc to interrupt)", // older footer-in-spinner form
 	}
 	for _, sp := range spinners {
 		content := workingPane(sp, "⏵⏵ auto mode on · ctrl+t to hide tasks · ← for agents")

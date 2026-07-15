@@ -16,7 +16,8 @@ var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 // pasteChipRegex matches claude's collapsed-paste placeholder in an input-box readback, e.g.
 // "[Pasted text #1 +29 lines]" — the readback of a ≥4-line bracketed paste (claude renders it
 // as a chip rather than the literal text). Deliberately tolerant: the "#N" index is optional
-// and "line"/"lines" both match. Verified live against claude 2.1.207 (2026-07-13). See
+// and "line"/"lines" both match. Verified live against claude 2.1.207 (2026-07-13) and
+// re-confirmed at 2.1.210 ("[Pasted text #1 +6 lines]", 2026-07-15, #332). See
 // claudePasteCollapsed and prompt delivery (session/prompt.go boxHoldsPrompt).
 var pasteChipRegex = regexp.MustCompile(`\[Pasted text[^\]]*\+\d+ lines?\]`)
 
@@ -277,7 +278,16 @@ func inputBoxText(content string) (string, bool) {
 // can render *below*, pushing them out of any fixed bottom-N window — and a statusLine may
 // draw its own ─── dividers, which defeats any single "below the last rule" anchor by
 // becoming the last rule itself. So instead of one anchor, the pane is scanned as
-// rule-delimited segments, bottom-up:
+// border-delimited segments, bottom-up:
+//
+// Segments are delimited with the loose isBoxBorderLine, not the strict isHorizontalRule.
+// That matters because claude renders the session's agent-context / branch name INSIDE the
+// input box's top border ("──── name ──"), which the strict predicate rejects (#332). With
+// no delimiter there, the box stops opening a segment of its own: the bottom segment spans
+// transcript AND box together, its first non-empty line is transcript, and the input-box
+// stop below never fires — so a footer merely quoted above the box reads as live. The loose
+// predicate still rejects the ╌ dialog rules and prose, so segmentation is otherwise
+// unchanged, and every extra boundary it introduces only makes the stop fire sooner.
 //
 //   - The footer tokens must co-occur within a single segment (flattened, so a footer
 //     hard-wrapped at a narrow pane width is reconstructed), which also keeps unrelated hint
@@ -310,7 +320,7 @@ func footerVisibleInSegments(content string, tokens func(string) bool) bool {
 
 	var rules []int
 	for i, line := range lines {
-		if isHorizontalRule(line) {
+		if isBoxBorderLine(line) {
 			rules = append(rules, i)
 		}
 	}
