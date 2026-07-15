@@ -81,6 +81,26 @@ func (v splashVariant) isFractal() bool {
 	return v == splashVariantJulia || v == splashVariantMandala
 }
 
+// hueIsAux groups the variants whose hue is a property of their own field rather
+// than of the cell's address, so splashColorIdx spends their aux straight as the
+// gradient position instead of mixing it with radius and swirl.
+//
+// It is a predicate here rather than a splashOps field on purpose. Hue mapping
+// looks like Pass-2 policy, and splashOps is where Pass-2 policy lives — but
+// rain never reaches splashColorIdx at all (it draws from its own ramp), so an
+// ops field would have to carry a value for rain that nothing reads, which is
+// the shape of the dimToRim bug this package already shipped once. A predicate
+// is answerable for every variant because it describes the field, not the
+// renderer, and it sits beside isFractal, which groups julia and mandala for the
+// same reason: a hue rule shared by more than one variant.
+//
+// What the members have in common is that aux already *is* the gradient position
+// — the tunnel's mipped depth band, ripple's ring age. See splashColorIdx's arm
+// for why the default mix is not merely different for them but wrong.
+func (v splashVariant) hueIsAux() bool {
+	return v == splashVariantTunnel || v == splashVariantRipple
+}
+
 // splashDefaultVariant is the fallback for an unrecognized override value
 // (an unset override rotates instead — see splashActiveVariant) and the
 // variant the contract tests pin.

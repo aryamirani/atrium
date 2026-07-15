@@ -111,7 +111,7 @@ const (
 	//
 	// The argument, which rippleReach spends: a point at dx lies in cell
 	// i0 = floor(dx/rippleCell), and a drop in cell i is drawn *inside* its own
-	// cell (see rippleDropAt), so for i >= i0+2 the drop's px >= i*cell while
+	// cell (see rippleDropPos), so for i >= i0+2 the drop's px >= i*cell while
 	// dx < (i0+1)*cell, i.e. they are strictly more than one cell apart. One cell
 	// is rippleMaxR + rippleW, and a packet centred at a crest no further out
 	// than rippleMaxR is exactly zero past rippleW. So the contribution is not
@@ -145,7 +145,7 @@ const (
 	// 3x3 block around a point holds every drop that can touch it.
 	//
 	// rippleEpochs is 2 because rippleLife <= ripplePeriod. A drop of epoch e is
-	// born inside [e*P, (e+1)*P) (see rippleDropAt), and this point's phase sits
+	// born inside [e*P, (e+1)*P) (see rippleDropBirth), and this point's phase sits
 	// in epoch e0, so epoch e0 holds every drop already born and epoch e0-1
 	// reaches back to (e0-1)*P <= phase - life — which is as far back as a drop
 	// can still be alive. Epoch e0-2 is therefore always dead. Raising rippleLife
@@ -188,24 +188,49 @@ func rippleEpochSeed(base uint32, e int) uint32 {
 	return base ^ lowbias32(splashU32(int32(e))) //nolint:gosec // G115: see above — the epoch counter is centuries from this bound
 }
 
-// rippleDropAt draws where and when lattice cell (i,j) spawns its epoch-e drop.
+// When and where lattice cell (i,j) spawns its epoch-e drop. They are two draws
+// rather than one because *when* is what admits a drop and *where* is what only
+// the survivors need — see rippleDropWave, which is the whole reason for the
+// split.
 //
-// The two invariants here are what the whole early-out rests on, and neither is
-// obvious from the call site: the drop lands strictly *inside* its own lattice
-// cell, and it is born strictly inside its own epoch's window. Both hold because
+// The two invariants here are what the 3x3x2 window rests on, and neither is
+// obvious from the call site: the drop is born strictly inside its own epoch's
+// window, and it lands strictly *inside* its own lattice cell. Both hold because
 // splashCellHash returns [0,1) and both are pinned by
 // TestRippleDropsStayInTheirCellAndEpoch — widen either jitter and the sum's
-// 3x3x2 window stops being exact, silently, on the cells nearest the boundary.
-func rippleDropAt(i, j, e int) (px, py, tStart float64) {
+// window stops being exact, silently, on the cells nearest the boundary.
+func rippleDropBirth(i, j, e int) (tStart float64) {
+	return (float64(e) + splashCellHash(i, j, rippleEpochSeed(seedRippleT, e))) * ripplePeriod
+}
+
+func rippleDropPos(i, j, e int) (px, py float64) {
 	px = (float64(i) + splashCellHash(i, j, rippleEpochSeed(seedRippleX, e))) * rippleCell
 	py = (float64(j) + splashCellHash(i, j, rippleEpochSeed(seedRippleY, e))) * rippleCell
-	tStart = (float64(e) + splashCellHash(i, j, rippleEpochSeed(seedRippleT, e))) * ripplePeriod
-	return px, py, tStart
+	return px, py
 }
 
 // rippleDropWave is one drop's signed contribution at a point, plus how far
 // through its life that drop is. Signed is the operative word: this returns a
 // displacement, and the caller sums displacements before taking a magnitude.
+//
+// ageT is meaningful only when c is non-zero, and that is a contract rather than
+// an oversight: every zero return reports ageT 0, including the live drop whose
+// packet simply does not reach this point. Nothing can read that as a lie,
+// because ageT's only consumer weights it by |c| (see splashRippleSum), so a
+// zero contribution carries zero weight whatever age rides along with it. The
+// callers' `c == 0` skip is therefore an optimization, not a guard — but a
+// future caller wanting "this drop's age" must draw it, not take it from here.
+//
+// The two early-outs are ordered by what they cost, which is why the birth draw
+// and the position draw are separate (see rippleDropBirth). Being unborn or dead
+// is decided by the birth draw alone, and it is the common case rather than an
+// edge: rippleLife == ripplePeriod, so a lattice cell averages exactly one live
+// drop across the two epochs the sum considers, and half the candidates are
+// therefore decided before a position is worth drawing. Measured over 1.3M
+// candidates at 240x60, 49.7% never get past this line — drawing the position
+// first would hash two lattice fields for each of them and throw both away.
+// (Of the rest, 43.7% are alive but out of packet and 6.6% contribute; those do
+// need the position, which is why the gate sits here and not lower.)
 //
 // The shape is a compact wave packet — a raised-cosine carrier under a
 // (1-x^2)^2 envelope, both in x = (d - crest)/rippleW. Three things follow from
@@ -235,11 +260,11 @@ func rippleDropAt(i, j, e int) (px, py, tStart float64) {
 // here, not two. Applying both would only tilt the packet, brightening its inner
 // flank against its outer one.
 func rippleDropWave(i, j, e int, dx, dy, phase float64) (c, ageT float64) {
-	px, py, tStart := rippleDropAt(i, j, e)
-	age := phase - tStart
+	age := phase - rippleDropBirth(i, j, e)
 	if age < 0 || age > rippleLife {
-		return 0, 0 // unborn, or dead
+		return 0, 0 // unborn, or dead — decided without drawing a position
 	}
+	px, py := rippleDropPos(i, j, e)
 	ex, ey := dx-px, dy-py
 	// Sqrt of the sum rather than math.Hypot: Hypot spends its cost scaling
 	// against overflow, and these legs are pane-sized (a few hundred at most), so

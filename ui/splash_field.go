@@ -262,7 +262,7 @@ func splashFBMBody(x, y, phase float64) float64 {
 // multi-hued nebula. Legacy keeps its original formula, where aux is the
 // warped angle its swirl has always used; noise variants use the unwarped
 // angle and add the warp magnitude (their aux) for layered gas-cloud hues.
-// The tunnel and ripple opt out of the swirl entirely and spend their aux as
+// The hueIsAux variants opt out of the swirl entirely and spend their aux as
 // the gradient position directly — their hue is a property of the field itself
 // (depth; ring age), and screen position must not enter it (see the arm below).
 func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float64, nColors int) int {
@@ -271,9 +271,9 @@ func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float6
 	case variant == splashVariantLegacy:
 		swirl := 0.5 + 0.5*math.Sin(aux+dRaw*colorSwirlF-phase*colorSwirlSpeed)
 		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
-	case variant == splashVariantTunnel || variant == splashVariantRipple:
-		// The two variants whose hue is a property of their own field rather than
-		// of the cell's address. aux already *is* the gradient position — the
+	case variant.hueIsAux():
+		// The variants whose hue is a property of their own field rather than of
+		// the cell's address. aux already *is* the gradient position — the
 		// tunnel's mipped depth band (splashTunnelAtFor), ripple's ring age
 		// (splashRippleSum) — so it is spent straight: rings of colour receding
 		// down a corridor, and rings of colour spreading from a drop.

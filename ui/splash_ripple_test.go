@@ -47,7 +47,8 @@ func TestRippleDropsStayInTheirCellAndEpoch(t *testing.T) {
 	for i := -3; i <= 3; i++ {
 		for j := -3; j <= 3; j++ {
 			for e := -3; e <= 3; e++ {
-				px, py, ts := rippleDropAt(i, j, e)
+				px, py := rippleDropPos(i, j, e)
+				ts := rippleDropBirth(i, j, e)
 				require.GreaterOrEqualf(t, px, float64(i)*rippleCell, "drop (%d,%d,e%d) x below its cell", i, j, e)
 				require.Lessf(t, px, float64(i+1)*rippleCell, "drop (%d,%d,e%d) x above its cell", i, j, e)
 				require.GreaterOrEqualf(t, py, float64(j)*rippleCell, "drop (%d,%d,e%d) y below its cell", i, j, e)
@@ -82,9 +83,19 @@ func TestSplashRippleLifeFitsTheEpochWindow(t *testing.T) {
 // A Gaussian or a rational tail would make this a threshold and this test a
 // judgement call.
 //
-// It fails loudly under either half of the argument breaking: shrink rippleCell
-// below rippleMaxR + rippleW and drops two cells out start reaching in; raise
-// rippleLife past ripplePeriod and epoch e0-2 comes alive.
+// The epoch half of the argument fails loudly here: raise rippleLife past
+// ripplePeriod and epoch e0-2 comes alive, which this catches at +0.1.
+//
+// The lattice half does not, and the asymmetry is worth stating rather than
+// leaving for the next person to trip over. Shrinking rippleCell below
+// rippleMaxR + rippleW does let drops two cells out reach in — but only the ones
+// whose crest is near its maximum radius, and a crest is only there at the very
+// end of a life, where fade = 1 - t^2 has already taken the amplitude to nearly
+// nothing. So the drops that exploit a hairline shrink contribute ~1e-3 in a
+// sliver of the (age, position) space, and a uniform sweep does not land on
+// them: measured, this test catches a shrink of 2 units but sails through 1.
+// TestSplashRippleCellHoldsThePacketsReach is what holds that half, by
+// construction rather than by sampling.
 func TestSplashRippleWindowIsExact(t *testing.T) {
 	checked := 0
 	for _, phase := range rippleTestPhases {
@@ -99,6 +110,59 @@ func TestSplashRippleWindowIsExact(t *testing.T) {
 		}
 	}
 	require.Greater(t, checked, 100000, "the sweep has to be dense enough to land near cell boundaries")
+}
+
+// TestSplashRippleCellHoldsThePacketsReach is the lattice half of the exactness
+// argument, held by construction where the sweep in TestSplashRippleWindowIsExact
+// can only sample for it.
+//
+// The claim rippleCell has to earn is that one lattice cell is at least as wide
+// as a drop's disturbance can ever be — that is the entire reason a drop two
+// cells away is *provably* unable to touch a point, and so the entire reason the
+// 3x3 window is a proof rather than a good approximation.
+//
+// So it measures the reach instead of restating it: sweep a drop's whole life,
+// walk out until the wave function goes to zero and stays there, and take the
+// furthest non-zero it ever produced. Comparing that measurement against
+// rippleCell is a real question, where `require.Equal(rippleCell, rippleMaxR +
+// rippleW)` would only be the constant agreeing with its own definition. It is
+// also the guard that survives the packet being reshaped: give the envelope a
+// tail — a Gaussian, a rational — and the measured reach runs off past the cell
+// while every constant in the file still reads exactly as it does today.
+func TestSplashRippleCellHoldsThePacketsReach(t *testing.T) {
+	px, py := rippleDropPos(0, 0, 0)
+	ts := rippleDropBirth(0, 0, 0)
+
+	// Past the nominal support there must be nothing at all, so walking out to
+	// it and a margin beyond finds the true edge rather than a node in the
+	// carrier (which is zero, but has live wave on both sides of it).
+	const beyond = 12.0
+	maxReach, atAge := 0.0, 0.0
+	for age := 0.0; age <= rippleLife; age += 0.002 {
+		phase := ts + age
+		for d := rippleMaxR + rippleW + beyond; d > 0; d -= 0.002 {
+			if c, _ := rippleDropWave(0, 0, 0, px+d, py, phase); c != 0 {
+				if d > maxReach {
+					maxReach, atAge = d, age
+				}
+				break
+			}
+		}
+	}
+	require.Positive(t, maxReach, "the sweep found no wave at all")
+	require.LessOrEqualf(t, maxReach, float64(rippleCell),
+		"a drop's disturbance reaches %.3f units (at age %.3f) but the spawn lattice is "+
+			"pitched at only %.3f — a drop two cells away can touch this point, so the "+
+			"3x3 window in splashRippleSum silently clips rings instead of being exact",
+		maxReach, atAge, float64(rippleCell))
+
+	// And the pitch must not be wildly slack either: a cell far wider than the
+	// reach would still be correct, but it would be spending drop density (one
+	// drop per cell per period) on nothing. The reach is the pitch, near enough.
+	require.Greaterf(t, maxReach, 0.95*float64(rippleCell),
+		"rippleCell (%.3f) is much wider than a drop can actually reach (%.3f): the "+
+			"lattice is the density knob, so slack here is drops the pool never gets",
+		float64(rippleCell), maxReach)
 }
 
 // TestSplashRipplePacketIsCompactAndSigned pins the two properties of the wave
@@ -126,7 +190,8 @@ func TestSplashRippleWindowIsExact(t *testing.T) {
 func TestSplashRipplePacketIsCompactAndSigned(t *testing.T) {
 	// A drop we can address: cell (0,0), epoch 0, sampled along +x from its own
 	// centre at an age where its ring has fully opened.
-	px, py, ts := rippleDropAt(0, 0, 0)
+	px, py := rippleDropPos(0, 0, 0)
+	ts := rippleDropBirth(0, 0, 0)
 	const age = 1.4
 	phase := ts + age
 	rr := rippleSpeed * age
@@ -163,7 +228,8 @@ func TestSplashRipplePacketIsCompactAndSigned(t *testing.T) {
 // the same ray, so an argmax over the sum measures the neighbourhood rather than
 // this drop.
 func TestSplashRippleCrestTravelsAtRippleSpeed(t *testing.T) {
-	px, py, ts := rippleDropAt(0, 0, 0)
+	px, py := rippleDropPos(0, 0, 0)
+	ts := rippleDropBirth(0, 0, 0)
 	for _, age := range []float64{0.4, 0.9, 1.4, 1.9, 2.3} {
 		phase := ts + age
 		peak, at := -1.0, 0.0
@@ -206,7 +272,8 @@ func TestSplashRippleCrestTravelsAtRippleSpeed(t *testing.T) {
 // being fitted to the current numbers, and it still bites where it should:
 // rippleW 6 gives 67% and rippleCyc 2.3 gives 74%.
 func TestSplashRippleCrestSurvivesTheRowPitch(t *testing.T) {
-	px, py, ts := rippleDropAt(0, 0, 0)
+	px, py := rippleDropPos(0, 0, 0)
+	ts := rippleDropBirth(0, 0, 0)
 	for _, age := range []float64{0.4, 0.9, 1.4, 1.9} {
 		phase := ts + age
 
