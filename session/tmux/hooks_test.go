@@ -66,7 +66,7 @@ func TestBuildHookSettings(t *testing.T) {
 	// Every event wires exactly one command that re-invokes the atrium binary's hook
 	// subcommand with the state path baked in. PostToolUse re-latches working (#311): it
 	// bumps the heartbeat at each tool boundary so an active turn holds working between tools
-	// even when the below-box marker is crowded out and the above-box spinner is reworded.
+	// even when the below-box marker is absent and the above-box spinner is reworded.
 	allEvents := []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SubagentStart", "SubagentStop"}
 	require.Len(t, parsed.Hooks, len(allEvents), "no unexpected events wired")
 	for _, ev := range allEvents {
