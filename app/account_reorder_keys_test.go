@@ -71,6 +71,8 @@ func TestAccountReorder_ExplainsWhenNotAccountGrouped(t *testing.T) {
 
 	require.True(t, h.menu.HasNotice(), "a cluster move with no clustering must explain itself")
 	assert.Contains(t, h.menu.String(), "account grouping")
+	assert.Contains(t, h.menu.String(), "cluster reorder",
+		"the ladder word matches help, the settings label and its sibling refusal (#346)")
 	assert.Empty(t, h.list.AccountOrder(), "a refused move records no order")
 }
 
