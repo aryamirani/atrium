@@ -35,6 +35,21 @@ func TestAccountOrder_ListedAccountLeads(t *testing.T) {
 	require.Equal(t, []string{"sideproj|personal", "api|work", "infra|work"}, orderKeys(l))
 }
 
+// Every other case here sets the order before the grouping — the startup path, where the
+// first cluster build already honors it. The reverse must land too: an order arriving
+// while clustering is live rebuilds the view on the spot. assembleHome's call ordering is
+// documented as a preference rather than a requirement on the strength of that, so pin it.
+func TestAccountOrder_ArrivingAfterGroupingRebuildsTheView(t *testing.T) {
+	l := acctList(t, "api|work", "sideproj|personal")
+	l.SetGroupMode("account")
+	require.Equal(t, []string{"work", "personal"}, accountsOf(l), "first-appearance to begin with")
+
+	l.SetAccountOrder([]string{"personal"})
+
+	require.Equal(t, []string{"personal", "work"}, accountsOf(l))
+	require.Equal(t, []string{"sideproj|personal", "api|work"}, orderKeys(l))
+}
+
 // Accounts absent from the order keep first-appearance order behind the listed ones,
 // so a partial order never scrambles the rest.
 func TestAccountOrder_UnlistedFollowInFirstAppearanceOrder(t *testing.T) {
