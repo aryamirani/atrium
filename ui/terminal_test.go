@@ -278,7 +278,10 @@ func TestTerminalFallbackReadableOnNarrowPane(t *testing.T) {
 // TestTerminalSplashParity locks the Terminal tab's idle empty state to the same
 // animated nebula as the preview: at an adequate size String() renders the field
 // (wordmark and prompt surviving, bounded), and below the floor it falls back to
-// the plain wordmark with no field glyphs.
+// the plain placeholder with no field glyphs. The placeholder keeps the wordmark
+// only where it fits — 48 cols affords it, narrower is the message alone (see
+// fallbackBlock) — so the below-floor case asserts the field is gone rather than
+// that the wordmark is present.
 func TestTerminalSplashParity(t *testing.T) {
 	log.Initialize(false)
 	defer log.Close()
@@ -306,7 +309,7 @@ func TestTerminalSplashParity(t *testing.T) {
 	small.SetSplashFrame(6)
 	require.NoError(t, small.UpdateContent(nil))
 	require.False(t, strings.ContainsAny(ansi.Strip(small.String()), fieldGlyphs),
-		"below the floor the terminal must render the plain wordmark, not the field")
+		"below the floor the terminal must render the plain placeholder, not the field")
 }
 
 func TestTerminalSessionCaching(t *testing.T) {

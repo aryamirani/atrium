@@ -917,9 +917,13 @@ func TestPreviewPausedFallbackPointsAtCopyKeyAndNeverClaimsAClipboardWrite(t *te
 		"nothing copies on pause — the fallback must not claim the clipboard was written")
 }
 
-// The fallback is composed width-unaware (setFallbackState never sees p.width)
-// and JoinVertical pads every line out to the block's longest, so an oversize
-// message line drags the banner right and MaxWidth chops the lot. A pane this
+// The clamp is #251's invariant, and it outlives the mechanism that used to
+// enforce it: whatever the fallback composes, it can never inflate the frame and
+// throw centered overlays off. fallbackBlock fits the block to the pane up front
+// now, so this guards the backstop rather than the fitting — which is exactly why
+// it is not enough on its own. It passed just as green back when the block was
+// composed width-unaware and MaxWidth sheared the banner mid-glyph; the #355 tests
+// below are the ones that read the render rather than measure it. A pane this
 // narrow is reachable: an 80-col terminal at maxListRatio leaves ~28.
 func TestPreviewPausedFallbackClampedToNarrowPane(t *testing.T) {
 	pane := NewPreviewPane()

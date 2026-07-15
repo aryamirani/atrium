@@ -218,7 +218,7 @@ func TestPreviewSplashFallbackBelowFloor(t *testing.T) {
 			require.LessOrEqualf(t, lipgloss.Width(l), w, "%dx%d: line too wide", w, h)
 		}
 		require.Falsef(t, strings.ContainsAny(ansi.Strip(out), fieldGlyphs),
-			"%dx%d: below the floor must render the plain wordmark, not the field", w, h)
+			"%dx%d: below the floor must render the plain placeholder, not the field", w, h)
 	}
 }
 
