@@ -390,6 +390,43 @@ func TestSplashScreensaverScene(t *testing.T) {
 		"dropping the message must also drop its clearing, not just its text")
 }
 
+// TestWidestContrastWindowIsStillHermite pins the distinction splashVariant.ops
+// draws between a "full-range" window and an identity one. The widest window a
+// variant can ship — contrastLo 0, contrastHi 1 — clips nothing, which is the
+// property a self-shading field needs. It does not pass values through
+// untouched, and no window can: smoothstep is Hermite on the clamped parameter,
+// so a {0,1} window still bends every interior value through t*t*(3-2t).
+//
+// The name is the point. "Identity" invites a reader to skip the call, and it
+// would be a behaviour change — a variant whose own gradient carries meaning
+// (rain's streams, the tunnel's fog) is tuning its constants against an
+// S-curved version of its field, not against the generator's raw output.
+func TestWidestContrastWindowIsStillHermite(t *testing.T) {
+	// It clips nothing: the endpoints come back exact.
+	require.Zero(t, smoothstep(0, 1, 0), "the widest window must not lift the floor")
+	require.Equal(t, 1.0, smoothstep(0, 1, 1), "the widest window must not clip the ceiling")
+
+	// But the interior is bent. 0.5 is the fixed point an S-curve shares with the
+	// identity, so it is the one probe that cannot witness anything.
+	require.Equal(t, 0.5, smoothstep(0, 1, 0.5), "0.5 is Hermite's fixed point, not evidence")
+	for _, x := range []float64{0.1, 0.25, 0.4, 0.6, 0.75, 0.9} {
+		require.NotEqualf(t, x, smoothstep(0, 1, x),
+			"a {0,1} window is not an identity at x=%v — it is still an S-curve", x)
+	}
+	// Concretely, and in the direction that matters: the curve pulls the dim half
+	// down and the bright half up, which is contrast the caller did not ask for.
+	require.Less(t, smoothstep(0, 1, 0.25), 0.25, "the S-curve must darken the dim half")
+	require.Greater(t, smoothstep(0, 1, 0.75), 0.75, "the S-curve must brighten the bright half")
+
+	// And it is the window the full-range variants actually ship, so this stays
+	// bound to their claim rather than to a literal of its own.
+	for _, v := range []splashVariant{splashVariantRain, splashVariantTunnel} {
+		o := v.baseOps()
+		require.Zerof(t, o.contrastLo, "variant %d ships the widest window", int(v))
+		require.Equalf(t, 1.0, o.contrastHi, "variant %d ships the widest window", int(v))
+	}
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
