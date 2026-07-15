@@ -25,10 +25,30 @@ func flatten(g [][]int) []int {
 	return out
 }
 
-// shadeLum is a shade stop's L*, for the luminance assertions below.
-func shadeLum(t *testing.T, pal theme.Palette, hue, stop int) float64 {
+// shadeHexAt is hue h's colour at luminance stop l, re-derived from the gradient
+// rather than read back out of the grid.
+//
+// Deliberately a parallel derivation rather than a call into buildShadeGrid: the
+// property worth asserting is that a column climbs in *luminance*, and re-deriving
+// it from the curve keeps that an independent check instead of a restatement of the
+// code under test. Asserting it on colours is also honest where parsing L* back out
+// of an SGR affix is not.
+//
+// It returns the curve's own value at the top stop, where buildShadeGrid *pins* the
+// gradient affix instead. The two agree only to within an HCL round-trip, which is
+// exactly the discrepancy the pin exists to remove — so
+// TestShadeAffixBracketsMatchRender asserts the top stop against lut.styles and the
+// rest against this.
+func shadeHexAt(colors []lipgloss.Color, h, l int) string {
+	return splashLumHexAt(splashShadeParse(colors[h]), float64(l)/float64(splashLumStops-1), shadeChromaHold)
+}
+
+// shadeLum is a shade stop's L*, for the luminance assertions below. It takes the
+// gradient rather than the palette so a caller walking all 20x16 stops blends it
+// once instead of per stop.
+func shadeLum(t *testing.T, colors []lipgloss.Color, hue, stop int) float64 {
 	t.Helper()
-	c, err := colorful.Hex(splashShadeHexAt(pal, hue, stop))
+	c, err := colorful.Hex(shadeHexAt(colors, hue, stop))
 	require.NoError(t, err)
 	l, _, _ := c.Lab()
 	return l * 100
@@ -62,20 +82,20 @@ func TestShadeGridTopStopIsTheGradientColour(t *testing.T) {
 // The axis has to get darker, in L*, measured.
 func TestShadeColumnClimbsInLuminance(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
-	pal := splashTestPalette()
+	colors := splashGradientColors(splashTestPalette())
 
 	for h := 0; h < splashLUTSize; h++ {
 		prev := -1.0
 		for l := 0; l < splashLumStops; l++ {
-			got := shadeLum(t, pal, h, l)
+			got := shadeLum(t, colors, h, l)
 			require.Greaterf(t, got, prev,
 				"hue %d: stop %d (L* %.1f) must be brighter than stop %d (L* %.1f)",
 				h, l, got, l-1, prev)
 			prev = got
 		}
-		require.Lessf(t, shadeLum(t, pal, h, 0), 12.0,
+		require.Lessf(t, shadeLum(t, colors, h, 0), 12.0,
 			"hue %d's darkest stop must read as unlit", h)
-		require.Positivef(t, shadeLum(t, pal, h, 0),
+		require.Positivef(t, shadeLum(t, colors, h, 0),
 			"hue %d's floor must not be pure black: a minimum-contrast terminal "+
 				"rewrites true black to something legible and speckles the field", h)
 	}
@@ -95,6 +115,7 @@ func TestShadeColumnClimbsInLuminance(t *testing.T) {
 func TestShadeAxisIsHeadlessAndRainKeepsItsHead(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	pal := splashTestPalette()
+	colors := splashGradientColors(pal)
 
 	fgLum := func() float64 {
 		c, err := colorful.Hex(string(pal.Fg))
@@ -109,14 +130,14 @@ func TestShadeAxisIsHeadlessAndRainKeepsItsHead(t *testing.T) {
 
 	// The shade axis does not: every column tops out at its own hue.
 	for h := 0; h < splashLUTSize; h++ {
-		top := shadeLum(t, pal, h, splashLumStops-1)
+		top := shadeLum(t, colors, h, splashLumStops-1)
 		require.Lessf(t, top, fgLum+0.5,
 			"hue %d's shade axis must top out at its own hue, not blow out to white "+
 				"(L* %.1f vs Fg %.1f)", h, top, fgLum)
 	}
 	// And the warm end proves it is not vacuous: Danger is 16.4 L* below Fg, so a
 	// column that blew out to white would be caught here by a wide margin.
-	require.Lessf(t, shadeLum(t, pal, 0, splashLumStops-1), fgLum-10.0,
+	require.Lessf(t, shadeLum(t, colors, 0, splashLumStops-1), fgLum-10.0,
 		"the warm end of the hue axis must stay far below the head white")
 }
 
@@ -261,8 +282,18 @@ func TestShadedFieldVariesLuminanceAndHoldsHue(t *testing.T) {
 	const w, h = 120, 40
 
 	flat, flatPre := shadeStopGrid(t, w, h, 7, pal, splashVariantFBM)
-	require.NotContains(t, flatten(flat), 0,
-		"sanity: at lumRange 0 no cell may decode into the shade grid at all")
+	// The control: at lumRange 0 every cell is blank or at its hue's *full* colour.
+	//
+	// Not "no cell decodes into the grid" — it cannot be, and asserting it would be
+	// vacuous. The grid's top stop is pinned to the gradient affix, so a lumRange 0
+	// cell decodes as stop 15 and is byte-indistinguishable from a shaded one at
+	// full luminance. That is the pin working, not a leak. What this rules out is
+	// any *dimmed* stop: the luminance axis must be entirely unused here, so that
+	// the spread found below is the new path running rather than noise.
+	for _, s := range flatten(flat) {
+		require.Containsf(t, []int{-1, splashLumStops - 1}, s,
+			"at lumRange 0 every cell must be blank or at its hue's full colour; got stop %d", s)
+	}
 
 	withLumRange(t, 0.5)
 	lit, litPre := shadeStopGrid(t, w, h, 7, pal, splashVariantFBM)
@@ -498,6 +529,7 @@ func TestShadeAffixBracketsMatchRender(t *testing.T) {
 			withColorProfile(t, prof)
 			pal := splashTestPalette()
 			lut := buildSplashLUT(pal)
+			colors := splashGradientColors(pal)
 			require.Equal(t, lut.rainIndex()+len(lut.rain), lut.shadeIndex(),
 				"the shade grid must start exactly one past rain's last stop")
 
@@ -505,7 +537,7 @@ func TestShadeAffixBracketsMatchRender(t *testing.T) {
 				for h := 0; h < splashLUTSize; h++ {
 					for l := 0; l < splashLumStops; l++ {
 						a := lut.shade[h*splashLumStops+l]
-						want := lipgloss.NewStyle().Foreground(lipgloss.Color(splashShadeHexAt(pal, h, l)))
+						want := lipgloss.NewStyle().Foreground(lipgloss.Color(shadeHexAt(colors, h, l)))
 						if l == splashLumStops-1 {
 							// The pin: the brightest stop is the gradient's own colour,
 							// not the curve's round-tripped approximation of it.

@@ -16,8 +16,6 @@ package ui
 import (
 	"math"
 
-	"github.com/ZviBaratz/atrium/ui/theme"
-
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
 )
@@ -28,13 +26,21 @@ import (
 // rain.
 const splashLumStops = 16
 
-// splashShade splits a cell's brightness between the density channel (which glyph)
-// and the luminance channel (how bright its colour is).
+// splashShade splits a cell's brightness between the density channel (how heavy the
+// mark is) and the luminance channel (how bright its colour is).
 //
 // dens*lum == lit for every lumRange: the split MOVES brightness between the two
-// channels, it never adds any. That is what keeps an opted-in variant as bright
-// overall as it was before, so lumRange tunes *how* a field shades rather than how
-// much of it there is.
+// channels, it never adds any. That is what makes lumRange a knob for *how* a field
+// shades rather than for how much of it there is — without the identity every
+// opted-in variant would come out systematically brighter or darker than it was, and
+// a screenshot round would tune around that error instead of the design.
+//
+// Two things it deliberately does not claim. It is an identity about the split, not
+// about pixels: each channel spends its share through its own non-linear curve (a
+// glyph index, a dot count, an L* ramp), so rendered brightness is preserved only
+// approximately — the identity removes the systematic error, not the curvature. And
+// it only reaches the screen for a caller that actually spends dens; splashBrailleMask
+// is the one branch that does not, and says there why that is a decision.
 //
 // The two endpoints are exact and transcendental-free, and that is load-bearing
 // twice over. They are the shading every shipped variant already uses — lumRange 0
@@ -86,7 +92,10 @@ func splashShade(lit, lumRange float64) (dens, lumT float64) {
 // paint the vignette's edges; what blanks them is that stop 0 is near-black ink on
 // a dark pane and never worth emitting.
 func shadeAt(hue int, lumT float64, ops splashOps, lut *splashLUT) (int, bool) {
-	if ops.lumRange == 0 {
+	// <= 0 rather than == 0 to match splashShade's own endpoint predicate: the two
+	// decide the same question about the same value and must not be able to
+	// disagree at the boundary.
+	if ops.lumRange <= 0 {
 		return hue, true
 	}
 	l := clampInt(int(lumT*float64(splashLumStops-1)), 0, splashLumStops-1)
@@ -98,13 +107,13 @@ func shadeAt(hue int, lumT float64, ops splashOps, lut *splashLUT) (int, bool) {
 
 // splashLumHexAt is the luminance curve, and it is the piece rain's ramp and the
 // shade grid genuinely share: hold the hue, walk L* from a near-black floor up to
-// the colour itself at u == 1, and let chroma fall alongside it.
+// the colour itself at u == 1, and let chroma fall alongside it under chromaHold.
 //
-// Chroma falling with luminance is a gamut concession rather than a look: a dim
-// cell cannot hold its hue's full chroma in sRGB. It does mean the bottom of every
-// column desaturates toward grey (8% of the hue's chroma at u=0.08, 33% at 0.33) —
-// measurably more than the gamut alone requires, so this is the first knob to
-// reach for if a shaded field's dim end reads grey rather than dark.
+// How fast chroma falls is a look rather than a gamut concession, and the
+// distinction is load-bearing: measured, sRGB allows 6.6x to 20x more chroma than
+// either law asks for at the dim end, and no stop clips under either. So the curve
+// is choosing, not conceding — which is why chromaHold is a parameter at all and why
+// its two callers choose differently. See rainChromaHold and shadeChromaHold.
 //
 // The floor is deliberately not black. A cell that dim renders blank (see the
 // l == 0 gate in Pass 2), so the floor is never itself emitted — what it does is
@@ -144,20 +153,6 @@ func splashShadeParse(c lipgloss.Color) colorful.Color {
 		return colorful.Color{R: 0.49, G: 0.81, B: 1}
 	}
 	return cc
-}
-
-// splashShadeHexAt is hue h's colour at luminance stop l. Split out from
-// buildShadeGrid for the same reason rainRampHexAt is split out of buildRainRamp:
-// the property that matters is that a column climbs in *luminance*, and asserting
-// that on colours is honest where parsing it back out of an SGR affix is not.
-//
-// Note the top stop is recomputed here and *pinned* in buildShadeGrid. The two
-// agree to within an HCL round-trip, which is precisely the discrepancy the pin
-// exists to remove — so this is the shape of the axis, and the grid is what
-// renders.
-func splashShadeHexAt(pal theme.Palette, h, l int) string {
-	lut := splashGradientColors(pal)
-	return splashLumHexAt(splashShadeParse(lut[h]), float64(l)/float64(splashLumStops-1), shadeChromaHold)
 }
 
 // buildShadeGrid builds the hue x luminance grid: every gradient stop, shaded down

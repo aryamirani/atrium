@@ -155,6 +155,22 @@ var brailleBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x
 // every dot, and the per-dot dither runs at sub-cell resolution so dot
 // patterns stay granular. A zero mask means "render a space" — bare U+2800
 // is never emitted (some fonts draw it as eight hollow circles).
+//
+// It deliberately does not spend splashShade's dens, and is the only branch that
+// does not: at lumRange > 0 a braille cell dims without its dot count rising to pay
+// for it (measured at 120x40, lumRange 0 -> 0.5: dots 3394 -> 3382, i.e. only the
+// gate, while the mean luminance stop falls 15.0 -> 9.2). Braille's density *is*
+// that dot count, so the lift would have to land here, per sub-cell, rather than on
+// a glyph index.
+//
+// That asymmetry is a decision, not an oversight. The screenshot gate on the shaded
+// nebula found that lifting density to decouple brightness necessarily makes density
+// more uniform — you buy tonal smoothness by spending the stipple — and braille's
+// halftone is nothing but stipple. The variant ships at lumRange 0 (see
+// splashVariant.ops), so this is unreached rather than latent. Opting it in is a
+// picture question rather than an algebra one; if the answer is ever yes, the change
+// is to take lumRange here and lift subLit through splashShade before the dither
+// compare, which measures at +141% dots and costs nothing at lumRange 0.
 func splashBrailleMask(col, row int, dx, dy, phase, lo, hi, envelope float64) uint8 {
 	qx, qy, _ := splashFBMWarpAt(dx, dy, phase)
 	wx, wy := warpAmp*qx, warpAmp*qy
