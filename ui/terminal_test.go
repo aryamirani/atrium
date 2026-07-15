@@ -268,7 +268,7 @@ func TestTerminalFallbackReadableOnNarrowPane(t *testing.T) {
 	require.Contains(t, strings.Join(strings.Fields(ansi.Strip(out)), ""),
 		strings.Join(strings.Fields("Select an instance to open a terminal"), ""),
 		"the message must survive the narrow pane — wrapped, not chopped")
-	require.NotContains(t, ansi.Strip(out), "█",
+	require.False(t, strings.ContainsAny(ansi.Strip(out), bannerGlyphs),
 		"a 48-col wordmark cannot render in 28 cols — it must be omitted, not sheared")
 	for i, l := range strings.Split(out, "\n") {
 		require.LessOrEqualf(t, lipgloss.Width(l), 28, "fallback line %d wider than the pane", i)

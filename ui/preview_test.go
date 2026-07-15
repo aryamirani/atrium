@@ -975,8 +975,12 @@ func TestPreviewPausedFallbackKeepsBranchAndWarningOnNarrowPane(t *testing.T) {
 	}
 }
 
-// bannerGlyphs are drawn only by the 48-col ATRIUM wordmark; no fallback message
-// contains them.
+// bannerGlyphs are drawn only by the 48-col ATRIUM wordmark: no fallback message
+// contains them, and neither do the splash field's ramps (" ·+*" and
+// " .·:;+=*oO0@"), so any one of them on screen means the banner rendered.
+// Matching the whole set rather than "█" alone is what gives the omission
+// assertions teeth — a sheared banner can lose every "█" and still leave "╔═╗"
+// behind, which is exactly the misrender #355 is about.
 const bannerGlyphs = "█╗╚═╝║╔░"
 
 // The wordmark is 48-col ASCII art: it cannot be wrapped (that shreds it) or
@@ -990,7 +994,7 @@ func TestPreviewFallbackBannerYieldsToTheMessage(t *testing.T) {
 		pane.SetSize(28, 13)
 		require.NoError(t, pane.UpdateContent(pausedInstance(t, "zvi/a-rather-long-branch-name")))
 
-		require.NotContains(t, xansi.Strip(pane.String()), "█",
+		require.False(t, strings.ContainsAny(xansi.Strip(pane.String()), bannerGlyphs),
 			"a 48-col wordmark cannot render in 28 cols — it must be omitted, not sheared")
 	})
 
@@ -999,7 +1003,7 @@ func TestPreviewFallbackBannerYieldsToTheMessage(t *testing.T) {
 		pane.SetSize(80, 20)
 		require.NoError(t, pane.UpdateContent(pausedInstance(t, "zvi/foo")))
 
-		require.Contains(t, xansi.Strip(pane.String()), "█",
+		require.True(t, strings.ContainsAny(xansi.Strip(pane.String()), bannerGlyphs),
 			"the wordmark must still render when the pane affords it")
 	})
 }
