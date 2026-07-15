@@ -667,9 +667,12 @@ func TestPollClaudePromptWrapTolerant(t *testing.T) {
 	s := pollSession(t, "claude", &c, nil)
 	require.Equal(t, PanePromptManual, s.Poll(), "a wrapped selection footer is still a prompt")
 
-	// Fetch dialog whose title wraps mid-sentence across three physical lines — the live
-	// width-28 capture (agent.claudeFetchNarrowPane). The matcher keys on the title, so
-	// flattening the anchored region is what reconstructs it.
+	// Fetch dialog whose title wraps mid-sentence across three physical lines. ABRIDGED
+	// from the live width-28 capture, not a transcription of one — the body and option 2 are
+	// dropped, keeping only the wrap this test is about. The verbatim pane is session/agent's
+	// claudeFetchNarrowPane, and that is where the matcher is pinned; this asserts the poll
+	// boundary consumes the match. The matcher keys on the title, so flattening the anchored
+	// region is what reconstructs it across the wrap.
 	wrappedDialog := strings.Join([]string{
 		"● Fetch(https://example.org)",
 		strings.Repeat("─", 28),
