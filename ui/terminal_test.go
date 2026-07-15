@@ -166,7 +166,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 
 		tp.mu.Lock()
 		require.True(t, tp.fallback, "should be in fallback mode for nil instance")
-		require.Contains(t, tp.fallbackText, "Select an instance", "fallback text should prompt to select instance")
+		require.Contains(t, tp.fallbackMessage, "Select an instance", "fallback text should prompt to select instance")
 		require.Empty(t, tp.content, "content should be empty in fallback mode")
 		tp.mu.Unlock()
 	})
@@ -187,7 +187,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 
 		tp.mu.Lock()
 		require.True(t, tp.fallback, "should be in fallback mode for paused instance")
-		require.Contains(t, tp.fallbackText, "paused", "fallback text should mention paused")
+		require.Contains(t, tp.fallbackMessage, "paused", "fallback text should mention paused")
 		tp.mu.Unlock()
 	})
 
@@ -205,7 +205,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 
 		tp.mu.Lock()
 		require.True(t, tp.fallback, "should be in fallback mode for not-started instance")
-		require.Contains(t, tp.fallbackText, "not started", "fallback text should indicate not started")
+		require.Contains(t, tp.fallbackMessage, "not started", "fallback text should indicate not started")
 		tp.mu.Unlock()
 	})
 }
@@ -251,10 +251,37 @@ func TestTerminalFallbackCentered(t *testing.T) {
 	}
 }
 
+// The terminal's fallback shares the preview's composer and so shared its #355
+// bug: its messages are short but still outrun a narrow pane ("Session is paused.
+// Resume to use terminal." is 42 cols against a reachable 28), and the wordmark
+// cannot render at all there. Fixing one pane and not the other would have left
+// the same misrender one tab over on the same paused session.
+func TestTerminalFallbackReadableOnNarrowPane(t *testing.T) {
+	log.Initialize(false)
+	defer log.Close()
+
+	tp := NewTerminalPane(context.Background())
+	tp.SetSize(28, 13)
+	require.NoError(t, tp.UpdateContent(nil))
+
+	out := tp.String()
+	require.Contains(t, strings.Join(strings.Fields(ansi.Strip(out)), ""),
+		strings.Join(strings.Fields("Select an instance to open a terminal"), ""),
+		"the message must survive the narrow pane — wrapped, not chopped")
+	require.False(t, strings.ContainsAny(ansi.Strip(out), bannerGlyphs),
+		"a 48-col wordmark cannot render in 28 cols — it must be omitted, not sheared")
+	for i, l := range strings.Split(out, "\n") {
+		require.LessOrEqualf(t, lipgloss.Width(l), 28, "fallback line %d wider than the pane", i)
+	}
+}
+
 // TestTerminalSplashParity locks the Terminal tab's idle empty state to the same
 // animated nebula as the preview: at an adequate size String() renders the field
 // (wordmark and prompt surviving, bounded), and below the floor it falls back to
-// the plain wordmark with no field glyphs.
+// the plain placeholder with no field glyphs. The placeholder keeps the wordmark
+// only where it fits — 48 cols affords it, narrower is the message alone (see
+// fallbackBlock) — so the below-floor case asserts the field is gone rather than
+// that the wordmark is present.
 func TestTerminalSplashParity(t *testing.T) {
 	log.Initialize(false)
 	defer log.Close()
@@ -282,7 +309,7 @@ func TestTerminalSplashParity(t *testing.T) {
 	small.SetSplashFrame(6)
 	require.NoError(t, small.UpdateContent(nil))
 	require.False(t, strings.ContainsAny(ansi.Strip(small.String()), fieldGlyphs),
-		"below the floor the terminal must render the plain wordmark, not the field")
+		"below the floor the terminal must render the plain placeholder, not the field")
 }
 
 func TestTerminalSessionCaching(t *testing.T) {

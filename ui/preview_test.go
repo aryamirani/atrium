@@ -917,9 +917,13 @@ func TestPreviewPausedFallbackPointsAtCopyKeyAndNeverClaimsAClipboardWrite(t *te
 		"nothing copies on pause — the fallback must not claim the clipboard was written")
 }
 
-// The fallback is composed width-unaware (setFallbackState never sees p.width)
-// and JoinVertical pads every line out to the block's longest, so an oversize
-// message line drags the banner right and MaxWidth chops the lot. A pane this
+// The clamp is #251's invariant, and it outlives the mechanism that used to
+// enforce it: whatever the fallback composes, it can never inflate the frame and
+// throw centered overlays off. fallbackBlock fits the block to the pane up front
+// now, so this guards the backstop rather than the fitting — which is exactly why
+// it is not enough on its own. It passed just as green back when the block was
+// composed width-unaware and MaxWidth sheared the banner mid-glyph; the #355 tests
+// below are the ones that read the render rather than measure it. A pane this
 // narrow is reachable: an 80-col terminal at maxListRatio leaves ~28.
 func TestPreviewPausedFallbackClampedToNarrowPane(t *testing.T) {
 	pane := NewPreviewPane()
@@ -931,5 +935,101 @@ func TestPreviewPausedFallbackClampedToNarrowPane(t *testing.T) {
 	for i, l := range lines {
 		require.LessOrEqualf(t, ansi.PrintableRuneWidth(l), 28,
 			"paused fallback line %d wider than the pane", i)
+	}
+}
+
+// squash strips ANSI and removes every run of whitespace, so a wrapped line can
+// be asserted against the text it was built from. Wrapping breaks a long branch
+// name across rows (cellbuf.Wrap force-breaks over-long tokens and inserts no
+// hyphen), so the name is never contiguous in the render — but it is contiguous
+// once the row breaks are squeezed out. This is the "content survived" assertion
+// the clamp tests below cannot make.
+func squash(s string) string { return strings.Join(strings.Fields(xansi.Strip(s)), "") }
+
+// #355: clamping is not the same as reading well. The two clamped-to-pane tests
+// pass on a render where MaxWidth has sheared the banner mid-glyph and chopped
+// the message to "Session is pau" — nothing overflows, and nothing is legible.
+// The branch is the whole point of this screen, and the "switch your main repo
+// off" line is a warning, so both must survive at the narrowest reachable pane.
+//
+// Note the branch name is not the only line that overflows here: "Switch your
+// main repo off this branch before resuming." is 54 cols with nothing
+// interpolated, against a 48-col banner. That is why truncating the branch (the
+// fix #355 originally proposed) cannot work — the prose wrapper alone is 35
+// cols, so this line overflows 28 even with an empty branch.
+func TestPreviewPausedFallbackKeepsBranchAndWarningOnNarrowPane(t *testing.T) {
+	const branch = "zvi/a-rather-long-branch-name"
+	pane := NewPreviewPane()
+	pane.SetSize(28, 13)
+	require.NoError(t, pane.UpdateContent(pausedInstance(t, branch)))
+
+	out := pane.String()
+	require.Contains(t, squash(out), branch,
+		"the branch to check out must survive the narrow pane — wrapped is fine, truncated is not")
+	require.Contains(t, squash(out), squash("Switch your main repo off this branch before resuming."),
+		"the warning must survive: MaxHeight drops from the bottom, where it lives")
+
+	for i, l := range strings.Split(out, "\n") {
+		require.LessOrEqualf(t, ansi.PrintableRuneWidth(l), 28,
+			"paused fallback line %d wider than the pane", i)
+	}
+}
+
+// bannerGlyphs are drawn only by the 48-col ATRIUM wordmark: no fallback message
+// contains them, and neither do the splash field's ramps (" ·+*" and
+// " .·:;+=*oO0@"), so any one of them on screen means the banner rendered.
+// Matching the whole set rather than "█" alone is what gives the omission
+// assertions teeth — a sheared banner can lose every "█" and still leave "╔═╗"
+// behind, which is exactly the misrender #355 is about.
+const bannerGlyphs = "█╗╚═╝║╔░"
+
+// The wordmark is 48-col ASCII art: it cannot be wrapped (that shreds it) or
+// truncated (that shears it mid-glyph) — it can only be omitted. So it is
+// decoration that yields, and the message is the payload that stays. The gate is
+// adaptive rather than a fixed floor because the message height varies: one line
+// for "Setting up workspace...", ~9 wrapped for the paused view at 28 cols.
+func TestPreviewFallbackBannerYieldsToTheMessage(t *testing.T) {
+	t.Run("dropped when it cannot fit", func(t *testing.T) {
+		pane := NewPreviewPane()
+		pane.SetSize(28, 13)
+		require.NoError(t, pane.UpdateContent(pausedInstance(t, "zvi/a-rather-long-branch-name")))
+
+		require.False(t, strings.ContainsAny(xansi.Strip(pane.String()), bannerGlyphs),
+			"a 48-col wordmark cannot render in 28 cols — it must be omitted, not sheared")
+	})
+
+	t.Run("kept when there is room", func(t *testing.T) {
+		pane := NewPreviewPane()
+		pane.SetSize(80, 20)
+		require.NoError(t, pane.UpdateContent(pausedInstance(t, "zvi/foo")))
+
+		require.True(t, strings.ContainsAny(xansi.Strip(pane.String()), bannerGlyphs),
+			"the wordmark must still render when the pane affords it")
+	})
+}
+
+// The invariant, stated once across the reachable size range: every line fits the
+// pane and the message always survives. 28 is an 80-col terminal at maxListRatio;
+// 52 is the same terminal at the default 0.30 ratio; 48 is exactly the wordmark's
+// width (the gate's boundary).
+func TestPreviewFallbackMessageSurvivesEverySize(t *testing.T) {
+	const branch = "zvi/a-rather-long-branch-name"
+	for _, w := range []int{28, 48, 52, 56, 80} {
+		for _, h := range []int{13, 20} {
+			pane := NewPreviewPane()
+			pane.SetSize(w, h)
+			require.NoError(t, pane.UpdateContent(pausedInstance(t, branch)))
+
+			out := pane.String()
+			require.Containsf(t, squash(out), branch, "%dx%d: branch must survive", w, h)
+			require.Containsf(t, squash(out), squash("Press 'r' to resume."),
+				"%dx%d: the resume key must survive", w, h)
+
+			lines := strings.Split(out, "\n")
+			require.LessOrEqualf(t, len(lines), h, "%dx%d: taller than the pane", w, h)
+			for i, l := range lines {
+				require.LessOrEqualf(t, ansi.PrintableRuneWidth(l), w, "%dx%d: line %d too wide", w, h, i)
+			}
+		}
 	}
 }

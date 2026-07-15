@@ -116,15 +116,21 @@ const (
 	rainRampFloor   = 0.06
 
 	// minSplashW/minSplashH gate the effect: below this the pane is too small
-	// for the field to read, so String() falls back to the plain wordmark. The
+	// for the field to read, so String() falls back to the plain placeholder. The
 	// width floor sits just above the 48-col wordmark; the height floor leaves
 	// room for a few ring rows above and below the ~10-row text block.
+	//
+	// That 48-col relationship is why the fallback is the *placeholder* and not
+	// simply the wordmark: this floor is only two columns above the art, so just
+	// below it the wordmark still fits and still renders — but keep narrowing (or
+	// shortening) and fallbackBlock drops it and shows the message alone.
 	minSplashW = 50
 	minSplashH = 18
 )
 
 // splashFits reports whether a pane is large enough to render the splash field
-// legibly. Callers fall back to the plain centered wordmark when it is not.
+// legibly. Callers fall back to the plain centered placeholder when it is not —
+// which keeps the wordmark only where it fits (see fallbackBlock), not always.
 func splashFits(w, h int) bool { return w >= minSplashW && h >= minSplashH }
 
 // SplashFits is splashFits for callers outside ui — the screensaver's entry
