@@ -60,6 +60,11 @@ const (
 	// z-fog carries distance in luminance, and hue bands by depth into coloured
 	// rings receding down the wall.
 	splashVariantTunnel
+	// splashVariantRipple ("h") is drops falling on a dark pool: each one flashes
+	// where it lands and expands into a ring that shifts hue as it ages, and the
+	// rings interfere where they cross. The roster's event entry — the only field
+	// with a birth and a death in it rather than a steady state.
+	splashVariantRipple
 
 	// splashVariantCount is the enum's cardinality, not a variant — it must
 	// stay last. It exists so the tests can prove they cover every variant:
@@ -76,6 +81,26 @@ func (v splashVariant) isFractal() bool {
 	return v == splashVariantJulia || v == splashVariantMandala
 }
 
+// hueIsAux groups the variants whose hue is a property of their own field rather
+// than of the cell's address, so splashColorIdx spends their aux straight as the
+// gradient position instead of mixing it with radius and swirl.
+//
+// It is a predicate here rather than a splashOps field on purpose. Hue mapping
+// looks like Pass-2 policy, and splashOps is where Pass-2 policy lives — but
+// rain never reaches splashColorIdx at all (it draws from its own ramp), so an
+// ops field would have to carry a value for rain that nothing reads, which is
+// the shape of the dimToRim bug this package already shipped once. A predicate
+// is answerable for every variant because it describes the field, not the
+// renderer, and it sits beside isFractal, which groups julia and mandala for the
+// same reason: a hue rule shared by more than one variant.
+//
+// What the members have in common is that aux already *is* the gradient position
+// — the tunnel's mipped depth band, ripple's ring age. See splashColorIdx's arm
+// for why the default mix is not merely different for them but wrong.
+func (v splashVariant) hueIsAux() bool {
+	return v == splashVariantTunnel || v == splashVariantRipple
+}
+
 // splashDefaultVariant is the fallback for an unrecognized override value
 // (an unset override rotates instead — see splashActiveVariant) and the
 // variant the contract tests pin.
@@ -87,7 +112,7 @@ const splashDefaultVariant = splashVariantFBM
 var splashRotation = []splashVariant{
 	splashVariantFBM, splashVariantBraille, splashVariantFlow,
 	splashVariantJulia, splashVariantMandala, splashVariantRain,
-	splashVariantTunnel,
+	splashVariantTunnel, splashVariantRipple,
 }
 
 // splashVariantNames maps the user-facing pattern names (config.SplashVariants,
@@ -101,6 +126,7 @@ var splashVariantNames = map[string]splashVariant{
 	"mandala":  splashVariantMandala,
 	"plasma":   splashVariantLegacy,
 	"rain":     splashVariantRain,
+	"ripple":   splashVariantRipple,
 	"tunnel":   splashVariantTunnel,
 }
 
@@ -115,8 +141,19 @@ var splashVariantNames = map[string]splashVariant{
 // rings and radial spokes, so an ellipse bitten out of them reads as a rendering
 // fault rather than as space. It needs the clearing least of all — the fog
 // already opens a black core exactly where the wordmark sits.
+//
+// Ripple is the sharpest case of the three. A ring is a single closed curve, so
+// a clearing does not thin it — it takes a bite out of it, and a circle with an
+// arc missing is not sparser weather, it is a broken circle. The pool between
+// drops is already black anyway, so a margin of quiet is the one thing this
+// field has plenty of.
 func (v splashVariant) structured() bool {
-	return v == splashVariantRain || v == splashVariantTunnel
+	switch v {
+	case splashVariantRain, splashVariantTunnel, splashVariantRipple:
+		return true
+	default:
+		return false
+	}
 }
 
 // splashOps is a variant's Pass-2 policy: how its raw field is turned into
@@ -245,6 +282,47 @@ func (v splashVariant) baseOps() splashOps {
 			dimToRim: 0,
 			breathes: false,
 		}
+	case v == splashVariantRipple:
+		return splashOps{
+			// Clip nothing, and here that is not the usual "the field has its own
+			// gradient" argument — it is that a drop *dies*. Its ring decays to zero
+			// on purpose, and the fBm's window erases everything under Lo, so a
+			// decaying ring would not fade out: it would vanish the instant its peak
+			// crossed 0.36, popping off the pool a third of the way through its life.
+			// The fade is the death, so the window has to let it happen.
+			contrastLo: 0, contrastHi: 1,
+			// A ring is a thin closed line of cells. Per-cell noise does not smooth a
+			// line, it eats holes in it.
+			dither: false,
+			// The one new variant that keeps the starfield, because for once fixed
+			// points are *right*: this field is a dark pool, and a still pool
+			// reflects a still sky. Rain and the tunnel had to drop the stars because
+			// the eye tracks their motion and a fixed point in a moving field reads
+			// as a stuck pixel — but nothing here travels except the rings, and the
+			// pool between them is empty enough to want the company.
+			stars: true,
+			// Ripple's ring decay is a gradient with no stipple to spend, so the
+			// luminance channel is exactly what it was built for — but this one stops
+			// short of rain's and the tunnel's 1, and the sweep is what decided it.
+			//
+			// At 1 every lit cell is a solid '@' and the rings read as a bitmap of
+			// bubbles: correct, and less like something a terminal drew. At 0.75 the
+			// crests get the density ramp back (a band steps o → O → 0 → @ across its
+			// width) while the tail keeps enough of its brightness in the colour to
+			// stay dim rather than breaking into the scatter of dots that is this
+			// palette's whole defect. Below that the ramp reaches into the packet's
+			// faint halo and the halo is most of the field's area — at 0.5 it renders
+			// as confetti around every ring.
+			lumRange: 0.75,
+			// dimToRim is a glow from the wordmark, and this field has no depth for
+			// it to fight — but it has no depth for it to *mean* anything either, so
+			// it would simply make the drops at the edge of the pane dimmer than the
+			// ones near the middle for no reason the picture can account for.
+			// breathes would swell every ring at once, which is a flicker over a
+			// field whose whole subject is things happening at different times.
+			dimToRim: 0,
+			breathes: false,
+		}
 	case v.isFractal():
 		// The trap glow is already contrasty; a wide window keeps its range.
 		return splashOps{
@@ -344,6 +422,8 @@ var splashEnvVariant = sync.OnceValues(func() (splashVariant, bool) {
 		return splashVariantRain, true
 	case "g":
 		return splashVariantTunnel, true
+	case "h":
+		return splashVariantRipple, true
 	}
 	return splashDefaultVariant, true
 })
