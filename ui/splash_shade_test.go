@@ -184,6 +184,11 @@ func TestShippedVariantsLumRange(t *testing.T) {
 		// spend on the trade. A literal rather than the constant baseOps reads, so
 		// this stays a change-detector instead of comparing a name to itself.
 		splashVariantTunnel: 1,
+		// Ripple's rings decay to nothing, which is a gradient with no stipple to
+		// spend — but unlike rain and the tunnel it stops short of 1, keeping the
+		// density ramp for its crests while the luminance carries the tail. The
+		// value came from a rendered sweep; see baseOps.
+		splashVariantRipple: 0.75,
 	}
 	require.Len(t, want, int(splashVariantCount),
 		"every variant needs an explicit lumRange here — a new one must make a choice, "+

@@ -101,6 +101,7 @@ func splashTestVariants() map[string]splashVariant {
 		"mandala": splashVariantMandala,
 		"rain":    splashVariantRain,
 		"tunnel":  splashVariantTunnel,
+		"ripple":  splashVariantRipple,
 	}
 }
 

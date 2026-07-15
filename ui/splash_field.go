@@ -262,26 +262,29 @@ func splashFBMBody(x, y, phase float64) float64 {
 // multi-hued nebula. Legacy keeps its original formula, where aux is the
 // warped angle its swirl has always used; noise variants use the unwarped
 // angle and add the warp magnitude (their aux) for layered gas-cloud hues.
-// The tunnel opts out of the swirl entirely and spends its aux as the gradient
-// position directly — its hue is depth, and screen position must not enter it
-// (see the arm below).
+// The tunnel and ripple opt out of the swirl entirely and spend their aux as
+// the gradient position directly — their hue is a property of the field itself
+// (depth; ring age), and screen position must not enter it (see the arm below).
 func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float64, nColors int) int {
 	var colorT float64
 	switch {
 	case variant == splashVariantLegacy:
 		swirl := 0.5 + 0.5*math.Sin(aux+dRaw*colorSwirlF-phase*colorSwirlSpeed)
 		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
-	case variant == splashVariantTunnel:
-		// Hue is depth, and nothing else. aux already *is* the mipped depth band
-		// (see splashTunnelAtFor), so it is spent straight: rings of colour receding
-		// down the corridor, each one a surface of constant distance.
+	case variant == splashVariantTunnel || variant == splashVariantRipple:
+		// The two variants whose hue is a property of their own field rather than
+		// of the cell's address. aux already *is* the gradient position — the
+		// tunnel's mipped depth band (splashTunnelAtFor), ripple's ring age
+		// (splashRippleSum) — so it is spent straight: rings of colour receding
+		// down a corridor, and rings of colour spreading from a drop.
 		//
-		// Explicitly not the default mix. Its radius and swirl terms are screen
-		// position, which on this variant would paint a stationary rosette over a
-		// moving wall and pin the hue to the pane instead of to the tunnel — the
-		// rings would stop receding, which is the entire effect. The mix would also
-		// re-introduce the angle, and with it a hue seam at a = ±π that the wall's
-		// own wrap exists to prevent.
+		// Explicitly not the default mix, which is what this arm is for. Its radius
+		// and swirl terms are screen position, so they would paint a stationary
+		// rosette over a moving field and pin hue to the pane rather than to the
+		// thing being drawn — the tunnel's rings would stop receding and ripple's
+		// would stop carrying their colour outward, each of which is the whole
+		// effect. The mix would also re-introduce the angle, and with it a hue seam
+		// at a = ±π that the tunnel's own wrap exists to prevent.
 		colorT = clamp01(aux)
 	case variant.isFractal():
 		theta := math.Atan2(dy, dx)
@@ -429,6 +432,8 @@ func splashFieldAt(v splashVariant, maxD float64) splashPointFn {
 		return splashRainAt
 	case splashVariantTunnel:
 		return splashTunnelAtFor(maxD)
+	case splashVariantRipple:
+		return splashRippleAt
 	default:
 		return splashFBMAt
 	}
