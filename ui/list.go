@@ -871,9 +871,9 @@ func (l *List) isHidden(idx int) bool {
 
 // MoveNeighborHidden reports whether the sibling J/K would swap the selection with is
 // not on screen. Reordering is the one subsystem that never learned the filter: a swap
-// against a row isHidden suppresses changes — and persists — an order with nothing
-// visibly moving (#339). MoveUp/MoveDown refuse on it and the app calls it too, to
-// explain the refusal rather than leave a silent no-op (the GroupMoveCrossesAccount
+// against a row that isHidden suppresses will change — and persist — an order with
+// nothing visibly moving (#339). MoveUp/MoveDown refuse on it and the app calls it too,
+// to explain the refusal rather than leave a silent no-op (the GroupMoveCrossesAccount
 // contract). Like that predicate it is direction-aware and false at the edges, so a plain
 // "already first/last" no-op stays plain: it reports only a neighbor that exists, is a
 // group sibling (a different repo is the group-boundary no-op, not a hidden neighbor),
@@ -923,11 +923,10 @@ func (l *List) GroupMoveNeighborHidden(up bool) bool {
 
 // AccountMoveNeighborHidden reports whether the account cluster that [ / ] would swap the
 // selected cluster with is one that renders nothing — the cluster-level twin of the two
-// above. It
-// keys off accountSequence, which walks items and so still lists clusters the filter has
-// emptied: swapping with one of those rewrites accountOrder while the rendered order
-// stands still, which is the form #339 confirmed live. As with the block case only a
-// filter can empty a cluster.
+// above. It keys off accountSequence, which walks items and so still lists clusters the
+// filter has emptied: swapping with one of those rewrites accountOrder while the rendered
+// order stands still, which is the form #339 confirmed live. As with the block case only
+// a filter can empty a cluster.
 func (l *List) AccountMoveNeighborHidden(up bool) bool {
 	if !l.AccountReorderEnabled() {
 		return false
