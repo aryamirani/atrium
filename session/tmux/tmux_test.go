@@ -440,7 +440,7 @@ func TestPollClaudeIdleAndPrompt(t *testing.T) {
 	s := pollSession(t, "claude", &c, nil)
 	require.Equal(t, PaneIdle, s.Poll(), "idle input box with no marker is idle immediately")
 
-	c = "Do this? \n  No, and tell Claude what to do differently"
+	c = claudeFetchPane
 	require.Equal(t, PanePrompt, s.Poll(), "a tool-permission y/n prompt takes precedence")
 }
 
@@ -667,8 +667,24 @@ func TestPollClaudePromptWrapTolerant(t *testing.T) {
 	s := pollSession(t, "claude", &c, nil)
 	require.Equal(t, PanePromptManual, s.Poll(), "a wrapped selection footer is still a prompt")
 
-	// Permission dialog whose decline option wraps mid-sentence.
-	wrappedDialog := "Do you want to proceed?\n  Yes\n  No, and tell Claude what to do\ndifferently"
+	// Fetch dialog whose title wraps mid-sentence across three physical lines. ABRIDGED
+	// from the live width-28 capture, not a transcription of one — the body and option 2 are
+	// dropped, keeping only the wrap this test is about. The verbatim pane is session/agent's
+	// claudeFetchNarrowPane, and that is where the matcher is pinned; this asserts the poll
+	// boundary consumes the match. The matcher keys on the title, so flattening the anchored
+	// region is what reconstructs it across the wrap.
+	wrappedDialog := strings.Join([]string{
+		"● Fetch(https://example.org)",
+		strings.Repeat("─", 28),
+		" Fetch",
+		" Do you want to allow",
+		" Claude to fetch this",
+		" content?",
+		" ❯ 1. Yes",
+		"   3.No, and tell Claude",
+		"     what to do differently",
+		"     (esc)",
+	}, "\n")
 	c = wrappedDialog
 	s = pollSession(t, "claude", &c, nil)
 	require.Equal(t, PanePrompt, s.Poll(), "a wrapped permission dialog is still a prompt")
@@ -685,16 +701,22 @@ func TestPollClaudePromptWrapTolerant(t *testing.T) {
 }
 
 // Regression: capture-pane includes the scrolled-back transcript, so the marker strings
-// can appear in the agent's own words. Detection must look only at the bottom chrome, and
+// can appear in the agent's own words. Detection must look only at the live chrome, and
 // the selection footer must require its structural tokens — a bare "Esc to cancel"
 // sentence in prose must not trigger the prompt state.
+//
+// The quote sits DIRECTLY above the composer, which is where an agent's own last message
+// lands. It used to sit 20 filler lines up, which only ever proved that a distant quote is
+// out of the bottom-N window — the easy half, and not the shape #343 reported: the flat
+// window's failure was a quote INSIDE it, one an idle pane never scrolls away. The box is
+// real here (rule / ❯ / rule / footer, as claude renders it) so the exclusion is structural.
 func TestPollIgnoresMarkersInScrollback(t *testing.T) {
 	body := "I added the \"esc to interrupt\" marker and matched the\n" +
 		"\"Esc to cancel\" footer, plus the literal option text\n" +
 		"\"No, and tell Claude what to do differently\".\n"
-	pad := strings.Repeat("a normal line of build output\n", 20)
-	idleFooter := "❯ \n⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
-	c := body + pad + idleFooter
+	rule := strings.Repeat("─", 60)
+	idleBox := rule + "\n❯ \n" + rule + "\n⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+	c := body + idleBox
 	s := pollSession(t, "claude", &c, nil)
 	require.Equal(t, PaneIdle, s.Poll(),
 		"markers and a bare \"Esc to cancel\" in the scrolled-back body must be ignored")
@@ -978,7 +1000,7 @@ func TestHasUpdatedShim(t *testing.T) {
 	require.True(t, u)
 	require.False(t, p)
 
-	c = "No, and tell Claude what to do differently"
+	c = claudeFetchPane
 	u, p = s.HasUpdated()
 	require.False(t, u)
 	require.True(t, p)
