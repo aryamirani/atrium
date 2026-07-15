@@ -193,7 +193,7 @@ var (
 // per-octave rotated by the exact Pythagorean matrix (0.8, 0.6; −0.6, 0.8) —
 // are blended with a weak ring anchored on the wordmark. Returns the raw
 // value in [0,1] and the normalized warp magnitude (the hue helper).
-func splashFBMAt(dx, dy, phase float64) (val, qLen float64) {
+func splashFBMAt(_, _ int, dx, dy, phase float64) (val, qLen float64) {
 	qx, qy, qq := splashFBMWarpAt(dx, dy, phase)
 	return splashFBMBody(dx+warpAmp*qx, dy+warpAmp*qy, phase), clamp01(qq * fbmHueWarpScale)
 }
@@ -342,24 +342,35 @@ type splashField struct {
 // aspect-corrected coordinates (dx, dy) — the same frame the envelopes and
 // color gradient use in Pass 2. Buffers are per-call allocations; at splash
 // sizes (19 KB at 80×30) that is cheaper than any pooling would be worth.
-func splashEvalField(w, h int, cx, cyFocal, phase float64, at func(dx, dy, phase float64) (float64, float64)) splashField {
+func splashEvalField(w, h int, cx, cyFocal, phase float64, at splashPointFn) splashField {
 	f := splashField{vals: make([]float64, w*h), aux: make([]float64, w*h)}
 	i := 0
 	for row := 0; row < h; row++ {
 		dy := (float64(row) - cyFocal) * cellAspect
 		for col := 0; col < w; col++ {
 			dx := float64(col) - cx
-			f.vals[i], f.aux[i] = at(dx, dy, phase)
+			f.vals[i], f.aux[i] = at(col, row, dx, dy, phase)
 			i++
 		}
 	}
 	return f
 }
 
+// splashPointFn evaluates one cell's raw field value and its hue helper, both
+// in [0,1]. It must be pure over its arguments: animation enters only through
+// phase, and randomness only through the integer lattice hash.
+//
+// The continuous (dx, dy) is the focal-relative, aspect-corrected position and
+// is what the field math wants. The integer (col, row) is the cell's identity,
+// which per-column effects need and cannot recover from dx: dx is col - cx, and
+// cx is a half-integer on even-width panes, so a generator would have to guess
+// the pane's parity to round back to a column. Most evaluators ignore it.
+type splashPointFn func(col, row int, dx, dy, phase float64) (val, aux float64)
+
 // splashFieldAt returns the per-point field evaluator for a variant. Exposed
 // as a point function (not just a buffer fill) so sub-cell techniques can
 // re-sample the same field at finer positions.
-func splashFieldAt(v splashVariant) func(dx, dy, phase float64) (val, aux float64) {
+func splashFieldAt(v splashVariant) splashPointFn {
 	switch v {
 	case splashVariantLegacy:
 		return splashLegacyAt
@@ -367,6 +378,8 @@ func splashFieldAt(v splashVariant) func(dx, dy, phase float64) (val, aux float6
 		return splashJuliaAt
 	case splashVariantMandala:
 		return splashMandalaAt
+	case splashVariantRain:
+		return splashRainAt
 	default:
 		return splashFBMAt
 	}
@@ -376,7 +389,7 @@ func splashFieldAt(v splashVariant) func(dx, dy, phase float64) (val, aux float6
 // two domain-warped ring octaves + rotationally-symmetric petals + an
 // isotropic fine texture (three plane waves 120° apart, so no diagonal
 // grain). Returns the raw value and the warped angle (its swirl input).
-func splashLegacyAt(dx, dy, phase float64) (val, theta float64) {
+func splashLegacyAt(_, _ int, dx, dy, phase float64) (val, theta float64) {
 	wx := dx + plasmaWarp*math.Sin(dy*plasmaWarpF-phase*0.4)
 	wy := dy + plasmaWarp*math.Sin(dx*plasmaWarpF-phase*0.4)
 	d := math.Hypot(wx, wy)
@@ -432,22 +445,17 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	maxGlyph := len(ramp) - 1
 	starRampR := []rune(starRamp)
 	starMax := len(starRampR) - 1
-	// Slow global brightness swell (breathing), computed once per frame.
-	breathe := 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
-	// Per-variant Pass-2 behavior: the legacy field keeps its wide contrast
-	// window and no dither (it stays a faithful baseline); noise variants get
-	// the narrower fBm window, fractals a wide one (trap glow is already
-	// contrasty); both get dithering.
-	contrastLo, contrastHi := splashContrastLo, splashContrastHi
-	dither := false
-	switch {
-	case variant == splashVariantLegacy:
-	case variant.isFractal():
-		contrastLo, contrastHi = fractalContrastLo, fractalContrastHi
-		dither = true
-	default:
-		contrastLo, contrastHi = fbmContrastLo, fbmContrastHi
-		dither = true
+	// Per-variant Pass-2 policy: contrast window, dither, starfield, the
+	// envelope terms, and how the field is shaded (see splashVariant.ops).
+	ops := variant.ops()
+	contrastLo, contrastHi := ops.contrastLo, ops.contrastHi
+	dither := ops.dither
+	// Slow global brightness swell (breathing), computed once per frame. A field
+	// already in motion opts out: it would flicker everything at once, and it
+	// costs the brightest cells the top of their range.
+	breathe := 1.0
+	if ops.breathes {
+		breathe = 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
 	}
 
 	var sb strings.Builder
@@ -480,10 +488,26 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 				// filaments against darker voids.
 				intensity := smoothstep(contrastLo, contrastHi, fld.vals[cell])
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
-				radial := 1 - radialDim*clamp01(dRaw/maxD)
+				radial := 1 - ops.dimToRim*clamp01(dRaw/maxD)
 				envelope := edgeX * edgeY * radial * breathe
 				lit := intensity * envelope
-				if variant == splashVariantBraille && lit < brailleBandHi {
+				if ops.lumRamp {
+					// A luminance-shaded field: brightness rides the colour ramp,
+					// so the glyph holds a constant visual weight and a dim cell
+					// is the same mark, only darker. Pushing the fade through the
+					// density ramp instead substitutes size for brightness — a
+					// fading stream renders as a column of dots.
+					//
+					// g == 0 stays blank rather than emitting the ramp's floor:
+					// the floor anchors the ramp's shape (see buildRainRamp), but
+					// painting it would put a near-black glyph *over* the terminal
+					// background, which is a mark where the design wants none. So
+					// stop 0 is never emitted and the tail dies into the pane.
+					if g := clampInt(int(lit*float64(len(lut.rain)-1)), 0, len(lut.rain)-1); g > 0 {
+						ch = splashRainGlyph(col, row, phase)
+						idx = lut.rainIndex() + g
+					}
+				} else if variant == splashVariantBraille && lit < brailleBandHi {
 					// Faint gas: refine to sub-cell braille dots instead of a
 					// (coarse) ramp glyph; bright cores keep the solid ramp.
 					if mask := splashBrailleMask(col, row, dx, dy, phase, contrastLo, contrastHi, envelope); mask != 0 {
@@ -512,7 +536,9 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 				}
 				// Starfield on top: a fixed, twinkling point can light even a void
 				// the plasma left dark. Fades with the same border vignette.
-				if sh := starHash(col, row); sh > starThreshold {
+				// Variants whose own motion the eye tracks opt out — fixed points
+				// over moving ones read as stuck pixels.
+				if sh := starHash(col, row); ops.stars && sh > starThreshold {
 					tw := 0.7 + 0.3*math.Sin(phase*starTwinkleSpeed+sh*starPhaseScatter)
 					if sg := clampInt(int(tw*edgeX*edgeY*float64(starMax)), 0, starMax); sg > 0 {
 						ch = starRampR[sg]
