@@ -67,6 +67,32 @@ func (m *home) moveAndPersist(move func() bool) (tea.Model, tea.Cmd) {
 	return m, m.instanceChanged()
 }
 
+// hiddenNeighborNotice explains a reorder refused because the thing it would swap with
+// is not on screen — the move would change, and persist, an order with nothing visibly
+// moving (#339). scope names what the key moves ("session", "group", "cluster") — the
+// one ladder every reorder notice names its scope by, which the sibling refusals in
+// handleKeyPress share (#346).
+//
+// These sibling notices lead with the scope ("group reorder stays within an account")
+// while this one leads with the verb, and that difference is deliberate: they state a
+// standing rule, whose scope must be named or it over-claims (the bug #346 fixed in the
+// status-sort hint), whereas this reports one refused move, whose scope the keypress
+// already fixed and the object noun echoes. Scope and object are one-to-one here, so
+// naming both would only repeat the sentence back to the user.
+//
+// The filter is named whenever one is live, because it overrides a fold in the render
+// (see ui.List.isHidden): a folded group under a filter is on screen expanded, so blaming
+// the fold would describe something the user cannot see — and following that advice would
+// persist an expand while the reorder stayed refused. Only a filter can empty a whole
+// group or cluster (a folded block still renders its header), so the fold half is
+// reachable only for a session.
+func (m *home) hiddenNeighborNotice(scope string) string {
+	if m.list.Filtering() {
+		return "reorder won't swap past a filter-hidden " + scope + " (esc to clear)"
+	}
+	return "reorder won't swap past a folded " + scope + " (→ to expand)"
+}
+
 // showMenuNotice shows a transient toast on the hint bar's reserved row when the
 // bar is up, returning the command that auto-hides it; it returns nil (showing
 // nothing) when the row isn't available — the hint bar is off, or a modal owns
