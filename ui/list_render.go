@@ -378,7 +378,7 @@ func (l *List) String() string {
 	// Render the filter bar as the first line(s) when a query is present or the user is
 	// actively typing. Appending here keeps appendBlock's selStart/selH bookkeeping correct
 	// for the rows that follow.
-	if l.filterQuery != "" || l.filterActive {
+	if l.Filtering() || l.filterActive {
 		cursor := ""
 		if l.filterActive {
 			cursor = theme.Current().Glyphs.TextCursor
@@ -397,7 +397,7 @@ func (l *List) String() string {
 	// group renders only its header (which doubles as its anchor's row) and suppresses its
 	// members. An active filter is the sole visibility gate and overrides collapse (see
 	// isHidden), so a folded group expands to reveal its matches while filtering.
-	filtering := l.filterQuery != ""
+	filtering := l.Filtering()
 	distinct := l.distinctRepoCount()
 	showRepos := distinct > 0
 	foldable := distinct > 1

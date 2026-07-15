@@ -381,6 +381,13 @@ func (l *List) ClearFilter() {
 // FilterQuery returns the current filter string.
 func (l *List) FilterQuery() string { return l.filterQuery }
 
+// Filtering reports whether a filter is narrowing the list. It is the single spelling of
+// that condition: every visibility read goes through it (isHidden, rowNeedsUser, the
+// renderer), and the app calls it to tell a filter-hidden neighbor apart from a folded
+// one when explaining a refused reorder. FilterQuery remains for reads of the value
+// itself (echoing it in the filter bar, appending a typed rune).
+func (l *List) Filtering() bool { return l.filterQuery != "" }
+
 // SetFilterActive sets whether the user is currently typing the filter. This drives
 // the cursor indicator in the rendered filter bar.
 func (l *List) SetFilterActive(active bool) { l.filterActive = active }
@@ -549,7 +556,7 @@ func (l *List) nextActionable(member func(*session.Instance) bool, groupCount fu
 // badge; otherwise (and always under a filter, where matches surface individually)
 // the per-row predicate applies.
 func (l *List) rowNeedsUser(idx int, member func(*session.Instance) bool, groupCount func(start, end int) int) bool {
-	if l.filterQuery == "" && l.effectiveCollapsed(repoKey(l.items[idx])) {
+	if !l.Filtering() && l.effectiveCollapsed(repoKey(l.items[idx])) {
 		start, end := l.groupBounds(idx)
 		return groupCount(start, end) > 0
 	}
@@ -737,7 +744,7 @@ func (l *List) siblingInGroup(inst *session.Instance, dir int, ok func(*session.
 	if dir < 0 {
 		step = -1
 	}
-	// Walk the group ring from the neighbour outward, wrapping within [start, end).
+	// Walk the group ring from the neighbor outward, wrapping within [start, end).
 	for k := 1; k < n; k++ {
 		off := ((idx-start)+step*k)%n + n
 		cand := l.items[start+off%n]
@@ -761,10 +768,18 @@ func (l *List) MoveUp() bool {
 		return false
 	}
 	// A collapsed group shows no siblings to swap with, so within-group reorder is inert.
-	if l.effectiveCollapsed(repoKey(l.items[l.selectedIdx])) {
+	// A filter overrides the fold in the render (see isHidden), so the flag is not the
+	// truth while one is live: the group is on screen expanded, and its rows reorder like
+	// any other. MoveNeighborHidden below is what keeps the swap honest there.
+	if !l.Filtering() && l.effectiveCollapsed(repoKey(l.items[l.selectedIdx])) {
 		return false
 	}
 	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[l.selectedIdx-1]) {
+		return false
+	}
+	// Never swap past a sibling that is not on screen; MoveNeighborHidden is the single
+	// definition, and the app calls it too to explain this refusal.
+	if l.MoveNeighborHidden(true) {
 		return false
 	}
 	return l.applyWithinGroupSwap(l.items[l.selectedIdx], l.items[l.selectedIdx-1], -1)
@@ -779,10 +794,15 @@ func (l *List) MoveDown() bool {
 	if l.selectedIdx >= len(l.items)-1 || len(l.items) < 2 {
 		return false
 	}
-	if l.effectiveCollapsed(repoKey(l.items[l.selectedIdx])) {
+	// Same fold gate as MoveUp, and likewise yielding to a live filter.
+	if !l.Filtering() && l.effectiveCollapsed(repoKey(l.items[l.selectedIdx])) {
 		return false
 	}
 	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[l.selectedIdx+1]) {
+		return false
+	}
+	// Same on-screen gate as MoveUp, via the single MoveNeighborHidden source.
+	if l.MoveNeighborHidden(false) {
 		return false
 	}
 	return l.applyWithinGroupSwap(l.items[l.selectedIdx], l.items[l.selectedIdx+1], +1)
@@ -839,7 +859,7 @@ func (l *List) effectiveCollapsed(key string) bool {
 // takes precedence over collapse so matches buried inside a folded group still surface.
 // With no active filter, an item is hidden when it is a non-anchor member of a collapsed group.
 func (l *List) isHidden(idx int) bool {
-	if l.filterQuery != "" {
+	if l.Filtering() {
 		return !l.filterMatches(l.items[idx])
 	}
 	if !l.effectiveCollapsed(repoKey(l.items[idx])) {
@@ -847,6 +867,102 @@ func (l *List) isHidden(idx int) bool {
 	}
 	start, _ := l.groupBounds(idx)
 	return idx != start
+}
+
+// MoveNeighborHidden reports whether the sibling J/K would swap the selection with is
+// not on screen. Reordering is the one subsystem that never learned the filter: a swap
+// against a row isHidden suppresses changes — and persists — an order with nothing
+// visibly moving (#339). MoveUp/MoveDown refuse on it and the app calls it too, to
+// explain the refusal rather than leave a silent no-op (the GroupMoveCrossesAccount
+// contract). Like that predicate it is direction-aware and false at the edges, so a plain
+// "already first/last" no-op stays plain: it reports only a neighbor that exists, is a
+// group sibling (a different repo is the group-boundary no-op, not a hidden neighbor),
+// and is suppressed. isHidden covers both ways to hide, so a folded group's members are
+// reported here too — the app words the two apart.
+func (l *List) MoveNeighborHidden(up bool) bool {
+	if len(l.items) < 2 || l.selectedIdx < 0 || l.selectedIdx >= len(l.items) {
+		return false
+	}
+	n := l.selectedIdx + 1
+	if up {
+		n = l.selectedIdx - 1
+	}
+	if n < 0 || n >= len(l.items) {
+		return false
+	}
+	if repoKey(l.items[l.selectedIdx]) != repoKey(l.items[n]) {
+		return false
+	}
+	return l.isHidden(n)
+}
+
+// GroupMoveNeighborHidden reports whether the repo block that { / } would transpose the
+// selected block with is one that renders nothing at all — the block-level twin of
+// MoveNeighborHidden, and false at the edges for the same reason. A block is absent from
+// the screen only when every one of its rows is filtered out, which is exactly the
+// visibleCount == 0 test List.String uses to skip it; a *folded* block still renders its
+// header, so unlike the row case this can only ever be the filter's doing.
+func (l *List) GroupMoveNeighborHidden(up bool) bool {
+	if len(l.items) == 0 {
+		return false
+	}
+	start, end := l.groupBounds(l.selectedIdx)
+	if up {
+		if start <= 0 {
+			return false
+		}
+		prevStart, prevEnd := l.groupBounds(start - 1)
+		return l.visibleCount(prevStart, prevEnd) == 0
+	}
+	if end >= len(l.items) {
+		return false
+	}
+	nextStart, nextEnd := l.groupBounds(end)
+	return l.visibleCount(nextStart, nextEnd) == 0
+}
+
+// AccountMoveNeighborHidden reports whether the account cluster that [ / ] would swap the
+// selected cluster with is one that renders nothing — the cluster-level twin of the two
+// above. It
+// keys off accountSequence, which walks items and so still lists clusters the filter has
+// emptied: swapping with one of those rewrites accountOrder while the rendered order
+// stands still, which is the form #339 confirmed live. As with the block case only a
+// filter can empty a cluster.
+func (l *List) AccountMoveNeighborHidden(up bool) bool {
+	if !l.AccountReorderEnabled() {
+		return false
+	}
+	start, _ := l.groupBounds(l.selectedIdx)
+	if start < 0 || start >= len(l.items) {
+		return false
+	}
+	seq := l.accountSequence()
+	i := indexOfString(seq, accountKey(l.items[start]))
+	if i < 0 {
+		return false
+	}
+	j := i + 1
+	if up {
+		j = i - 1
+	}
+	if j < 0 || j >= len(seq) {
+		return false
+	}
+	return !l.accountHasVisibleRow(seq[j])
+}
+
+// accountHasVisibleRow reports whether any row of the given account's cluster survives
+// the filter. Membership is by repo-block anchor, matching how clusterByAccount and
+// moveAccount decide which cluster a block belongs to, so a mixed-account repo counts
+// wholly toward its anchor's cluster — the one the user sees it rendered under.
+func (l *List) accountHasVisibleRow(acct string) bool {
+	visible := false
+	forEachRepoBlock(l.items, func(start, end int) {
+		if accountKey(l.items[start]) == acct && l.visibleCount(start, end) > 0 {
+			visible = true
+		}
+	})
+	return visible
 }
 
 // clampSelectionToNavigable enforces the invariant that the selection always rests on a
@@ -909,6 +1025,11 @@ func (l *List) MoveGroupUp() bool {
 	if l.GroupMoveCrossesAccount(true) {
 		return false
 	}
+	// A block the filter has emptied renders nothing, so transposing with it would move
+	// the order and not the screen; the app calls this to explain the refusal.
+	if l.GroupMoveNeighborHidden(true) {
+		return false
+	}
 	prevStart, _ := l.groupBounds(start - 1)
 	// While a view is active items is derived, so reflect the move into the manual
 	// snapshot and rebuild (which re-selects the session by identity); otherwise
@@ -937,6 +1058,10 @@ func (l *List) MoveGroupDown() bool {
 	}
 	// Same account-boundary gate as MoveGroupUp, via the single GroupMoveCrossesAccount source.
 	if l.GroupMoveCrossesAccount(false) {
+		return false
+	}
+	// Same emptied-block gate as MoveGroupUp, via the single GroupMoveNeighborHidden source.
+	if l.GroupMoveNeighborHidden(false) {
 		return false
 	}
 	// The next block starts at end; groupBounds gives its exclusive upper bound.
@@ -1062,6 +1187,13 @@ func (l *List) MoveAccountDown() bool { return l.moveAccount(+1) }
 // anything moved.
 func (l *List) moveAccount(dir int) bool {
 	if !l.AccountReorderEnabled() {
+		return false
+	}
+	// A cluster the filter has emptied renders nothing, so swapping with it would rewrite
+	// accountOrder — and persist it — with the rendered order unchanged (#339). Kept out of
+	// AccountReorderEnabled, whose false already means "only one cluster" and is worded that
+	// way by the app; the app calls this separately to explain this refusal.
+	if l.AccountMoveNeighborHidden(dir < 0) {
 		return false
 	}
 	seq := l.accountSequence()
