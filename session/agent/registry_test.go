@@ -393,13 +393,136 @@ func TestClaudeLoginErrorPrompt(t *testing.T) {
 	require.False(t, ok, "a prose mention of /login must not match")
 }
 
+// claudeMCPSinglePane is the one-server MCP approval, captured verbatim from live claude
+// 2.1.210 launched in a fresh dir holding a project-scoped .mcp.json (2026-07-15). It
+// replaces a composed fixture that ended "[Enter] to approve" — a line this dialog does not
+// render (the string does exist elsewhere in the bundle, which is exactly why its presence
+// there proved nothing). The title was always right, so the gate always fired; #332's
+// permission bug was the same setup with the opposite outcome, so the shape is pinned from
+// a real pane now rather than from a plausible guess.
+var claudeMCPSinglePane = strings.Join([]string{
+	strings.Repeat("─", 56),
+	"  New MCP server found in this project: nanoclaw",
+	"  MCP servers may execute code or access system resources. All tool calls require approval. Learn more in",
+	"  the MCP documentation.",
+	"  ❯ 1. Use this MCP server",
+	"    2. Use this and all future MCP servers in this project",
+	"    3. Continue without using this MCP server",
+	"  Enter to confirm · Esc to cancel",
+}, "\n")
+
+// claudeMCPMultiPane is the multi-server MCP approval (live 2.1.210, three servers in one
+// project-scoped .mcp.json). A distinct shape no fixture covered before: a checkbox
+// multi-select whose title is PLURAL ("3 new MCP servers found in this project" — the
+// lowercase gate literal matches it as a substring) and whose footer reads "Esc to reject
+// all" rather than "Esc to cancel". The bundle's token table for this dialog reads
+// "space select · enter confirm", which is not the rendered line — the standing reminder
+// that the table enumerates, only a probe renders.
+//
+// Width is load-bearing here in a way it is not for the trust gate, and the limit is
+// measured rather than reasoned: GateUp scans only the bottom WindowPrompt (15) non-empty
+// lines, the trust gate's literal sits on an option line three lines off the bottom, and
+// these titles sit ~8 lines up behind a prose paragraph that reflows. Narrowing the pane
+// grows that paragraph and walks the title past the budget. Driven live at 2.1.210 against
+// real captures at each width (#340):
+//
+//	110 → fires    40 → fires    28 → MISSES    24 → MISSES
+//
+// At 28 the wrapped dialog runs 17 non-empty lines, so the title is the 16th from the
+// bottom and falls outside the 15-line budget; the gate reads nothing and an MCP-blocked
+// session reads Ready.
+//
+// That width is REACHABLE, and the tempting reading — "no working terminal is 28 columns" —
+// is a category error worth spelling out, because it is what kept this miss filed as
+// theoretical. The pane is not the terminal. session/instance.go SetPreviewSize sizes each
+// agent's detached tmux session to the PREVIEW pane, precisely so captured content wraps the
+// way it renders, and that pane is the terminal minus the session list minus two 2-column
+// frames. The split is user-adjustable (< / >, mouse drag) to config.maxListRatio = 0.60 and
+// persisted in state.json, so it survives restarts. Measured by driving the real layout
+// (ui.TabbedWindow SetSize → GetPreviewSize) rather than re-deriving its arithmetic:
+//
+//	term=80 ratio=0.60 → preview=28    term=100 ratio=0.60 → preview=36
+//
+// A plain 80-column terminal with the list dragged wide lands exactly on the miss.
+//
+// Recorded rather than fixed because the flat window is the wrong instrument to tune, not
+// because the miss is rare: widening the budget buys it back with false-positive surface on
+// every gate at every width, and the window already fails at the OTHER end too — an agent
+// that merely quotes these titles reads as gated (#342). Only a liveness signal separates
+// showing the dialog from discussing it; #344 anchors the match to live chrome instead of
+// counting lines from the bottom, which dissolves the width limit and retires this
+// paragraph. claudeMCPWrappedPane below is the narrowest CAPTURE that still fires — 40, not
+// a measured boundary: the widths between it and 28 were never driven, and pinning an exact
+// threshold would only pin how one prose paragraph happens to wrap today.
+var claudeMCPMultiPane = strings.Join([]string{
+	strings.Repeat("─", 56),
+	"  3 new MCP servers found in this project",
+	"  Select any you wish to enable.",
+	"  MCP servers may execute code or access system resources. All tool calls require approval. Learn more in",
+	"  the MCP documentation.",
+	"  ❯ [✔] nanoclaw",
+	"    [✔] picoclaw",
+	"    [✔] femtoclaw",
+	" Space to select · Enter to confirm · Esc to reject all",
+}, "\n")
+
+// claudeMCPWrappedPane is the multi-server approval captured from a live 2.1.210 pane at
+// width 40 (2026-07-15), where the title itself reflows onto two lines:
+//
+//	3 new MCP servers found in this
+//	project
+//
+// It pins the property the flattened match quietly depends on — the gate literal survives a
+// wrapped TITLE, because the wrap falls after it rather than inside it. A narrower capture
+// is not pinned here on purpose: at 28 the gate genuinely misses (see above), so a fixture
+// there would pin the limitation rather than the behavior.
+var claudeMCPWrappedPane = strings.Join([]string{
+	strings.Repeat("─", 40),
+	"  3 new MCP servers found in this",
+	"  project",
+	"  Select any you wish to enable.",
+	"  MCP servers may execute code or",
+	"  access system resources. All tool",
+	"  calls require approval. Learn more",
+	"  in the MCP documentation.",
+	"  ❯ [✔] nanoclaw",
+	"    [✔] picoclaw",
+	"    [✔] femtoclaw",
+	" Space to select · Enter to confirm ·",
+	" Esc to reject all",
+}, "\n")
+
 func TestClaudeGate(t *testing.T) {
 	_, ok := claude.GateUp("Do you trust the files in this folder?\n  1. Yes, proceed")
 	require.True(t, ok)
 
-	// Claude Code v2.1.162+ uses capital-N "New MCP server found in this project:"
-	_, ok = claude.GateUp("New MCP server found in this project: nanoclaw\n  [Enter] to approve")
-	require.True(t, ok, "capital-N singular MCP gate must fire")
+	// Both MCP-approval shapes, captured verbatim from live claude 2.1.210 by putting a
+	// project-scoped .mcp.json in a fresh dir (2026-07-15, #340). The gate fires on the
+	// title in each: "New MCP server" (capital-N singular, v2.1.162+) and "new MCP server"
+	// (the plural title's substring). Nothing else in the adapter sees either — the
+	// singular's footer names no navigate/select token and the plural's says "Esc to
+	// reject all", not "Esc to cancel" — so the gate is the only thing standing between
+	// these and a session that reads Ready while blocked.
+	//
+	// Each literal is load-bearing on its own: removing the capital-N fails only the
+	// singular case below, removing the lowercase fails both plural shapes. Case is what
+	// separates them because the plural's count prefix ("3 new…") puts the word
+	// mid-sentence, so the title lowercases it.
+	//
+	// Subtests over a slice, not require over a map: require aborts on the first failure and
+	// map order is randomized, so a dropped literal would report one arbitrary shape and hide
+	// the rest — leaving the claim above ("fails both plural shapes") unobservable in the
+	// test that exists to demonstrate it.
+	for _, tc := range []struct{ name, pane string }{
+		{"singular", claudeMCPSinglePane},
+		{"plural", claudeMCPMultiPane},
+		{"wrapped", claudeMCPWrappedPane},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := claude.GateUp(tc.pane)
+			require.True(t, ok, "the live %s MCP dialog must fire the gate", tc.name)
+		})
+	}
 
 	_, ok = claude.GateUp("╭───╮\n│ > │  ? for shortcuts\n╰───╯")
 	require.False(t, ok)
