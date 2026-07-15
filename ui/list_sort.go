@@ -41,7 +41,10 @@ func (l *List) viewActive() bool {
 //
 // It names the session rung, not "manual": manual order is what every rung writes
 // ({ / } and [ / ] stay live under a sort), so a "manual" gate over-claims — the
-// bug #346 fixed in the hint this gates.
+// over-claim #346 fixed in the hint this gates. A gate names its rung outright
+// (cf. AccountReorderEnabled) because a gate's name is where the scope of a
+// refusal gets read off; only the move verbs leave the session rung bare (MoveUp
+// beside MoveGroupUp/MoveAccountUp).
 func (l *List) SessionReorderEnabled() bool {
 	return !l.sortActive()
 }
