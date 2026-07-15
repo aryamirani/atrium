@@ -33,12 +33,19 @@ func (l *List) viewActive() bool {
 	return l.sortActive() || l.accountGrouped()
 }
 
-// ManualReorderEnabled reports whether J/K within-group reordering applies. Only a
+// SessionReorderEnabled reports whether J/K within-group reordering applies. Only a
 // within-group status sort computes that order, so J/K is disabled there (the app
 // surfaces a hint). Account clustering only reorders whole repo blocks and never
 // touches within-block order, so it leaves J/K available: a swap is mirrored into
 // the manual snapshot and the view rebuilt (see MoveUp/MoveDown).
-func (l *List) ManualReorderEnabled() bool {
+//
+// It names the session rung, not "manual": manual order is what every rung writes
+// ({ / } and [ / ] stay live under a sort), so a "manual" gate over-claims — the
+// over-claim #346 fixed in the hint this gates. A bare ReorderEnabled would
+// over-claim the same way, so both gates in this family name their rung
+// (cf. AccountReorderEnabled); the Move* family takes the session rung as its
+// default instead (MoveUp, MoveNeighborHidden) and prefixes only the wider ones.
+func (l *List) SessionReorderEnabled() bool {
 	return !l.sortActive()
 }
 
