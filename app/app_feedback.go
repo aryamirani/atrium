@@ -69,8 +69,16 @@ func (m *home) moveAndPersist(move func() bool) (tea.Model, tea.Cmd) {
 
 // hiddenNeighborNotice explains a reorder refused because the thing it would swap with
 // is not on screen — the move would change, and persist, an order with nothing visibly
-// moving (#339). scope names what the key moves ("session", "group", "cluster"), matching
-// how the sibling reorder notices name their scope.
+// moving (#339). scope names what the key moves ("session", "group", "cluster") — the
+// one ladder every reorder notice names its scope by, which the sibling refusals in
+// handleKeyPress share (#346).
+//
+// These sibling notices lead with the scope ("group reorder stays within an account")
+// while this one leads with the verb, and that difference is deliberate: they state a
+// standing rule, whose scope must be named or it over-claims (the bug #346 fixed in the
+// status-sort hint), whereas this reports one refused move, whose scope the keypress
+// already fixed and the object noun echoes. Scope and object are one-to-one here, so
+// naming both would only repeat the sentence back to the user.
 //
 // The filter is named whenever one is live, because it overrides a fold in the render
 // (see ui.List.isHidden): a folded group under a filter is on screen expanded, so blaming

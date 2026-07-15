@@ -139,6 +139,39 @@ func TestReorderKeys_SortRefusalOutranksTheFilterRefusal(t *testing.T) {
 	assert.Contains(t, h.menu.String(), "sorting by status",
 		"the durable reason wins over the transient one")
 	assert.NotContains(t, h.menu.String(), "esc to clear")
+	assert.Contains(t, h.menu.String(), "session reorder",
+		"the refusal names the one ladder the sort disables (#346)")
+}
+
+// The status-sort refusal names the session ladder, and that scoping has to stay true:
+// the sort owns within-group order only, so { / } keeps working under it. Nothing pinned
+// the two halves together, which is how the hint drifted to the unscoped "manual reorder
+// is off" — a claim the settings screen contradicts ("Group order stays manual ({ / })").
+// ui.TestGroupMode_StatusSortGroupMoveCrossesAccountsFreely pins the move; this pins that
+// the notice does not disown it.
+func TestReorderKeys_StatusSortRefusalScopesItselfToSessions(t *testing.T) {
+	h := filterReorderHome(t,
+		[3]string{"api-one", "repoA", ""},
+		[3]string{"api-two", "repoA", ""},
+		[3]string{"infra-one", "repoB", ""})
+	h.list.SetSortMode("status")
+	h.list.SetSelectedInstance(0)
+
+	pressKey(h, 'J')
+	require.True(t, h.menu.HasNotice(), "J under a status sort must explain itself")
+	notice := h.menu.String()
+	assert.Contains(t, notice, "session reorder", "only the session ladder is off")
+	assert.NotContains(t, notice, "manual reorder",
+		"'manual' is the settings screen's word for group order too, so it over-claims")
+	assert.Contains(t, notice, ", to switch",
+		"the only fixable refusal that named no key; , opens the sort setting (#346)")
+
+	// The other half: the ladders the notice does not disown still move, silently.
+	h.menu.ClearNotice()
+	pressKey(h, '}') // KeyMoveGroupDown — repoA past repoB, under the same status sort
+	assert.Equal(t, []string{"infra-one", "api-one", "api-two"}, instanceTitles(h),
+		"a status sort owns within-group order only, so { / } still moves")
+	assert.False(t, h.menu.HasNotice(), "a group move that works needs no explanation")
 }
 
 // Same rule at the block level: the account boundary is filter-independent, and its

@@ -846,8 +846,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// J/K reorders within a repo group; only a within-group status sort owns that
 		// order. Account grouping leaves J/K available (clustering never touches
 		// within-block order), so the hint names only the sort.
+		//
+		// The hint scopes itself to the *session* ladder because the sort disables only
+		// that one — { / } and [ / ] stay live (ui.List.AccountReorderEnabled) — while
+		// "manual" is the settings screen's word for group order too ("Group order stays
+		// manual ({ / })", config.SessionSortCreation). An unscoped "manual reorder is
+		// off" therefore contradicted what the user just read there (#346). "session"
+		// matches the ladder hiddenNeighborNotice names, and , opens the setting that
+		// lifts this — the same key the [ / ] refusal below points at.
 		if !m.list.ManualReorderEnabled() {
-			return m, m.handleInfoNotice("manual reorder is off while sorting by status")
+			return m, m.handleInfoNotice("session reorder is off while sorting by status (, to switch)")
 		}
 		// Refuse a swap with a sibling that is not on screen, and say so: the order would
 		// change, and persist, with nothing visibly moving (#339). Checked after the sort
@@ -882,11 +890,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyMoveAccountUp, keys.KeyMoveAccountDown:
 		// [ / ] reorder whole account clusters. Both refusals are explained rather than
 		// left as a silent no-op, and they are told apart because the advice differs: one
-		// is a mode to switch, the other is nothing to reorder. The second is not simply
-		// "you only have one account" — a repo whose sessions span accounts still renders
-		// as a single cluster — so the wording names the cluster, not the account count.
+		// is a mode to switch, the other is nothing to reorder. Neither is simply "you only
+		// have one account" — a repo whose sessions span accounts still renders as a single
+		// cluster — so both name the cluster, not the account count, which is also the
+		// ladder word help and the settings label use ("account cluster") (#346).
 		if !m.list.AccountGrouped() {
-			return m, m.handleInfoNotice("account reorder needs account grouping (, to switch)")
+			return m, m.handleInfoNotice("cluster reorder needs account grouping (, to switch)")
 		}
 		if !m.list.AccountReorderEnabled() {
 			return m, m.handleInfoNotice("only one account cluster to reorder")
