@@ -100,6 +100,7 @@ func splashTestVariants() map[string]splashVariant {
 		"julia":   splashVariantJulia,
 		"mandala": splashVariantMandala,
 		"rain":    splashVariantRain,
+		"tunnel":  splashVariantTunnel,
 	}
 }
 
@@ -286,7 +287,7 @@ func TestSplashBrailleVariantOutput(t *testing.T) {
 // Assert the range only where the mix actually weights it.
 func TestSplashPointFnRange(t *testing.T) {
 	for name, v := range splashTestVariants() {
-		at := splashFieldAt(v)
+		at := splashFieldAt(v, 96)
 		// The legacy plasma's aux is an angle by construction, consumed inside a
 		// sine rather than weighted — see splashColorIdx and splashField's doc.
 		auxIsWeight := v != splashVariantLegacy
