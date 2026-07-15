@@ -869,8 +869,8 @@ func (l *List) isHidden(idx int) bool {
 	return idx != start
 }
 
-// MoveNeighborHidden reports whether the sibling J/K would swap the selection with is
-// not on screen. Reordering is the one subsystem that never learned the filter: a swap
+// MoveNeighborHidden reports whether the sibling that J/K would swap the selection with
+// is not on screen. Reordering is the one subsystem that never learned the filter: a swap
 // against a row that isHidden suppresses will change — and persist — an order with
 // nothing visibly moving (#339). MoveUp/MoveDown refuse on it and the app calls it too,
 // to explain the refusal rather than leave a silent no-op (the GroupMoveCrossesAccount
