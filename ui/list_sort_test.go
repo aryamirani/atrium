@@ -62,13 +62,13 @@ func TestSessionSort_PreservesSelection(t *testing.T) {
 	require.Same(t, running, l.GetSelectedInstance(), "selection follows the moved session")
 }
 
-// J/K manual reorder is disabled under a sort mode (the app shows a hint), while
-// whole-group reorder stays available.
-func TestSessionSort_DisablesManualReorderButKeepsGroupMove(t *testing.T) {
+// J/K session reorder is disabled under a sort mode (the app shows a hint), while
+// whole-group reorder stays available — the two halves of the scope the gate names.
+func TestSessionSort_DisablesSessionReorderButKeepsGroupMove(t *testing.T) {
 	l := newGroupList(t, "/r/a", "/r/a", "/r/b")
 	l.SetSortMode("status")
 
-	require.False(t, l.ManualReorderEnabled())
+	require.False(t, l.SessionReorderEnabled())
 	require.False(t, l.MoveUp(), "J/K within-group reorder is inert in status mode")
 	require.False(t, l.MoveDown())
 

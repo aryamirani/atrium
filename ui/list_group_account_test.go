@@ -112,13 +112,13 @@ func TestGroupMode_PreservesSelectionByIdentity(t *testing.T) {
 
 // Account grouping only reorders whole repo blocks, so J/K within-group reordering
 // stays available under it (unlike a status sort, which owns within-group order).
-func TestGroupMode_KeepsManualReorderButSortDisablesIt(t *testing.T) {
+func TestGroupMode_KeepsSessionReorderButSortDisablesIt(t *testing.T) {
 	l := acctList(t, "api|work", "infra|personal")
-	require.True(t, l.ManualReorderEnabled())
+	require.True(t, l.SessionReorderEnabled())
 	l.SetGroupMode("account")
-	require.True(t, l.ManualReorderEnabled(), "account grouping leaves J/K available")
+	require.True(t, l.SessionReorderEnabled(), "account grouping leaves J/K available")
 	l.SetSortMode("status")
-	require.False(t, l.ManualReorderEnabled(), "a status sort disables J/K")
+	require.False(t, l.SessionReorderEnabled(), "a status sort disables J/K")
 }
 
 // A whole-group move within an account cluster is allowed and reflected in both the

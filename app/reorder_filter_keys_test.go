@@ -106,7 +106,7 @@ func TestReorderKeys_AccountMoveRefusesPastEmptiedCluster(t *testing.T) {
 }
 
 // A folded sibling is the same shape reached without a filter: J inside a fold was a
-// silent dead key (the move refused, ManualReorderEnabled said otherwise, and
+// silent dead key (the move refused, SessionReorderEnabled said otherwise, and
 // moveAndPersist swallows a false). It now names the fold and the key that undoes it.
 func TestReorderKeys_SessionMoveRefusesPastFoldedSiblingAndSaysSo(t *testing.T) {
 	h := filterReorderHome(t,
