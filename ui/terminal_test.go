@@ -166,7 +166,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 
 		tp.mu.Lock()
 		require.True(t, tp.fallback, "should be in fallback mode for nil instance")
-		require.Contains(t, tp.fallbackText, "Select an instance", "fallback text should prompt to select instance")
+		require.Contains(t, tp.fallbackMessage, "Select an instance", "fallback text should prompt to select instance")
 		require.Empty(t, tp.content, "content should be empty in fallback mode")
 		tp.mu.Unlock()
 	})
@@ -187,7 +187,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 
 		tp.mu.Lock()
 		require.True(t, tp.fallback, "should be in fallback mode for paused instance")
-		require.Contains(t, tp.fallbackText, "paused", "fallback text should mention paused")
+		require.Contains(t, tp.fallbackMessage, "paused", "fallback text should mention paused")
 		tp.mu.Unlock()
 	})
 
@@ -205,7 +205,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 
 		tp.mu.Lock()
 		require.True(t, tp.fallback, "should be in fallback mode for not-started instance")
-		require.Contains(t, tp.fallbackText, "not started", "fallback text should indicate not started")
+		require.Contains(t, tp.fallbackMessage, "not started", "fallback text should indicate not started")
 		tp.mu.Unlock()
 	})
 }
@@ -248,6 +248,30 @@ func TestTerminalFallbackCentered(t *testing.T) {
 	bottom := len(lines) - 1 - last
 	if d := top - bottom; d < -1 || d > 1 {
 		t.Fatalf("fallback not vertically centered: %d blank lines above, %d below", top, bottom)
+	}
+}
+
+// The terminal's fallback shares the preview's composer and so shared its #355
+// bug: its messages are short but still outrun a narrow pane ("Session is paused.
+// Resume to use terminal." is 42 cols against a reachable 28), and the wordmark
+// cannot render at all there. Fixing one pane and not the other would have left
+// the same misrender one tab over on the same paused session.
+func TestTerminalFallbackReadableOnNarrowPane(t *testing.T) {
+	log.Initialize(false)
+	defer log.Close()
+
+	tp := NewTerminalPane(context.Background())
+	tp.SetSize(28, 13)
+	require.NoError(t, tp.UpdateContent(nil))
+
+	out := tp.String()
+	require.Contains(t, strings.Join(strings.Fields(ansi.Strip(out)), ""),
+		strings.Join(strings.Fields("Select an instance to open a terminal"), ""),
+		"the message must survive the narrow pane — wrapped, not chopped")
+	require.NotContains(t, ansi.Strip(out), "█",
+		"a 48-col wordmark cannot render in 28 cols — it must be omitted, not sheared")
+	for i, l := range strings.Split(out, "\n") {
+		require.LessOrEqualf(t, lipgloss.Width(l), 28, "fallback line %d wider than the pane", i)
 	}
 }
 

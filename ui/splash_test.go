@@ -198,8 +198,11 @@ func TestPreviewSplashStringBounds(t *testing.T) {
 }
 
 // TestPreviewSplashFallbackBelowFloor guards the size gate: below the splashFits
-// floor the idle screen must fall back to the plain centered wordmark — bounded,
-// panic-free, and with no field glyphs — never a clipped field.
+// floor the idle screen must fall back to the plain centered placeholder —
+// bounded, panic-free, and with no field glyphs — never a clipped field. The
+// placeholder keeps the wordmark only where it fits; narrower than its 48 cols it
+// is the message alone (see fallbackBlock), which is why this asserts the field is
+// gone rather than that the wordmark is present.
 func TestPreviewSplashFallbackBelowFloor(t *testing.T) {
 	for _, s := range [][2]int{{49, 18}, {50, 17}, {40, 12}, {49, 17}, {10, 4}} {
 		w, h := s[0], s[1]

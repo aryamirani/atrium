@@ -38,7 +38,9 @@ type TerminalPane struct {
 	currentKey    string                      // terminalKey of the currently displayed instance
 	content       string
 	fallback      bool
-	fallbackText  string
+	// fallbackMessage is the raw fallback text while fallback is true, laid out
+	// by String() against the live pane width (see fallbackBlock).
+	fallbackMessage string
 	// splash is true only for the idle empty screen (nil instance): String() then
 	// renders the animated nebula behind the wordmark. Implies fallback.
 	splash        bool
@@ -108,12 +110,13 @@ func (t *TerminalPane) SetSplashFrame(n int) {
 	t.splashFrame = n
 }
 
-// setFallbackState sets the terminal pane to display a fallback message.
-// Caller must hold t.mu.
+// setFallbackState sets the terminal pane to display a fallback message. The
+// message is stored raw, not composed: String() lays it out against the live pane
+// width (see fallbackBlock). Caller must hold t.mu.
 func (t *TerminalPane) setFallbackState(message string) {
 	t.fallback = true
 	t.splash = false
-	t.fallbackText = lipgloss.JoinVertical(lipgloss.Center, FallbackBanner(), "", message)
+	t.fallbackMessage = message
 	t.content = ""
 }
 
@@ -303,7 +306,7 @@ func (t *TerminalPane) Close() {
 	t.content = ""
 	t.fallback = false
 	t.splash = false
-	t.fallbackText = ""
+	t.fallbackMessage = ""
 }
 
 // CloseForInstance kills the cached terminal session for a specific instance.
@@ -327,7 +330,7 @@ func (t *TerminalPane) CloseForInstance(inst *session.Instance) {
 		t.content = ""
 		t.fallback = false
 		t.splash = false
-		t.fallbackText = ""
+		t.fallbackMessage = ""
 	}
 }
 
@@ -351,20 +354,20 @@ func (t *TerminalPane) String() string {
 	}
 
 	fallback := t.fallback
-	fallbackText := t.fallbackText
+	fallbackMessage := t.fallbackMessage
 	content := t.content
 
 	if fallback {
-		// Center the fallback in the pane's exact box, the same way the preview
-		// and diff panes center their placeholders. The hand-rolled padding this
-		// replaces subtracted the tab/frame chrome a second time (height-3-4) even
-		// though TabbedWindow.SetSize had already removed it, so the banner sat
-		// high rather than at true center. Clamp both axes like the preview pane:
-		// lipgloss.Place does not clip oversize content, so a fallback line wider
-		// than a narrow pane would inflate the whole frame and throw every
-		// centered overlay off.
-		return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(
-			centerInBox(width, height, terminalPaneStyle().Render(fallbackText)))
+		// Composed here, against the live width, exactly like the preview pane (#355):
+		// these messages outrun a narrow pane too ("Session is paused. Resume to use
+		// terminal." is 42 cols against a reachable 28). Center it in the pane's exact
+		// box, the same way the preview and diff panes center their placeholders. The
+		// hand-rolled padding this replaces subtracted the tab/frame chrome a second
+		// time (height-3-4) even though TabbedWindow.SetSize had already removed it, so
+		// the banner sat high rather than at true center. centerInBox clamps both axes
+		// on its own, so the outer clamp that used to wrap this call was redundant.
+		return centerInBox(width, height,
+			terminalPaneStyle().Render(fallbackBlock(width, height, fallbackMessage)))
 	}
 
 	// Normal mode: show captured content
