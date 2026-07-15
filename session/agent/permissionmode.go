@@ -172,8 +172,9 @@ var claudePermissionModeMarkers = []struct{ token, mode string }{
 // single-slot branch cannot produce: "⏸ manual mode on · ? for shortcuts · ←
 // for agents" (2.1.210) carries the shortcuts hint and the agents hint at once.
 // Detection is unaffected — both branches render "<label> on" — but note that a
-// remote gate can swap this shape with no version change, which VerifiedVersion
-// cannot express.
+// remote gate can swap this shape with no version change. VerifiedVersion cannot
+// express that; the adapter's VerifiedGates records the branch these captures came
+// from, and `atrium doctor` reports the value claude last resolved per account.
 //
 // Detection is confined to footerBelowBox — the live chrome below the input
 // box's bottom border — so a mode phrase quoted in the scrolled-back transcript

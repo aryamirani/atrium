@@ -22,6 +22,15 @@ import (
 // pin; it was not, and could not — both truncate to 2.1.0. Nothing tells you a
 // heuristic went stale. Only driving it does.
 //
+// A version pin also can't express everything that moves. Claude picks between two
+// footer implementations in one binary on a server-resolved feature gate, so the
+// rendered UI can change with NO version change at all — and because Atrium routes
+// sessions to a per-account CLAUDE_CONFIG_DIR, two sessions on the same claude
+// version can resolve that gate differently and render differently. VerifiedGates
+// records which branch a capture came from; `atrium doctor` reads the value claude
+// last resolved per account and reports a mismatch. So provenance here names a
+// version AND a gate state: every capture in this file is an UNGATED capture.
+//
 // Remediation is ADDITIVE, never replace-in-place: when a CLI rewords a gating
 // string, ADD the new variant alongside the old in the same matcher list and
 // keep both through a deprecation window, e.g.
@@ -67,6 +76,32 @@ var claude = &Adapter{
 	// tell you when to check again.
 	VerifiedVersion:  "2.1.210",
 	DriftGranularity: GranularityMinor,
+
+	// The footer's implementation is chosen by this gate, not by the version. The
+	// ungated branch (false) builds a hint LIST — hints concatenate, and "? for
+	// shortcuts" is pushed only when the list is otherwise empty. The gated branch is
+	// the single mutually-exclusive slot #333 described and mistook for ours. Live
+	// 2.1.210 resolves false, proven by a co-occurrence the slot branch cannot produce:
+	// "⏸ manual mode on · ? for shortcuts · ← for agents" carries the shortcuts hint
+	// and the agents hint at once. Every capture pinned in this package is therefore an
+	// UNGATED capture, and this field is what says so.
+	//
+	// What a flip would do to detection is NOT known, and cannot be found out here.
+	// The gated branch is the one heuristic-relevant surface in this file that cannot
+	// be driven at 2.1.210: the CLAUDE_INTERNAL_FC_OVERRIDES parse is dead code (A1r
+	// returns before it reads the env var) and the in-memory payload beats the on-disk
+	// map, so there is no supported way to make a pane render it. #337 read the gated
+	// source and expects "<label> on" and "esc to interrupt" to survive, which would
+	// leave BusyMarkers and the mode table spanning both branches — but that is a
+	// bundle reading of a branch nobody has rendered, and this file's own rule is that
+	// bundle presence is necessary and not sufficient. It is not a reason to skip
+	// re-verifying. (Sharpening the point: "esc to interrupt" is not even a contiguous
+	// literal in the 2.1.210 binary — it is assembled at runtime — so grepping for it
+	// proves nothing in either direction, on either branch.)
+	//
+	// Detecting a flip is therefore what we get instead of auditing for one, and why
+	// this is a pin rather than a comment — see internal/doctor/gates.go.
+	VerifiedGates: []VerifiedGate{{Name: "tengu_copper_thistle", Value: false}},
 
 	// The below-box footer renders "esc to interrupt" while working. #308 read its
 	// absence on a busy pane as a *responsive* hint area crowding the marker out at

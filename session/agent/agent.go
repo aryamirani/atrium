@@ -39,6 +39,13 @@ const (
 	KeyGeneric Key = "generic"
 )
 
+// VerifiedGate is one remote feature gate and the value an adapter's heuristics
+// were verified under. Name is the gate's key as the CLI itself resolves it.
+type VerifiedGate struct {
+	Name  string
+	Value bool
+}
+
 // Granularity is the smallest semver component whose increase past an adapter's
 // VerifiedVersion counts as drift. Patch is the zero value and the conservative
 // default: any installed version above the verified ceiling drifts.
@@ -157,6 +164,16 @@ type Adapter struct {
 	// VerifiedVersion counts as drift. Zero value (GranularityPatch) is the
 	// conservative default.
 	DriftGranularity Granularity
+	// VerifiedGates pins the remote feature-gate values the heuristics were
+	// verified under — a sibling to VerifiedVersion, not a substitute.
+	// VerifiedVersion says WHICH build was driven; VerifiedGates says WHICH BRANCH
+	// of that build rendered. Claude ships two footer implementations in one binary
+	// and picks between them on a server-resolved gate, so a flip changes the UI
+	// with no version change: the one drift no version pin can express, even in
+	// principle. Values are bool because that is all a pin needs — the resolved map
+	// also holds numbers and objects, and a non-bool reads as unknown, never as a
+	// flip. Nil (every adapter but claude) = no gates pinned, nothing reported.
+	VerifiedGates []VerifiedGate
 
 	// aliases are lowercased substrings matched against the basename of the
 	// program's first token by Resolve.

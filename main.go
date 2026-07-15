@@ -283,13 +283,17 @@ var (
 	doctorCmd = &cobra.Command{
 		Use:   "doctor",
 		Short: "Check Atrium's core dependencies (tmux, git, gh) and agent CLI heuristic versions",
-		Long: "Reports two sections. Core dependencies probes tmux, git, and gh: tmux and git are\n" +
+		Long: "Reports three sections. Core dependencies probes tmux, git, and gh: tmux and git are\n" +
 			"required (a missing one exits nonzero so scripts/CI can gate); gh is optional, needed\n" +
 			"only for push/PR flows, and its authentication is reported but never fatal. Agent\n" +
 			"heuristics probes installed agent CLIs (claude, codex, gemini, aider) and reports whether\n" +
 			"each one's version has drifted past the version Atrium's pane-classification heuristics\n" +
 			"were verified against; drift means a session's status may be misread (re-verify the\n" +
-			"matcher strings in session/agent/registry.go).",
+			"matcher strings in session/agent/registry.go). Feature gates covers what a version\n" +
+			"cannot: Claude renders parts of its UI from server-resolved feature gates, so the same\n" +
+			"version can render differently — per account — with no version change at all. It reports\n" +
+			"the value Claude last resolved in each config dir against the value those heuristics were\n" +
+			"verified under.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log.Initialize(false)
 			defer log.Close()
@@ -307,6 +311,14 @@ var (
 			agentCtx, cancelAgents := context.WithTimeout(context.Background(), doctor.ProbeTimeout)
 			defer cancelAgents()
 			fmt.Print(doctor.Render(doctor.CheckInstalled(agentCtx)))
+
+			// No probe budget: this section only reads a local JSON file per config
+			// dir, so there is no subprocess to wedge and nothing to bound.
+			if gates := doctor.RenderGates(doctor.CheckGatesInstalled()); gates != "" {
+				fmt.Println()
+				fmt.Print(gates)
+			}
+
 			if doctor.MissingRequired(deps) {
 				// Nonzero exit for CI/scripts. The root command already sets
 				// SilenceErrors/SilenceUsage, so main() prints just this message to
