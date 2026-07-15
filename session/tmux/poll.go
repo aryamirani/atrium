@@ -335,8 +335,16 @@ func (t *Session) Poll() PaneState {
 
 	// A prompt awaiting an answer takes precedence over "working": when an agent stops to
 	// ask, it is not processing, and this is the state a caller most needs to surface.
-	// Matchers look only within the bottom chrome so the same strings in the scrolled-back
-	// transcript (e.g. the agent discussing these UIs) don't false-trigger.
+	//
+	// This comment used to add "matchers look only within the bottom chrome so the same
+	// strings in the scrolled-back transcript (e.g. the agent discussing these UIs) don't
+	// false-trigger" — the same false claim #342 cost the gate one block above. A bottom-N
+	// window is a budget, not a liveness test, and #343 is what it cost here: an agent
+	// discussing claude's permission dialog read as a live prompt, and this matcher is the
+	// one autoyes answers, so it tapped Enter into the composer. Claude's permission
+	// matchers are anchored structurally now (agent/registry.go claudeLiveDialogRegion);
+	// codex and gemini still use the flat window, so for them the sentence remains
+	// aspirational — and both still lack NoAutoTap, so their false positives still tap.
 	if matcher, ok := t.adapter.DetectPrompt(content); ok {
 		t.monitor.idleStreak = 0
 		state := PanePrompt

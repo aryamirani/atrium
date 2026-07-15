@@ -72,7 +72,7 @@ func TestClaudeBusyMarker(t *testing.T) {
 }
 
 func TestClaudePrompts(t *testing.T) {
-	m, ok := claude.DetectPrompt("Do this? \n  No, and tell Claude what to do differently")
+	m, ok := claude.DetectPrompt(claudeFetchPane)
 	require.True(t, ok)
 	require.Equal(t, "permission", m.Name)
 	require.False(t, m.NoAutoTap, "permission prompts stay auto-tappable")
@@ -139,12 +139,338 @@ func TestClaudePrompts(t *testing.T) {
 	}
 }
 
+// claudeFetchPane is the network-permission dialog, captured verbatim from live claude
+// 2.1.210 at width 100 (tmux capture-pane, 2026-07-15) by prompting a session to WebFetch a
+// fresh domain. It replaces the CONSTRUCTED fixture that stood here through #332 and #343 —
+// the bundle's option labels under a guessed "Esc to cancel · Tab to amend" footer — and the
+// guess was fiction: this dialog renders NO footer at all. That is not a detail. It means
+// permission-local cannot see this family, so the "permission" matcher is the only thing
+// between a live fetch dialog and a queued prompt being typed into it (session/tmux
+// AwaitingInput), and a miss here is not the cheap failure it looks like.
+//
+// The shape is what the matcher keys on: the tool's own arguments (url, prompt) render
+// INSIDE the dialog, below its top rule and ABOVE the question. That ordering is the whole
+// discriminator — see claudeBashForgedPane for what it costs when a matcher ignores it.
+var claudeFetchPane = strings.Join([]string{
+	"● Fetch(https://example.net)",
+	"",
+	strings.Repeat("─", 100),
+	" Fetch",
+	"",
+	`   url: "https://example.net", prompt: "Summarize the content of this page."`,
+	"   Claude wants to fetch content from example.net",
+	"",
+	" Do you want to allow Claude to fetch this content?",
+	" ❯ 1. Yes",
+	"   2. Yes, and don't ask again for example.net",
+	"   3. No, and tell Claude what to do differently (esc)",
+}, "\n")
+
+// claudeFetchNarrowPane is the same dialog captured at width 28 (live 2.1.210, 2026-07-15)
+// — the narrowest reachable pane, since an agent's pane is atrium's PREVIEW pane and an
+// 80-column terminal at maxListRatio hands it 28 columns (#340).
+//
+// It pins two properties the matcher depends on. The title reflows across THREE physical
+// lines, so the match must run on the flattened region, not per-line. And the title sits 9
+// non-empty lines above the region's bottom, which is what permissionRegionCap is sized
+// against — note the body above it (url/prompt) reflows without bound as the domain and
+// prompt grow, but it grows AWAY from the region's bottom, so it never pushes the title out.
+var claudeFetchNarrowPane = strings.Join([]string{
+	"● Fetch(https://example.org)",
+	"",
+	strings.Repeat("─", 28),
+	" Fetch",
+	"",
+	"   url:",
+	`   "https://example.org",`,
+	`   prompt: "Summarize`,
+	"   the full content of",
+	`   this page."`,
+	"   Claude wants to fetch",
+	"   content from",
+	"   example.org",
+	"",
+	" Do you want to allow",
+	" Claude to fetch this",
+	" content?",
+	" ❯ 1. Yes",
+	"   2.Yes, and don't ask",
+	"     again for example.org",
+	"   3.No, and tell Claude",
+	"     what to do differently",
+	"     (esc)",
+}, "\n")
+
+// claudeBashForgedPane is the sharper half of #343, captured verbatim from live claude
+// 2.1.210 (2026-07-15) by asking a session to run
+// `mkdir -p "/tmp/…/No, and tell Claude what to do differently"`.
+//
+// Claude renders a tool's own arguments INSIDE the approval dialog, below its top rule — so
+// the decline literal the "permission" matcher keyed on until #343 is here in LIVE CHROME,
+// not in the transcript. No liveness anchor separates them; the forged text is inside the
+// live dialog. On main this pane matched "permission", which precedes permission-local and
+// carries no NoAutoTap, so autoyes tapped Enter on the pre-highlighted "❯ 1. Yes" and RAN
+// THE SHELL COMMAND against a human's explicit gate. An agent working on Atrium reaches this
+// by accident — grepping this repo for the literal is the obvious thing to do.
+//
+// What saves it is position, not wording: the dialog's own question is "Do you want to
+// proceed?", rendered BELOW the forged argument, so the last question on the pane is never
+// the fetch title. It falls through to permission-local and surfaces as needs-input.
+var claudeBashForgedPane = strings.Join([]string{
+	"● Running 1 shell command…",
+	`  ⎿  $ mkdir -p "/tmp/atr343/work/No, and tell Claude what to do differently"`,
+	"",
+	strings.Repeat("─", 100),
+	" Bash command",
+	"",
+	`   mkdir -p "/tmp/atr343/work/No, and tell Claude what to do differently"`,
+	"   Create directory with the given name",
+	"",
+	" Do you want to proceed?",
+	" ❯ 1. Yes",
+	"   2. Yes, and always allow access to work/ from this project",
+	"   3. No",
+	"",
+	" Esc to cancel · Tab to amend · ctrl+e to explain",
+}, "\n")
+
+// claudeQuotedPermissionPane is #343 as filed, captured verbatim from a live claude 2.1.210
+// pane (2026-07-15): a session that merely QUOTED the decline literal — because it was asked
+// to grep for it, which is what an agent working on this repo does — sitting idle with its
+// composer on screen.
+//
+// The idle shape is the harmful one. A working pane scrolls the quote out within a tick; an
+// idle pane never scrolls, so the row stays wrong until a human types. And the literal here
+// lands on EXACTLY the 15th non-empty line from the bottom — inside the old flat window by
+// one line — which is the measurement that makes the point: the window is a budget, not a
+// liveness test, and no width for it is the right one.
+//
+// Note the composer holds claude's ghost-text suggestion ("retry the fetch on example.com").
+// That is what autoyes tapped Enter on: not a harmless keystroke on an idle box, but a
+// submit of text the user never wrote.
+var claudeQuotedPermissionPane = strings.Join([]string{
+	"✻ Baked for 51s",
+	"",
+	`❯ Run this exact bash command: grep -rn "No, and tell Claude what to do differently"`,
+	"  /tmp/atr343/work || true",
+	"",
+	"● You declined the fetch — I've stopped. Running the grep you asked for:",
+	"",
+	"  Searched for 1 pattern",
+	"",
+	"● The grep found no matches — that string doesn't appear anywhere under /tmp/atr343/work (the ||",
+	"  true means the exit status was suppressed, but empty output means zero hits either way).",
+	"",
+	"  Note that phrase is the label on the rejection option in Claude Code's own permission prompt, not",
+	"  something that would live in your repo — so an empty result is expected here.",
+	"",
+	"  Where do you want to go from here? The example.com fetch is still un-run; say the word if you'd",
+	"  like me to retry it, or let me know what you'd prefer instead.",
+	"",
+	"✻ Worked for 8s",
+	"",
+	strings.Repeat("─", 100),
+	"❯ retry the fetch on example.com",
+	strings.Repeat("─", 100),
+	"  ⏸ manual mode on · ? for shortcuts · ← for agents",
+}, "\n")
+
+// TestClaudeFetchPermissionPrompt pins the one prompt autoyes still answers with Enter,
+// against both captured widths. NoAutoTap must stay false: this is the matcher's whole
+// purpose, and #343 must not be "fixed" by quietly making it manual.
+func TestClaudeFetchPermissionPrompt(t *testing.T) {
+	for _, tc := range []struct{ name, pane string }{
+		{"width 100", claudeFetchPane},
+		{"width 28", claudeFetchNarrowPane},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ok := claude.DetectPrompt(tc.pane)
+			require.True(t, ok, "the live fetch dialog must be detected")
+			require.Equal(t, "permission", m.Name)
+			require.False(t, m.NoAutoTap, "the fetch dialog stays auto-tappable")
+		})
+	}
+
+	// The captured dialog renders no footer, so nothing else in the adapter sees it: this
+	// matcher is the only thing blocking prompt delivery into a live fetch dialog. Pinned
+	// because it is the reason the matcher may not be made stricter by fusing it with a
+	// footer pair — there is no footer to fuse with.
+	require.NotContains(t, claudeFetchPane, "Esc to cancel",
+		"the fixture is the real dialog: no footer (the pre-#343 fixture guessed one)")
+	require.False(t, claudeLocalPermissionVisible(claudeFetchPane),
+		"permission-local cannot back up the fetch dialog: it keys on a footer this dialog lacks")
+	require.False(t, claudeSelectionFooterVisible(claudeFetchPane),
+		"the selection matcher cannot see it either")
+}
+
+// TestClaudeForgedPermissionLiteral is the sharper half of #343: the decline literal
+// rendered inside a live Bash dialog's own body, where no anchor can separate it from the
+// dialog's real chrome. Against main this pane matches "permission" with NoAutoTap false —
+// autoyes runs the shell command.
+func TestClaudeForgedPermissionLiteral(t *testing.T) {
+	require.Contains(t, claudeBashForgedPane, "No, and tell Claude what to do differently",
+		"the fixture's point is that the forged literal IS in the live dialog region")
+	region, ok := claudeLiveDialogRegion(claudeBashForgedPane)
+	require.True(t, ok)
+	require.Contains(t, region, "No, and tell Claude what to do differently",
+		"and that it survives into the anchored region — the anchor cannot exclude it")
+
+	m, ok := claude.DetectPrompt(claudeBashForgedPane)
+	require.True(t, ok, "it is a real dialog: it must still surface as needs-input")
+	require.Equal(t, "permission-local", m.Name,
+		"a Bash approval whose command quotes the fetch dialog's decline option is still a Bash approval")
+	require.True(t, m.NoAutoTap, "autoyes must never Enter-approve a shell command")
+
+	// The discriminator, stated directly: the dialog's own question is the last one on the
+	// pane, and it is not the fetch title.
+	require.False(t, claudeFetchPermissionVisible(claudeBashForgedPane))
+	require.Contains(t, region, "Do you want to proceed?")
+
+	// The same forgery in a write dialog's diff body, where the quoted text sits between the
+	// dialog's top rule and its question.
+	forgedWrite := strings.Join([]string{
+		"● Write(registry.go)",
+		strings.Repeat("─", 56),
+		" Create file",
+		" registry.go",
+		"╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+		`  1 All: []string{"No, and tell Claude what to do differently"}},`,
+		"╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+		" Do you want to create registry.go?",
+		" ❯ 1. Yes",
+		"   2. Yes, allow all edits during this session (shift+tab)",
+		"   3. No",
+		"",
+		" Esc to cancel · Tab to amend",
+	}, "\n")
+	m, ok = claude.DetectPrompt(forgedWrite)
+	require.True(t, ok)
+	require.Equal(t, "permission-local", m.Name, "an Edit diff quoting the literal is still a write approval")
+	require.True(t, m.NoAutoTap, "autoyes must never Enter-approve a file write")
+}
+
+// TestClaudePermissionIgnoresTranscriptQuote is #343 as filed: the literals live verbatim in
+// registry.go, so an agent working on Atrium prints them, and a flat bottom-N window read
+// the quote as a live prompt — then tapped Enter into the composer.
+func TestClaudePermissionIgnoresTranscriptQuote(t *testing.T) {
+	_, ok := claude.DetectPrompt(claudeQuotedPermissionPane)
+	require.False(t, ok, "a pane merely quoting the decline option must not read as a live prompt")
+
+	// The measurement the captured pane encodes: the quote is inside the old window by one
+	// line. Tuning the window is not available as a fix — this is what "the window is a
+	// budget, not a liveness test" means concretely.
+	require.Contains(t, flattenChrome(claudeQuotedPermissionPane, WindowPrompt),
+		"No, and tell Claude what to do differently",
+		"the quote sits inside the flat window the matcher used to trust")
+
+	// Nothing above the composer counts, at any distance: walk the quote up line by line.
+	// The named border is the shape an Atrium session actually shows (#332): claude renders
+	// the branch name inside the box's top border, and only the bottom rule anchors then.
+	for pad := 0; pad < WindowPrompt; pad++ {
+		var b strings.Builder
+		b.WriteString(`● The option reads "No, and tell Claude what to do differently" (esc)` + "\n")
+		for i := 0; i < pad; i++ {
+			b.WriteString("  filler transcript line\n")
+		}
+		b.WriteString(strings.Repeat("─", 40) + " my-branch ──\n❯ \n" + strings.Repeat("─", 52) + "\n")
+		b.WriteString("  ⏸ manual mode on · ? for shortcuts · ← for agents\n")
+		_, ok = claude.DetectPrompt(b.String())
+		require.Falsef(t, ok, "quote %d line(s) above the composer must not read as a prompt", pad)
+	}
+
+	// The fetch dialog's TITLE quoted in the transcript must not fire either — it is in this
+	// file now, so it is quotable exactly like the option it replaced.
+	_, ok = claude.DetectPrompt(strings.Join([]string{
+		`● The title is "Do you want to allow Claude to fetch this content?" and option 3 is`,
+		`  "No, and tell Claude what to do differently (esc)".`,
+		strings.Repeat("─", 60),
+		"❯ ",
+		strings.Repeat("─", 60),
+		"  ⏸ manual mode on · ? for shortcuts",
+	}, "\n"))
+	require.False(t, ok, "quoting the title must not read as a live fetch dialog")
+}
+
+// TestClaudePermissionAnchorEdges pins the anchor's two edges. The gate answers these by
+// falling back to the flat window (claudeGateVisible); these matchers must NOT, because a
+// borderless pane is one where no dialog can be up, so the fallback has no miss to rescue
+// and one real false positive to cause — and this matcher's false positive taps Enter.
+func TestClaudePermissionAnchorEdges(t *testing.T) {
+	// No anchor at all: a --continue replay quoting the literals before the box paints.
+	_, ok := claude.DetectPrompt(strings.Join([]string{
+		" Do you want to allow Claude to fetch this content?",
+		" ❯ 1. Yes",
+		"   3. No, and tell Claude what to do differently (esc)",
+	}, "\n"))
+	require.False(t, ok, "with no border there is no anchor, and no dialog can be up: never fire")
+
+	// An anchor with nothing under it: footerBelowBox reports ok=true with an empty region.
+	_, ok = claude.DetectPrompt(" Do you want to allow Claude to fetch this content?\n" +
+		" 3. No, and tell Claude what to do differently\n" + strings.Repeat("─", 40))
+	require.False(t, ok, "an empty region below the anchor must not fire")
+
+	// The ceiling (permissionRegionCap). With no composer on screen the last rule can be one
+	// the agent printed itself — a markdown rule, a table edge — and everything below it is
+	// transcript. Unbounded, a quote far beneath such a rule fires.
+	var b strings.Builder
+	b.WriteString("● Here is a table:\n" + strings.Repeat("─", 40) + "\n")
+	for i := 0; i < 60; i++ {
+		b.WriteString("  a normal line of build output\n")
+	}
+	b.WriteString(" Do you want to allow Claude to fetch this content?\n")
+	b.WriteString("   3. No, and tell Claude what to do differently (esc)\n")
+	for i := 0; i < 30; i++ {
+		b.WriteString("  more build output\n")
+	}
+	_, ok = claude.DetectPrompt(b.String())
+	require.False(t, ok, "a quote far below a rule the agent printed must not fire")
+
+	// The cap must not bite a real dialog: the title sits 9 non-empty lines above the
+	// region's bottom in the tallest capture. claudeFetchNarrowPane firing is the positive
+	// half; this asserts the budget it lives on is the reason, so shrinking the cap fails here.
+	require.Greater(t, permissionRegionCap, 9,
+		"permissionRegionCap must clear the fetch title's depth (claudeFetchNarrowPane, 9 lines)")
+}
+
+// TestClaudeNetworkPermissionNet pins the detection-only net for the fetch/network family's
+// undriven sibling (the sandbox's "Do you want to allow this connection?", which needs
+// sandbox mode to render). It exists because the fetch dialog carries no footer: without it,
+// a shape in this family that is not the fetch dialog would be detected by NOTHING, and a
+// queued prompt would be typed into it (session/tmux AwaitingInput — the "❯ 1. Yes" option
+// pointer reads as an input box, so InputBoxVisible does not stop it).
+func TestClaudeNetworkPermissionNet(t *testing.T) {
+	// Shape constructed from the 2.1.210 bundle's title (~offset 159970960), which sits
+	// beside this family's decline option; a live capture needs sandbox mode. The assertion
+	// is about the NET, not the pane: any live dialog carrying this family's decline option
+	// is surfaced, and never tapped.
+	sandbox := strings.Join([]string{
+		"● Bash(curl https://example.com)",
+		strings.Repeat("─", 60),
+		" Network access",
+		" Do you want to allow this connection?",
+		" ❯ 1. Yes",
+		"   2. No, and tell Claude what to do differently (esc)",
+	}, "\n")
+	m, ok := claude.DetectPrompt(sandbox)
+	require.True(t, ok, "an undriven member of the family must still surface as needs-input")
+	require.Equal(t, "permission-network", m.Name)
+	require.True(t, m.NoAutoTap, "only the driven fetch dialog is auto-answered")
+
+	// The net is anchored too: quoting the option must not surface a prompt.
+	_, ok = claude.DetectPrompt(`● It reads "No, and tell Claude what to do differently".` + "\n" +
+		strings.Repeat("─", 40) + "\n❯ \n" + strings.Repeat("─", 40) + "\n  ⏸ manual mode on")
+	require.False(t, ok, "the net must not fire on a transcript quote either")
+}
+
 // claudeWritePermissionPane is a live tool-permission dialog for a file write,
 // captured verbatim from claude 2.1.210 (tmux capture-pane, 2026-07-15) and
 // byte-identical on 2.1.207 — the version VerifiedVersion pinned while this
 // shape went undetected (#332). The decline option is a bare "3. No": the
-// "No, and tell Claude what to do differently" literal the "permission" matcher
-// requires belongs only to the WebFetch/network dialogs, never to this one. The
+// "No, and tell Claude what to do differently" literal belongs only to the
+// WebFetch/network dialogs, never to this one — though #343 later showed that a
+// Bash/Write dialog can still RENDER that literal inside its own body when it is
+// the tool's argument, which is why "permission" no longer keys on it at all
+// (claudeBashForgedPane). The
 // footer carries no "to navigate"/"to select" either, so the selection matcher
 // misses it too — pre-fix the whole pane read as idle, showing a blocked session
 // as Ready.
@@ -199,13 +525,17 @@ func TestClaudeLocalPermissionPrompt(t *testing.T) {
 		require.True(t, m.NoAutoTap, "autoyes must not auto-approve a local %s permission", name)
 	}
 
-	// Ordering guard. This pane is CONSTRUCTED, not captured: the option labels
-	// are the bundle's fetch-dialog literals but its real footer was never
-	// observed, so the "Esc to cancel · Tab to amend" line here is the adversarial
-	// worst case — if the fetch dialog ever does carry that footer, "permission"
-	// must still win, or autoyes would silently stop answering a prompt it
-	// answers today. The assertion is about matcher order, not about the pane.
+	// Ordering guard. This pane is CONSTRUCTED, not captured — the live dialog
+	// (claudeFetchPane) renders no footer at all, so the "Esc to cancel · Tab to
+	// amend" line here is the adversarial worst case: if the fetch dialog ever does
+	// grow that footer, "permission" must still win, or autoyes would silently stop
+	// answering a prompt it answers today. The assertion is about matcher order, not
+	// about the pane. Note the header and rule are not decoration: since #343 the
+	// matcher requires its title BELOW the pane's last box border, so a bare option
+	// list is no longer a fetch dialog to it.
 	m, ok := claude.DetectPrompt(strings.Join([]string{
+		"● Fetch(https://example.com)",
+		strings.Repeat("─", 56),
 		" Do you want to allow Claude to fetch this content?",
 		" ❯ 1. Yes",
 		"   2. Yes, and don't ask again for example.com",
