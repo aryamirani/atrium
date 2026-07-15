@@ -90,11 +90,21 @@ func TestSplashRippleLifeFitsTheEpochWindow(t *testing.T) {
 // leaving for the next person to trip over. Shrinking rippleCell below
 // rippleMaxR + rippleW does let drops two cells out reach in — but only the ones
 // whose crest is near its maximum radius, and a crest is only there at the very
-// end of a life, where fade = 1 - t^2 has already taken the amplitude to nearly
-// nothing. So the drops that exploit a hairline shrink contribute ~1e-3 in a
-// sliver of the (age, position) space, and a uniform sweep does not land on
-// them: measured, this test catches a shrink of 2 units but sails through 1.
-// TestSplashRippleCellHoldsThePacketsReach is what holds that half, by
+// end of a life. That confines the leak to a sliver of the (age, position)
+// space, and the sliver's *measure* is what decides this test: at a 1-unit
+// shrink a leak exists only in the last 3.8% of a life and inside an annulus at
+// most 1 unit wide, and a uniform sweep does not land there. At 2 units both
+// halves double — the last 7.6% of a life, a 2-unit annulus — so the sliver is
+// ~4x larger and the sweep does find it. Measured: catches 2, sails through 1.
+//
+// The leak's magnitude is deliberately not the argument, because it cannot be:
+// the assertion is exact equality, so a leak of any size fails the instant a
+// sample lands on one. (For scale, the largest a 1-unit shrink can leak is
+// 1.2e-4 — fade = 1 - t^2 has taken the amplitude to almost nothing exactly
+// where the crest is finally far enough out to reach. The ~1.6e-3 available at
+// a 2-unit shrink is the caught case, not the missed one.)
+//
+// TestSplashRippleCellHoldsThePacketsReach is what holds this half, by
 // construction rather than by sampling.
 func TestSplashRippleWindowIsExact(t *testing.T) {
 	checked := 0
