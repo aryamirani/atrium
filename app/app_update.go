@@ -849,7 +849,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if !m.list.ManualReorderEnabled() {
 			return m, m.handleInfoNotice("manual reorder is off while sorting by status")
 		}
-		if name == keys.KeyMoveUp {
+		// Refuse a swap with a sibling that is not on screen, and say so: the order would
+		// change, and persist, with nothing visibly moving (#339). Checked after the sort
+		// guard, whose reason a cleared filter would not lift.
+		up := name == keys.KeyMoveUp
+		if m.list.MoveNeighborHidden(up) {
+			return m, m.handleInfoNotice(m.hiddenNeighborNotice("session"))
+		}
+		if up {
 			return m.moveAndPersist(m.list.MoveUp)
 		}
 		return m.moveAndPersist(m.list.MoveDown)
@@ -861,6 +868,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		up := name == keys.KeyMoveGroupUp
 		if m.list.GroupMoveCrossesAccount(up) {
 			return m, m.handleInfoNotice("group reorder stays within an account — [ / ] moves the cluster")
+		}
+		// A block the filter has emptied renders nothing, so the transpose would be
+		// invisible (#339). Checked after the account boundary, which a cleared filter
+		// would not lift — and whose advice ([ / ]) is itself off while filtering.
+		if m.list.GroupMoveNeighborHidden(up) {
+			return m, m.handleInfoNotice(m.hiddenNeighborNotice("group"))
 		}
 		if up {
 			return m.moveAndPersist(m.list.MoveGroupUp)
@@ -877,6 +890,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		if !m.list.AccountReorderEnabled() {
 			return m, m.handleInfoNotice("only one account cluster to reorder")
+		}
+		// A cluster the filter has emptied renders nothing, so the swap would rewrite the
+		// stored order with the list standing still (#339) — the form the issue confirmed
+		// live. Checked last: neither guard above is lifted by clearing the filter.
+		if m.list.AccountMoveNeighborHidden(name == keys.KeyMoveAccountUp) {
+			return m, m.handleInfoNotice(m.hiddenNeighborNotice("cluster"))
 		}
 		moved := m.list.MoveAccountUp
 		if name == keys.KeyMoveAccountDown {
