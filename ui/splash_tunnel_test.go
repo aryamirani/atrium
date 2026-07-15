@@ -11,9 +11,11 @@ import (
 // TestSplashWrapIdxFoldsNegatives pins the trap that makes the whole seam fix
 // work. Go's % keeps the dividend's sign, so a bare iy % period returns a
 // negative index above the focal row — and splashU32 deliberately keeps negative
-// lattice coordinates distinct, so those cells would hash to a different field
-// than their positive counterparts. The tunnel would still seam; the seam would
-// just move off a = ±π. This is the same fold splashRotationIdx documents.
+// lattice coordinates distinct, so those cells hash to a different field than
+// their positive counterparts, and the wall stops tiling. The tear that causes
+// stays at a = ±π rather than moving anywhere; see splashWrapIdx for why a = 0
+// is continuous with or without the fold. This is the same fold
+// splashRotationIdx documents.
 func TestSplashWrapIdxFoldsNegatives(t *testing.T) {
 	const p = 8
 	for v := int32(-3 * p); v <= 3*p; v++ {
@@ -57,8 +59,11 @@ func TestSplashValNoiseWrapYIsPeriodic(t *testing.T) {
 // down the tunnel at a = ±π.
 //
 // Mutation-tested: swapping splashValNoiseWrapY's body for plain splashValNoise
-// fails this, and dropping the negative fold moves the failure to y ≈ 0 rather
-// than removing it.
+// fails this. Dropping the negative fold does not, and that is not a hole — this
+// test asks about continuity, and a bare % stays continuous at y = 0 (the fade
+// weight selects row 0 from either side). The fold protects periodicity, which
+// is TestSplashValNoiseWrapYIsPeriodic's question, and the ±π tear it prevents
+// is TestSplashTunnelClosesTheAngularSeam's.
 func TestSplashValNoiseWrapYClosesTheSeam(t *testing.T) {
 	const (
 		p    = int32(8)
@@ -399,24 +404,35 @@ func TestSplashTunnelHueMipQuietsTheVanishingPoint(t *testing.T) {
 	require.Greaterf(t, far, 0.8, "the far field must still sweep the gradient (spread %.3f)", far)
 }
 
-// TestSplashTunnelIsNotTheNebula is the only guard on the nastiest silent
-// failure in the variant surface. splashFieldAt's switch falls through to
-// splashFBMAt, so a tunnel registered in the enum, the rotation, the names, the
-// ops and both test maps — but missing that one case — renders as the nebula
-// while every other test in the package still passes. The contract loop only
-// checks determinism, bounds and animation, all of which the nebula satisfies
-// perfectly.
+// TestSplashTunnelIsNotTheNebula guards the nastiest silent failure in the
+// variant surface. splashFieldAt's switch falls through to splashFBMAt, so a
+// tunnel registered in the enum, the rotation, the names, the ops and both test
+// maps — but missing that one case — renders the nebula's field wearing the
+// tunnel's Pass-2 policy. The contract loop only checks determinism, bounds and
+// animation, all of which the nebula satisfies perfectly.
 //
-// It is asserted against the ops-applied render rather than the point function
-// because that is the failure's shape: the field would be right and unreachable.
+// It samples the point function, and that is load-bearing rather than
+// incidental: the tunnel's ops already differ from the nebula's on six fields
+// (contrastLo/Hi, dither, stars, lumRange, dimToRim, breathes), so two
+// ops-applied renders differ whatever field is underneath them. An earlier
+// version of this test compared renders and passed with the case deleted — it
+// was measuring the ops table, not the wiring it named.
 func TestSplashTunnelIsNotTheNebula(t *testing.T) {
-	withColorProfile(t, termenv.TrueColor)
-	const w, h = 80, 30
-	clearing := splashClearing{wordCenterRow: (h - 1) / 2}
-	tunnel := renderSplashField(w, h, 5, splashTestPalette(), clearing, splashVariantTunnel)
-	nebula := renderSplashField(w, h, 5, splashTestPalette(), clearing, splashVariantFBM)
-	require.NotEqual(t, nebula, tunnel,
-		"tunnel must reach splashTunnelAt — an unregistered variant silently renders as the nebula")
+	const phase = 5 * driftPerFrame
+	sample := func(v splashVariant) []float64 {
+		at := splashFieldAt(v, tunRefD)
+		out := make([]float64, 0, 2*21*31)
+		for row := -10; row <= 10; row++ {
+			for col := -15; col <= 15; col++ {
+				val, aux := at(col, row, float64(col), float64(row)*cellAspect, phase)
+				out = append(out, val, aux)
+			}
+		}
+		return out
+	}
+	require.NotEqual(t, sample(splashVariantFBM), sample(splashVariantTunnel),
+		"tunnel must reach splashTunnelAtFor — an unregistered variant silently "+
+			"falls through to the nebula's field")
 }
 
 // TestSplashTunnelRendersDepthAsLuminance is the Pass-2 half of

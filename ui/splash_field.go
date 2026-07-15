@@ -262,6 +262,9 @@ func splashFBMBody(x, y, phase float64) float64 {
 // multi-hued nebula. Legacy keeps its original formula, where aux is the
 // warped angle its swirl has always used; noise variants use the unwarped
 // angle and add the warp magnitude (their aux) for layered gas-cloud hues.
+// The tunnel opts out of the swirl entirely and spends its aux as the gradient
+// position directly — its hue is depth, and screen position must not enter it
+// (see the arm below).
 func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float64, nColors int) int {
 	var colorT float64
 	switch {
@@ -270,7 +273,7 @@ func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float6
 		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
 	case variant == splashVariantTunnel:
 		// Hue is depth, and nothing else. aux already *is* the mipped depth band
-		// (see splashTunnelAt), so it is spent straight: rings of colour receding
+		// (see splashTunnelAtFor), so it is spent straight: rings of colour receding
 		// down the corridor, each one a surface of constant distance.
 		//
 		// Explicitly not the default mix. Its radius and swirl terms are screen
@@ -403,6 +406,7 @@ type splashPointFn func(col, row int, dx, dy, phase float64) (val, aux float64)
 // splashFieldAt returns the per-point field evaluator for a variant. Exposed
 // as a point function (not just a buffer fill) so sub-cell techniques can
 // re-sample the same field at finer positions.
+//
 // maxD is the pane's focal-point-to-farthest-corner radius, and only a variant
 // whose subject is a single object needs it. The fields are scale-free: the
 // nebula's filaments and rain's streams are drawn in absolute cells on purpose,

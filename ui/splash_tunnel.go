@@ -25,14 +25,20 @@ const (
 	// stretched texture cell, which rendered as coloured haze with no tunnel in it.
 	// At 400 the rings read from the mip boundary out to the corners.
 	tunDepthK = 200.0
-	// tunUMax is the single guard on the singularity at the vanishing point, and
-	// it does two jobs at once. It caps how far the texture may compress —
-	// without it, near-centre cells sample lattice points hundreds apart and
-	// alias into a boiling white-noise storm that moves with the vanishing point.
-	// And because math.Min(+Inf, c) == c, the same clamp is what keeps r == 0
-	// from reaching int32(+Inf), which is implementation-defined in Go (amd64
-	// gives MinInt32, arm64 saturates) and would differ per architecture rather
-	// than fail anywhere.
+	// tunUMax is the guard on the singularity at the vanishing point, and it does
+	// two jobs at once. It caps how far the texture may compress — without it,
+	// near-centre cells sample lattice points hundreds apart and alias into a
+	// boiling white-noise storm that moves with the vanishing point. And because
+	// math.Min(+Inf, c) == c, the same clamp is what keeps r == 0 from reaching
+	// int32(+Inf), which is implementation-defined in Go (amd64 gives MinInt32,
+	// arm64 saturates) and would differ per architecture rather than fail
+	// anywhere.
+	//
+	// It closes the r → 0 door, not every door to that conversion: phase drives u
+	// too, so a long enough run reaches the same implementation-defined narrowing
+	// on its own. Measured, that needs u > 3.7e8, i.e. ~1.8e10 frames — 9.3 years
+	// of continuous animation at 60fps — so it is a fact about the bound, not a
+	// thing to guard.
 	//
 	// A separate r clamp is the obvious companion and would be dead code: it
 	// could only bind if tunDepthK/rMin < tunUMax, and it must not, or the
@@ -158,6 +164,7 @@ var (
 // It takes no phase: u already carries the fly, and each octave scales it, so the
 // octaves parallax against each other for free — which is also the physically
 // right answer, since a rigid wall flies past as one piece.
+//
 // mipBase carries the sampling geometry: an octave at frequency f is faded by
 // clamp01(mipBase/f), which is that octave's own ring spacing measured against
 // Nyquist. Each band therefore dies exactly when it stops being resolvable, which
@@ -190,8 +197,8 @@ func splashTunnelFBM(u, v, mipBase float64) float64 {
 	return sum / norm
 }
 
-// splashTunnelAt maps a cell to the tunnel wall's brightness and its depth-banded
-// hue.
+// splashTunnelAtFor builds the evaluator mapping a cell to the tunnel wall's
+// brightness and its depth-banded hue.
 //
 // val is wall*fog, and the product is the physically right one: a far wall is
 // both fogged and dim. aux is depth alone, which splashColorIdx's tunnel arm
@@ -203,6 +210,7 @@ func splashTunnelFBM(u, v, mipBase float64) float64 {
 // The vanishing point sits on the wordmark for free: dx and dy are already
 // focal-relative, so ATRIUM ends up at the end of an infinite corridor with the
 // fog's black core around it.
+//
 // It is built for one pane rather than being a plain function, because the
 // tunnel is a single object and has to be the same object at every size — see
 // splashFieldAt. Everything with a length scale is measured against maxD: the
@@ -299,10 +307,18 @@ func splashTunnelAtFor(maxD float64) splashPointFn {
 // splashWrapIdx folds a lattice index into [0, p). Go's % keeps the dividend's
 // sign, so a bare v % p returns a negative index for every row above the focal
 // point — and splashU32 keeps negative coordinates deliberately distinct, so
-// those rows would hash to a different field than their positive counterparts.
-// The tunnel would still seam; the seam would just move off a = ±π to a = 0,
-// which is the same bug wearing a different angle. Same fold, same reason, as
-// splashRotationIdx.
+// those rows hash to a different field than their positive counterparts.
+//
+// What that breaks is periodicity, not continuity, and the difference is worth
+// naming because it says where to look. Row −1 and row p−1 are the same row only
+// if the fold makes them so; without it the field simply does not tile. a = 0
+// stays exactly continuous either way — approaching y = 0 from below, the fade
+// weight goes to 1 and selects row 0 from both sides — so the tear does not move
+// there. It stays at a = ±π, where v jumps +P/2 → −P/2 and the two sides read
+// unrelated lattice rows. Measured under a bare %: the ±π jump runs 0.007 at
+// r=6 to 0.092 at r=90, while a = 0 is discontinuity-free at every radius.
+//
+// Same fold, same reason, as splashRotationIdx.
 func splashWrapIdx(v, p int32) int32 { return ((v % p) + p) % p }
 
 // splashValNoiseWrapY is splashValNoise made periodic on the y axis: the lattice
