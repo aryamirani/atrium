@@ -313,3 +313,31 @@ var GlobalKeyStringsMap = func() map[string]KeyName {
 	m["`"] = KeyScreensaver
 	return m
 }()
+
+// The mode hint tables are the modal gesture vocabularies the bar teaches
+// while a mode owns the keyboard (filter / hint / multi-select). They are part
+// of the registry — the bar's reverse drift guard walks them — but never enter
+// dispatch: each mode's handler routes its own keys, and a label here may be a
+// range ("a–z") or a compound ("p/r/x") that no single dispatch string could
+// carry. Order within each table is deliberate: actions first, so a narrow
+// terminal's truncation drops the tail cue, never the verbs.
+var (
+	// FilterModeHints teaches the incremental-filter bar (StateFilter).
+	FilterModeHints = []key.Binding{
+		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "accept")),
+		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
+	}
+	// HintModeHints teaches hint (fingers) mode's three gestures (StateHints).
+	HintModeHints = []key.Binding{
+		key.NewBinding(key.WithHelp("a–z", "copy")),
+		key.NewBinding(key.WithHelp("A–Z", "copy + open")),
+		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+	}
+	// VisualModeHints teaches multi-select mode's mark/act/exit gestures
+	// (StateVisual).
+	VisualModeHints = []key.Binding{
+		key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "mark")),
+		key.NewBinding(key.WithKeys("p", "r", "x"), key.WithHelp("p/r/x", "pause/resume/kill marked")),
+		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "exit")),
+	}
+)

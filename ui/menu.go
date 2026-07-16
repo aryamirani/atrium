@@ -7,6 +7,7 @@ import (
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
@@ -20,6 +21,11 @@ func sepStyle() lipgloss.Style      { return theme.Current().FaintStyle() }
 func progressStyle() lipgloss.Style { return theme.Current().AccentStyle().Bold(true) }
 
 var separator = " · "
+
+// filterSyntaxHint is the filter bar's predicate-vocabulary tail — syntax
+// help rendered desc-only, not a key hint. The bar scan guard whitelists it
+// by exact match; any other free text added to a bar fails that guard.
+const filterSyntaxHint = "filter: status: dirty behind pr: account: note:"
 
 // MenuState represents different states the menu can be in
 type MenuState int
@@ -244,11 +250,13 @@ func (m *Menu) SetSize(width, height int) {
 	m.height = height
 }
 
-// renderHintLine renders a flat "key desc · key desc" line for the given bindings.
-func renderHintLine(names []keys.KeyName) string {
+// renderBindingLine renders a flat "key desc · key desc" line for the given
+// bindings. Every bar — context hints and mode bars alike — renders through
+// this one path, so a bar can only name keys some registry table carries
+// (pinned by TestMenuBars_KeysExistInRegistry).
+func renderBindingLine(bindings []key.Binding) string {
 	var s strings.Builder
-	for i, k := range names {
-		binding := keys.GlobalKeyBindings[k]
+	for i, binding := range bindings {
 		if i > 0 {
 			s.WriteString(sepStyle().Render(separator))
 		}
@@ -257,6 +265,15 @@ func renderHintLine(names []keys.KeyName) string {
 		s.WriteString(descStyle().Render(binding.Help().Desc))
 	}
 	return s.String()
+}
+
+// renderHintLine renders the named global bindings through renderBindingLine.
+func renderHintLine(names []keys.KeyName) string {
+	bindings := make([]key.Binding, len(names))
+	for i, k := range names {
+		bindings[i] = keys.GlobalKeyBindings[k]
+	}
+	return renderBindingLine(bindings)
 }
 
 func (m *Menu) String() string {
@@ -283,27 +300,16 @@ func (m *Menu) String() string {
 		// While an action runs off the UI thread, the bar shows its progress line.
 		line = progressStyle().Render(m.busyText)
 	case StateFilter:
-		// Action hints first so that on a narrow terminal the width truncation below
-		// drops the predicate vocabulary tail, never the accept/clear actions.
-		line = keyStyle().Render("enter") + " " + descStyle().Render("accept") +
+		// Actions first (see keys.FilterModeHints) so that on a narrow terminal
+		// the width truncation below drops the predicate vocabulary tail, never
+		// the accept/clear actions.
+		line = renderBindingLine(keys.FilterModeHints) +
 			sepStyle().Render(separator) +
-			keyStyle().Render("esc") + " " + descStyle().Render("clear") +
-			sepStyle().Render(separator) +
-			descStyle().Render("filter: status: dirty behind pr: account: note:")
+			descStyle().Render(filterSyntaxHint)
 	case StateHints:
-		line = keyStyle().Render("a–z") + " " + descStyle().Render("copy") +
-			sepStyle().Render(separator) +
-			keyStyle().Render("A–Z") + " " + descStyle().Render("copy + open") +
-			sepStyle().Render(separator) +
-			keyStyle().Render("esc") + " " + descStyle().Render("cancel")
+		line = renderBindingLine(keys.HintModeHints)
 	case StateVisual:
-		// Gesture hints for multi-select mode. Actions first so a narrow terminal
-		// truncates the trailing exit cue, never the verbs that do the work.
-		line = keyStyle().Render("space") + " " + descStyle().Render("mark") +
-			sepStyle().Render(separator) +
-			keyStyle().Render("p/r/x") + " " + descStyle().Render("pause/resume/kill marked") +
-			sepStyle().Render(separator) +
-			keyStyle().Render("esc") + " " + descStyle().Render("exit")
+		line = renderBindingLine(keys.VisualModeHints)
 	case StateEmpty:
 		line = renderHintLine(emptyHintKeys)
 	default: // StateDefault
