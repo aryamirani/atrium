@@ -99,13 +99,15 @@ func SplashScreensaver(width, height, frame int) string {
 	return splashScene(width, height, frame, "")
 }
 
-// splashScene composites the idle empty screen: the animated nebula field with
-// the wordmark centered on top and the message tucked just below it. The wordmark
-// and message are overlaid separately at their own widths (not one padded block)
-// so the field's rings hug the narrow wordmark rather than being pushed out by
-// the wider message; each gets its own tight clearing so no glyphs bleed through
-// the text. The outer clamp honors the pane box (#251). Shared by the preview and
-// terminal panes so their idle empty states match. Callers gate on splashFits.
+// splashScene composites the idle empty screen: the animated field with the
+// wordmark centered on top and the message tucked just below it. The wordmark and
+// message are overlaid separately at their own widths (not one padded block) so
+// each stays centered on its own width rather than on the wider of the two. The
+// overlay is opaque, so nothing bleeds through the text and no clearing under it
+// is needed (see overlayAt and TestOverlayIsOpaque; V5 retired the clearing the
+// organic fields once wore). The outer clamp honors the pane box (#251). Shared by
+// the preview and terminal panes so their idle empty states match. Callers gate on
+// splashFits.
 //
 // The message line is optional: an empty message renders the wordmark alone over
 // an uninterrupted field, which is the screensaver (see SplashScreensaver). Both
@@ -121,8 +123,10 @@ func splashScene(width, height, frame int, message string) string {
 	wordX := (width - wordW) / 2
 	wordY := max(0, cy-wordH/2) // wordmark centered on the pane
 
-	// The wordmark's centre row is the field's focal row: what the pattern
-	// emanates from, and what its gradient is normalized around.
+	// The wordmark's centre row is the field's focal row: the origin its
+	// focal-relative coordinates are measured from, so the pattern emanates from
+	// the wordmark, and the anchor for the focal-point-to-corner radius a
+	// size-relative variant scales itself against (see renderSplashField).
 	focalRow := wordY + wordH/2
 
 	var msg string
@@ -166,7 +170,7 @@ type splashLUT struct {
 	// affix/starAffix are the styles' SGR sequences, split out once per palette
 	// so the hot loop can bracket a run with two WriteStrings instead of calling
 	// Style.Render — which allocates a fresh string per run. Emission dominates
-	// the frame (the field-free legacy variant still costs ~290ns/cell), and
+	// the frame (even the cheapest field measured ~290ns/cell in emission), and
 	// runs coalesce at only ~1.1 cells, so that was ~one allocation per cell.
 	affix     []splashAffix
 	starAffix splashAffix
@@ -388,7 +392,7 @@ func splashCloseRun(sb *strings.Builder, styleIdx int, lut *splashLUT) {
 }
 
 // starHash is a deterministic per-cell pseudo-random value in [0,1), so the
-// starfield is fixed in place (and snapshot-stable) while the plasma drifts
+// starfield is fixed in place (and snapshot-stable) while the field drifts
 // behind it. Built on the integer lattice hash: exact on every architecture,
 // unlike the sin-fract hash it replaced.
 func starHash(col, row int) float64 {
@@ -399,8 +403,10 @@ func starHash(col, row int) float64 {
 // splicing width-correctly around bg's ANSI escapes. Adapted from
 // overlay.PlaceOverlay (ui/overlay/overlay.go) but deliberately WITHOUT its
 // background fade — the gradient must show through, not be dimmed — and without
-// the whitespace-option plumbing (plain spaces fill any gap). The field carves a
-// blank clearing under fg, so nothing colored bleeds through the text.
+// the whitespace-option plumbing (plain spaces fill any gap). The overlay is
+// opaque: every fg cell replaces the field cell under it, so nothing colored
+// bleeds through the text and no clearing beneath it is needed (see
+// TestOverlayIsOpaque).
 func overlayAt(bg, fg string, placeX, placeY int) string {
 	fgLines, fgWidth := splashLines(fg)
 	bgLines, bgWidth := splashLines(bg)
@@ -463,7 +469,8 @@ func splashLines(s string) (lines []string, widest int) {
 
 // trimBlankLines drops leading/trailing all-whitespace lines (the wordmark art
 // is padded with blank rows) so the composited block is exactly its glyph rows —
-// letting the clearing hug the wordmark tightly.
+// keeping the opaque overlay tight to the wordmark so the field flows right up to
+// its edges instead of being blanked by padding rows around it.
 func trimBlankLines(s string) string {
 	lines := strings.Split(s, "\n")
 	start, end := 0, len(lines)

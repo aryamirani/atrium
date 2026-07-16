@@ -39,10 +39,12 @@ const splashLumStops = 16
 // about pixels: each channel spends its share through its own non-linear curve (a
 // glyph index, a dot count, an L* ramp), so rendered brightness is preserved only
 // approximately — the identity removes the systematic error, not the curvature. And
-// it only reaches the screen for a caller that actually spends dens. Every caller
-// does now: the one that did not was the braille band, which halftoned its own dot
-// count and so dimmed without its density rising to pay for it, and it was retired
-// with its variant in V5.
+// the split's approximation only reaches the screen for a caller that spends dens
+// on the glyph ramp. An endpoint caller does not and is exact anyway: rain sits at
+// lumRange 1, where dens is a constant 1 and all its brightness rides lumT. No
+// caller now dims by a private path that bypasses the ramp — the one that did was
+// the braille band, which halftoned its own dot count and so dimmed without its
+// density rising to pay for it, and it was retired with its variant in V5.
 //
 // The two endpoints are exact and transcendental-free, and that is load-bearing
 // twice over. lumRange 0 is the pure density ramp and 1 is rain's pure luminance,

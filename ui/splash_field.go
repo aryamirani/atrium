@@ -130,10 +130,10 @@ type splashPointFn func(col, row int, dx, dy, phase float64) (val, aux float64)
 // comparing two renders and measuring the ops table by accident.
 //
 // maxD is the pane's focal-point-to-farthest-corner radius, and only a variant
-// whose subject is a single object needs it. The fields are scale-free: the
-// nebula's filaments and rain's streams are drawn in absolute cells on purpose,
-// so a bigger pane shows *more* gas and more streams, which is what more window
-// should buy. The tunnel is one corridor rather than a field of many things, so
+// whose subject is a single object needs it. The fields are scale-free: rain's
+// streams are drawn in absolute cells on purpose, so a bigger pane shows *more*
+// streams, which is what more window should buy — and ripple's drops the same.
+// The tunnel is one corridor rather than a field of many things, so
 // the same rule would instead show more of it — and since perspective bunches all
 // of its detail near the vanishing point, a small pane would land entirely inside
 // the mipped core and render a vague dark blob with no rings at all. Measured at
@@ -166,10 +166,11 @@ func splashFieldAt(v splashVariant, maxD float64) splashPointFn {
 // exactly w visible cells. The field fills the whole pane and softens only near
 // the four borders (an edge vignette), rather than being a single disc inscribed
 // to the shorter axis. The pattern emanates from focalRow — the wordmark's centre
-// row — and the color gradient is normalized to the farthest corner, so the field
-// stays visually anchored on the wordmark while still reaching the edges. Pure
-// over its inputs (deterministic, snapshot-testable); returns "" on a degenerate
-// pane.
+// row, the origin of the focal-relative coordinates every field is evaluated in —
+// and a size-relative variant scales itself against the focal-point-to-corner
+// radius (see splashFieldAt), so the field stays visually anchored on the wordmark
+// while still reaching the edges. Pure over its inputs (deterministic,
+// snapshot-testable); returns "" on a degenerate pane.
 func renderSplashField(w, h, frame int, pal theme.Palette, focalRow int, variant splashVariant) string {
 	if w <= 0 || h <= 0 {
 		return ""
