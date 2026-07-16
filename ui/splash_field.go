@@ -1,16 +1,15 @@
 package ui
 
 // The splash field generator: deterministic noise primitives and the two-pass
-// renderer built on them. Pass 1 evaluates the raw (pre-contrast,
-// pre-envelope) scalar field into a buffer; Pass 2 applies contrast, the
-// envelopes (edge vignette, radial dim, breathing), glyph and color
-// quantization, the starfield, and emits run-coalesced ANSI. Everything is
-// free of time/rand dependence so renderSplashField stays pure and
-// snapshot-testable — animation enters only through the frame counter.
+// renderer built on them. Pass 1 evaluates the raw (pre-contrast) scalar field
+// into a buffer; Pass 2 applies the contrast curve, the edge vignette, glyph
+// and color quantization, the starfield, and emits run-coalesced ANSI.
+// Everything is free of time/rand dependence so renderSplashField stays pure
+// and snapshot-testable — animation enters only through the frame counter.
 //
-// The scene composition (wordmark/message overlay, clearing, gradient LUT)
-// lives in splash.go; the variant vocabulary and selection live in
-// splash_variants.go; this file owns the field math and the per-cell loops.
+// The scene composition (wordmark/message overlay, gradient LUT) lives in
+// splash.go; the variant vocabulary and selection live in splash_variants.go;
+// this file owns the field math and the per-cell loops.
 
 import (
 	"math"
@@ -19,301 +18,37 @@ import (
 	"github.com/ZviBaratz/atrium/ui/theme"
 )
 
-// The domain-warped fBm field ("a" and its derivatives). Frequencies are per
-// aspect-corrected cell; drifts are noise-units per phase-unit (phase
-// advances driftPerFrame per frame, ~0.9/s at the 60fps splash tick).
-const (
-	fieldFreq  = 0.10 // base octave frequency → ~10-cell features
-	fbmOctaves = 3
-	fbmGain    = 0.55 // amplitude falloff per octave
-	// fbmRidged0 folds octave 0 into a ridge (n → 1−|2n−1|): bright filament
-	// crests instead of soft blobs — the legacy field's charm, kept.
-	fbmRidged0 = true
+// seedStar keys the fixed starfield (an arbitrary distinct odd constant); see
+// starHash in splash.go.
+var seedStar = uint32(0x2545F491)
 
-	warpFreq = 0.035 // spatial frequency of the warp vector field
-	warpAmp  = 9.0   // warp displacement reach in cells
-
-	// The IQ-style "roil": a small sinusoidal perturbation of the warp vector
-	// whose phase varies with |q|, so animation churns the gas in place
-	// instead of sliding the whole texture (the wallpaper failure mode).
-	roilAmp = 0.05
-	roilT1  = 0.27
-	roilT2  = 0.23
-	roilQ1  = 4.1
-	roilQ2  = 4.3
-
-	// A weak warped ring term keeps the field reading as emanating from the
-	// wordmark (0 = pure free-form nebula).
-	ringWeight = 0.25
-	ringFreq   = 0.35
-
-	// fBm concentrates values near 0.5, so its contrast window is narrower
-	// than the legacy sum-of-sines one.
-	fbmContrastLo = 0.36
-	fbmContrastHi = 0.64
-
-	// Hue mix: radius + angular swirl (as legacy) + the warp-vector magnitude
-	// — IQ's nebula-coloring trick, a free Pass-1 byproduct that gives the
-	// gas layered color structure. Weights are clamped after summing.
-	fbmHueRadial    = 0.50
-	fbmHueSwirl     = 0.35
-	fbmHueWarp      = 0.30
-	fbmHueWarpScale = 2.0 // normalizes |q| (max ~0.71) toward [0,1]
-
-	// Fractal variants: a wide contrast window (the trap glow is already
-	// contrasty) and a hue mix dominated by the structure helper (escape
-	// depth / fold depth), so color bands follow the fractal's geometry.
-	fractalContrastLo = 0.12
-	fractalContrastHi = 0.88
-	fractalHueRadial  = 0.25
-	fractalHueSwirl   = 0.15
-	fractalHueAux     = 0.60
-
-	// ditherAmp is the dither amplitude in glyph-index steps. MUST stay
-	// < 1.0: that is what guarantees a fully-dark cell (lit=0) still rounds
-	// to glyph 0, which keeps the vignette's border rows blank.
-	ditherAmp = 0.9
-)
-
-// seedDither keys the per-cell dither noise (distinct from every field seed).
-const seedDither uint32 = 0x94D049BB
-
-// The braille faint band (variant "b"): cells whose lit intensity falls below
-// brailleBandHi are re-sampled at their 8 sub-cell dot centers instead of
-// taking a ramp glyph.
-const (
-	brailleBandHi = 0.34
-	// brailleHalftoneScale maps a sub-cell's lit value to its dot-firing
-	// odds: a dot fires when subLit > dither·scale, so the expected dot
-	// count rises linearly with intensity (a halftone) instead of snapping
-	// all 8 dots on at once — all-or-nothing thresholding made the faint
-	// band read *denser* than the midtones (walls of ⣿). Chosen above
-	// brailleBandHi so a cell at the band top lights ~4–5 of its 8 dots,
-	// matching the visual weight of the ramp glyph it hands over to. A
-	// fully dark sub-cell (subLit = 0) can never fire: the comparison is
-	// strict and dither is non-negative.
-	brailleHalftoneScale = 0.6
-)
-
-// The flow contour band (variant "c"): cells in this lit range whose local
-// gradient is strong enough swap their ramp glyph for a line glyph oriented
-// along the iso-contour. Direction is only well-conditioned where |∇f| is
-// large — everywhere-application would render angular noise, so flat cells
-// and the band's outside keep the density ramp (the published prior art's
-// edges-only rule).
-const (
-	flowBandLo  = 0.45
-	flowBandHi  = 0.70
-	flowGradMin = 0.02
-)
-
-// splashFlowGlyph picks the contour-tangent line glyph for a cell from
-// central differences of the raw field buffer (one-sided at borders). All
-// vector math happens in aspect-corrected space, which is proportional to
-// rendered pixel space, so angles are true visual angles — but note the
-// diagonals: a cell is cellAspect× taller than wide, so ╱ renders at
-// atan(2) ≈ 63.4°, not 45°, and the bin edges sit at the midpoints between
-// glyph angles (0°, 63.4°, 90°, 116.6°). Rows grow downward while glyph
-// angles are y-up; the sign flip below does that conversion (getting it
-// wrong silently swaps ╱ and ╲).
-func splashFlowGlyph(vals []float64, w, h, row, col int) (rune, bool) {
-	gx := (vals[row*w+min(col+1, w-1)] - vals[row*w+max(col-1, 0)]) / 2
-	gy := (vals[min(row+1, h-1)*w+col] - vals[max(row-1, 0)*w+col]) / 2
-	// ∂f per aspect-space unit: a row step is cellAspect units.
-	gyv := gy / cellAspect
-	// Contour tangent = perpendicular to the gradient; then flip to y-up.
-	tu, tv := -gyv, gx
-	if math.Hypot(tu, tv) < flowGradMin {
-		return 0, false
-	}
-	ang := math.Atan2(-tv, tu) * (180 / math.Pi)
-	if ang < 0 {
-		ang += 180
-	}
-	switch {
-	case ang < 31.7 || ang >= 148.3:
-		return '─', true
-	case ang < 76.7:
-		return '╱', true
-	case ang < 103.3:
-		return '│', true
-	default:
-		return '╲', true
-	}
-}
-
-// brailleBit maps sub-cell (sy, sx) to its dot bit in U+2800..U+28FF: dots
-// 1,2,3,7 run down the left column, dots 4,5,6,8 down the right.
-var brailleBit = [4][2]uint8{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}}
-
-// splashBrailleMask re-samples the fBm field at the 8 dot centers of one cell
-// and halftones each into a braille dot. dx/dy are the cell's focal-relative
-// aspect-corrected center; a dot column step is 0.5 cell and a dot row step
-// is 0.5 aspect units (cellAspect/4). The warp vector is evaluated once for
-// the cell and shared by all 8 dots (it is constant at cell scale — see
-// splashFBMWarpAt); the cell's envelope (vignette × radial × breathe) scales
-// every dot, and the per-dot dither runs at sub-cell resolution so dot
-// patterns stay granular. A zero mask means "render a space" — bare U+2800
-// is never emitted (some fonts draw it as eight hollow circles).
+// splashColorIdx maps a cell's hue helper to its gradient stop, and it is the
+// package's whole hue contract: aux *is* the gradient position, in [0,1].
 //
-// It deliberately does not spend splashShade's dens, and is the only branch that
-// does not: at lumRange > 0 a braille cell dims without its dot count rising to pay
-// for it. Measured at 120x40, lumRange 0 -> 0.5, over the braille cells themselves:
-// dots 3394 -> 3382 (i.e. only the gate moved) while their mean luminance stop falls
-// 15.0 -> 5.4. Braille's density *is* that dot count, so the lift would have to land
-// here, per sub-cell, rather than on a glyph index.
+// There used to be a mix of screen position (radius + a slow angular swirl) with
+// the field's own aux, and it was the default arm — which silently swallowed four
+// new variants in a row, because a field that made no hue decision still rendered
+// something plausible: a stationary rosette painted by pane coordinates. Every
+// surviving field's hue is a property of the thing being drawn rather than of the
+// cell's address — the tunnel's mipped depth band (splashTunnelAtFor), ripple's
+// ring age (splashRippleSum) — so there is one rule and no way to miss it. A
+// field wanting position-based hue re-introduces the mix with its own argument
+// for it.
 //
-// Take that mean over the braille cells and no others. Averaged across the whole
-// render it reads 9.2, because the variant is only braille *below* brailleBandHi and
-// the brighter ramp cells above it — which this function never sees — carry the top
-// of the axis. The band is what dims, and measuring the pane hides most of it.
+// Rain is the one variant that never arrives here: it draws from its own
+// luminance ramp (see the rain branch in renderSplashField), which is why this
+// takes no variant.
 //
-// That asymmetry is a decision, not an oversight. The screenshot gate on the shaded
-// nebula found that lifting density to decouple brightness necessarily makes density
-// more uniform — you buy tonal smoothness by spending the stipple — and braille's
-// halftone is nothing but stipple. The variant ships at lumRange 0 (see
-// splashVariant.ops), so this is unreached rather than latent. Opting it in is a
-// picture question rather than an algebra one; if the answer is ever yes, the change
-// is to take lumRange here and lift subLit through splashShade before the dither
-// compare, which measures at +141% dots and costs nothing at lumRange 0.
-func splashBrailleMask(col, row int, dx, dy, phase, lo, hi, envelope float64) uint8 {
-	qx, qy, _ := splashFBMWarpAt(dx, dy, phase)
-	wx, wy := warpAmp*qx, warpAmp*qy
-	var mask uint8
-	for sy := 0; sy < 4; sy++ {
-		suby := dy + (float64(sy)-1.5)*0.5
-		for sx := 0; sx < 2; sx++ {
-			subx := dx + (float64(sx)-0.5)*0.5
-			raw := splashFBMBody(subx+wx, suby+wy, phase)
-			subLit := smoothstep(lo, hi, raw) * envelope
-			if subLit > splashDither(2*col+sx, 4*row+sy)*brailleHalftoneScale {
-				mask |= brailleBit[sy][sx]
-			}
-		}
-	}
-	return mask
-}
-
-// Lattice seeds (arbitrary distinct odd constants) and drift vectors: each
-// octave and each warp component drifts in its own direction/speed, which —
-// together with the per-octave domain rotation below — is what animates the
-// field without 3D noise.
-var (
-	seedOct   = [fbmOctaves]uint32{0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35}
-	octDrift  = [fbmOctaves][2]float64{{0.050, 0.030}, {-0.040, 0.065}, {0.075, -0.050}}
-	fbmLacun  = [fbmOctaves - 1]float64{2.01, 2.02} // detuned off 2.0 (IQ: avoids octave self-alignment)
-	warpDrift = [2]float64{0.022, -0.018}
-	seedWarpX = uint32(0x27D4EB2F)
-	seedWarpY = uint32(0x165667B1)
-	seedStar  = uint32(0x2545F491)
-)
-
-// splashFBMAt evaluates the domain-warped fBm field at one point: a warp
-// vector q from two decorrelated noise fields (advected and roiled by phase)
-// displaces the sample point, then 3 fBm octaves — ridged crest first,
-// per-octave rotated by the exact Pythagorean matrix (0.8, 0.6; −0.6, 0.8) —
-// are blended with a weak ring anchored on the wordmark. Returns the raw
-// value in [0,1] and the normalized warp magnitude (the hue helper).
-func splashFBMAt(_, _ int, dx, dy, phase float64) (val, qLen float64) {
-	qx, qy, qq := splashFBMWarpAt(dx, dy, phase)
-	return splashFBMBody(dx+warpAmp*qx, dy+warpAmp*qy, phase), clamp01(qq * fbmHueWarpScale)
-}
-
-// splashFBMWarpAt evaluates the animated warp vector: two decorrelated noise
-// fields (offsets advected by phase) plus the roil perturbation. Split from
-// the body so sub-cell refinement can reuse one warp per cell — the warp
-// varies over ~1/warpFreq ≈ 28 cells, so it is constant within a cell for
-// all visual purposes, and it is the more expensive half of the field.
-func splashFBMWarpAt(dx, dy, phase float64) (qx, qy, qq float64) {
-	wxn, wyn := dx*warpFreq, dy*warpFreq
-	qx = splashValNoise(wxn+warpDrift[0]*phase, wyn, seedWarpX) - 0.5
-	qy = splashValNoise(wxn, wyn+warpDrift[1]*phase, seedWarpY) - 0.5
-	qq = math.Hypot(qx, qy)
-	qx += roilAmp * math.Sin(roilT1*phase+qq*roilQ1)
-	qy += roilAmp * math.Sin(roilT2*phase+qq*roilQ2)
-	return qx, qy, qq
-}
-
-// splashFBMBody is the fBm-plus-ring stack, evaluated at an already-warped
-// point.
-func splashFBMBody(x, y, phase float64) float64 {
-	sum, norm, amp := 0.0, 0.0, 1.0
-	fx, fy := x*fieldFreq, y*fieldFreq
-	for o := 0; o < fbmOctaves; o++ {
-		n := splashValNoise(fx+octDrift[o][0]*phase, fy+octDrift[o][1]*phase, seedOct[o])
-		if o == 0 && fbmRidged0 {
-			n = 1 - math.Abs(2*n-1)
-		}
-		sum += amp * n
-		norm += amp
-		amp *= fbmGain
-		if o < fbmOctaves-1 {
-			lac := fbmLacun[o]
-			fx, fy = lac*(0.8*fx+0.6*fy), lac*(-0.6*fx+0.8*fy)
-		}
-	}
-	n := sum / norm
-	ring := 0.5 + 0.5*math.Sin(math.Hypot(x, y)*ringFreq-phase)
-	return clamp01((1-ringWeight)*n + ringWeight*ring)
-}
-
-// splashColorIdx maps a cell to its gradient stop. The hue swirls across the
-// field (radius + a slow angular sweep) so the gradient reads as a drifting
-// multi-hued nebula. Legacy keeps its original formula, where aux is the
-// warped angle its swirl has always used; noise variants use the unwarped
-// angle and add the warp magnitude (their aux) for layered gas-cloud hues.
-// The hueIsAux variants opt out of the swirl entirely and spend their aux as
-// the gradient position directly — their hue is a property of the field itself
-// (depth; ring age), and screen position must not enter it (see the arm below).
-func splashColorIdx(variant splashVariant, aux, dx, dy, dRaw, phase, maxD float64, nColors int) int {
-	var colorT float64
-	switch {
-	case variant == splashVariantLegacy:
-		swirl := 0.5 + 0.5*math.Sin(aux+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-		colorT = clamp01(colorRadialMix*(dRaw/maxD) + (1-colorRadialMix)*swirl)
-	case variant.hueIsAux():
-		// The variants whose hue is a property of their own field rather than of
-		// the cell's address. aux already *is* the gradient position — the
-		// tunnel's mipped depth band (splashTunnelAtFor), ripple's ring age
-		// (splashRippleSum) — so it is spent straight: rings of colour receding
-		// down a corridor, and rings of colour spreading from a drop.
-		//
-		// Explicitly not the default mix, which is what this arm is for. Its radius
-		// and swirl terms are screen position, so they would paint a stationary
-		// rosette over a moving field and pin hue to the pane rather than to the
-		// thing being drawn — the tunnel's rings would stop receding and ripple's
-		// would stop carrying their colour outward, each of which is the whole
-		// effect. The mix would also re-introduce the angle, and with it a hue seam
-		// at a = ±π that the tunnel's own wrap exists to prevent.
-		colorT = clamp01(aux)
-	case variant.isFractal():
-		theta := math.Atan2(dy, dx)
-		swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-		colorT = clamp01(fractalHueRadial*(dRaw/maxD) + fractalHueSwirl*swirl + fractalHueAux*aux)
-	default:
-		theta := math.Atan2(dy, dx)
-		swirl := 0.5 + 0.5*math.Sin(theta+dRaw*colorSwirlF-phase*colorSwirlSpeed)
-		colorT = clamp01(fbmHueRadial*(dRaw/maxD) + fbmHueSwirl*swirl + fbmHueWarp*aux)
-	}
-	return clampInt(int(colorT*float64(nColors-1)), 0, nColors-1)
+// A field that feeds aux outside [0,1] gets clamped to a flat end of the
+// gradient — loud, and visibly not a design, which is the intent.
+func splashColorIdx(aux float64, nColors int) int {
+	return clampInt(int(clamp01(aux)*float64(nColors-1)), 0, nColors-1)
 }
 
 // splashCellHash is latticeVal for integer cell coordinates. Pane dimensions
-// bound col/row (braille sub-cells at most quadruple them), so the narrowing
-// cannot overflow in practice.
+// bound col/row, so the narrowing cannot overflow in practice.
 func splashCellHash(col, row int, seed uint32) float64 {
 	return latticeVal(int32(col), int32(row), seed) //nolint:gosec // G115: cell coords are pane-bounded
-}
-
-// splashDither is the per-cell quantization dither in [0,1): plain hash
-// (white) noise off the integer lattice hash. White noise was chosen over
-// interleaved gradient noise deliberately — IGN is linear along a row (slope
-// ≈3.556 mod 1), so in sparse zones it lights cells in a mechanical
-// period-2 lattice, while white-noise clumping reads as organic gas grain at
-// character-cell scale. Deliberately frame-free: a time term would make
-// faint zones boil at the push rate.
-func splashDither(col, row int) float64 {
-	return splashCellHash(col, row, seedDither)
 }
 
 // splashHash is a deterministic 32-bit lattice hash: seed, y, and x are folded
@@ -349,37 +84,19 @@ func latticeVal(x, y int32, seed uint32) float64 {
 	return float64(splashHash(x, y, seed)) * (1.0 / 4294967296.0)
 }
 
-// splashValNoise is bilinear value noise with a smoothstep fade: continuous,
-// deterministic, in [0,1). Frequency is applied by the caller (pass x*freq).
-// Different seeds give statistically independent fields, which is how the
-// warp vector and each fBm octave decorrelate.
-func splashValNoise(x, y float64, seed uint32) float64 {
-	xi, yi := math.Floor(x), math.Floor(y)
-	xf, yf := x-xi, y-yi
-	u := xf * xf * (3 - 2*xf)
-	v := yf * yf * (3 - 2*yf)
-	ix, iy := int32(xi), int32(yi)
-	return splashLerp(
-		splashLerp(latticeVal(ix, iy, seed), latticeVal(ix+1, iy, seed), u),
-		splashLerp(latticeVal(ix, iy+1, seed), latticeVal(ix+1, iy+1, seed), u),
-		v)
-}
-
 func splashLerp(a, b, t float64) float64 { return a + (b-a)*t }
 
 // splashField is Pass 1's output: the raw scalar field (pre-contrast,
-// pre-envelope, in [0,1]) plus a variant-defined hue helper per cell. For the
-// legacy field the helper is the warped-coordinate angle its color swirl has
-// always used; noise variants will carry their warp-vector magnitude instead
-// (the "free" nebula-coloring byproduct).
+// pre-envelope, in [0,1]) plus a variant-defined hue helper per cell. The helper
+// is the gradient position the field wants for that cell — see splashColorIdx.
 type splashField struct {
 	vals []float64
 	aux  []float64
 }
 
 // splashEvalField runs Pass 1: the raw field for every cell, in focal-relative
-// aspect-corrected coordinates (dx, dy) — the same frame the envelopes and
-// color gradient use in Pass 2. Buffers are per-call allocations; at splash
+// aspect-corrected coordinates (dx, dy) — the same frame the edge vignette uses
+// in Pass 2. Buffers are per-call allocations; at splash
 // sizes (19 KB at 80×30) that is cheaper than any pooling would be worth.
 func splashEvalField(w, h int, cx, cyFocal, phase float64, at splashPointFn) splashField {
 	f := splashField{vals: make([]float64, w*h), aux: make([]float64, w*h)}
@@ -406,15 +123,17 @@ func splashEvalField(w, h int, cx, cyFocal, phase float64, at splashPointFn) spl
 // the pane's parity to round back to a column. Most evaluators ignore it.
 type splashPointFn func(col, row int, dx, dy, phase float64) (val, aux float64)
 
-// splashFieldAt returns the per-point field evaluator for a variant. Exposed
-// as a point function (not just a buffer fill) so sub-cell techniques can
-// re-sample the same field at finer positions.
+// splashFieldAt returns the per-point field evaluator for a variant. Exposed as
+// a point function rather than a buffer fill so a field can be sampled directly:
+// the braille variant used to re-sample it at sub-cell positions, and now it is
+// how the per-variant guards ask what a field actually computes, instead of
+// comparing two renders and measuring the ops table by accident.
 //
 // maxD is the pane's focal-point-to-farthest-corner radius, and only a variant
-// whose subject is a single object needs it. The fields are scale-free: the
-// nebula's filaments and rain's streams are drawn in absolute cells on purpose,
-// so a bigger pane shows *more* gas and more streams, which is what more window
-// should buy. The tunnel is one corridor rather than a field of many things, so
+// whose subject is a single object needs it. The fields are scale-free: rain's
+// streams are drawn in absolute cells on purpose, so a bigger pane shows *more*
+// streams, which is what more window should buy — and ripple's drops the same.
+// The tunnel is one corridor rather than a field of many things, so
 // the same rule would instead show more of it — and since perspective bunches all
 // of its detail near the vanishing point, a small pane would land entirely inside
 // the mipped core and render a vague dark blob with no rings at all. Measured at
@@ -422,59 +141,45 @@ type splashPointFn func(col, row int, dx, dy, phase float64) (val, aux float64)
 // Scaling it to the pane makes it the same tunnel at every size.
 func splashFieldAt(v splashVariant, maxD float64) splashPointFn {
 	switch v {
-	case splashVariantLegacy:
-		return splashLegacyAt
-	case splashVariantJulia:
-		return splashJuliaAt
-	case splashVariantMandala:
-		return splashMandalaAt
-	case splashVariantRain:
-		return splashRainAt
 	case splashVariantTunnel:
 		return splashTunnelAtFor(maxD)
 	case splashVariantRipple:
 		return splashRippleAt
 	default:
-		return splashFBMAt
+		// Rain, and the fallback for a variant that forgot its case here.
+		//
+		// Which variant this arm serves is load-bearing, and the reason is not the
+		// obvious one. The tunnel and ripple each have a guard asserting their field
+		// is not the one a forgotten case would hand them, and each probes that by
+		// sampling *rain* — which works only because rain is what this arm returns.
+		// So the probe and this arm have to name the same variant. Give rain a case
+		// of its own and point this somewhere else and both guards keep passing
+		// while no longer testing the fallback at all: that is the quiet failure.
+		// (Pointing it at the tunnel is the loud one — the guard would compare the
+		// tunnel to itself and fail on every run.) Rain needs no guard of its own,
+		// because being this arm is what makes it unmisroutable.
+		return splashRainAt
 	}
 }
 
-// splashLegacyAt is the PR #314 sum-of-sines plasma, evaluated at one point:
-// two domain-warped ring octaves + rotationally-symmetric petals + an
-// isotropic fine texture (three plane waves 120° apart, so no diagonal
-// grain). Returns the raw value and the warped angle (its swirl input).
-func splashLegacyAt(_, _ int, dx, dy, phase float64) (val, theta float64) {
-	wx := dx + plasmaWarp*math.Sin(dy*plasmaWarpF-phase*0.4)
-	wy := dy + plasmaWarp*math.Sin(dx*plasmaWarpF-phase*0.4)
-	d := math.Hypot(wx, wy)
-	theta = math.Atan2(wy, wx)
-	tex := math.Sin(dx*isoFreq-phase*isoSpeed) +
-		math.Sin((dx*iso1Cos+dy*iso1Sin)*isoFreq-phase*isoSpeed) +
-		math.Sin((dx*iso2Cos+dy*iso2Sin)*isoFreq-phase*isoSpeed)
-	v := math.Sin(d*plasmaFreq1-phase) +
-		0.55*math.Sin(d*plasmaFreq2-phase*0.7) +
-		0.40*math.Sin(d*plasmaFreq3-phase*0.5)*math.Cos(theta*petalCount) +
-		isoWeight*tex
-	return clamp01((v/plasmaAmp + 1) * 0.5), theta
-}
-
-// renderSplashField builds the colored plasma background: exactly h rows of
-// exactly w visible cells, with the clearing ellipses blanked out for the
-// composited text. The field fills the whole pane and softens only near the
-// four borders (an edge vignette), rather than being a single disc inscribed
-// to the shorter axis. The pattern emanates from the wordmark's center
-// (clearing.wordCenterRow) and the color gradient / gentle radial dim are
-// normalized to the farthest corner, so the field stays visually anchored on
-// the wordmark while still reaching the edges. Pure over its inputs
-// (deterministic, snapshot-testable); returns "" on a degenerate pane.
-func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashClearing, variant splashVariant) string {
+// renderSplashField builds the colored field background: exactly h rows of
+// exactly w visible cells. The field fills the whole pane and softens only near
+// the four borders (an edge vignette), rather than being a single disc inscribed
+// to the shorter axis. The pattern emanates from focalRow — the wordmark's centre
+// row, the origin of the focal-relative coordinates every field is evaluated in —
+// and a size-relative variant scales itself against the focal-point-to-corner
+// radius (see splashFieldAt), so the field stays visually anchored on the wordmark
+// while still reaching the edges. Pure over its inputs (deterministic,
+// snapshot-testable); returns "" on a degenerate pane.
+func renderSplashField(w, h, frame int, pal theme.Palette, focalRow int, variant splashVariant) string {
 	if w <= 0 || h <= 0 {
 		return ""
 	}
 	cx := float64(w-1) / 2
-	cyFocal := float64(clearing.wordCenterRow)
-	// Distance from the focal point to the farthest corner: the denominator for
-	// the color gradient and the core→rim dim, so both span the whole pane.
+	cyFocal := float64(focalRow)
+	// Distance from the focal point to the farthest corner: the length scale a
+	// variant whose subject is one object measures itself against (see
+	// splashFieldAt), so it spans the whole pane.
 	maxD := math.Hypot(
 		math.Max(cx, float64(w-1)-cx),
 		math.Max(cyFocal, float64(h-1)-cyFocal)*cellAspect)
@@ -488,9 +193,6 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 
 	at := splashFieldAt(variant, maxD)
 	fld := splashEvalField(w, h, cx, cyFocal, phase, at)
-	if variant.isFractal() {
-		splashBloom(fld, w, h)
-	}
 
 	lut := splashLUTFor(pal)
 	nColors := len(lut.styles)
@@ -499,18 +201,9 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 	maxGlyph := len(ramp) - 1
 	starRampR := []rune(starRamp)
 	starMax := len(starRampR) - 1
-	// Per-variant Pass-2 policy: contrast window, dither, starfield, the
-	// envelope terms, and how the field is shaded (see splashVariant.ops).
+	// Per-variant Pass-2 policy: the starfield, and how the field is shaded (see
+	// splashVariant.ops).
 	ops := variant.ops()
-	contrastLo, contrastHi := ops.contrastLo, ops.contrastHi
-	dither := ops.dither
-	// Slow global brightness swell (breathing), computed once per frame. A field
-	// already in motion opts out: it would flicker everything at once, and it
-	// costs the brightest cells the top of their range.
-	breathe := 1.0
-	if ops.breathes {
-		breathe = 1 - breatheDepth*(0.5-0.5*math.Sin(phase*breatheSpeed))
-	}
 
 	var sb strings.Builder
 	// A seed, not a bound — the run count isn't known until the field is walked.
@@ -552,25 +245,27 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 		if row > 0 {
 			sb.WriteByte('\n')
 		}
-		dy := (float64(row) - cyFocal) * cellAspect
 		// edgeY is exactly 0 on the first/last rows, and the envelope multiplies
 		// the field *after* any Pass-1 processing — that construction (not
 		// tuning) is what keeps the border rows blank.
 		edgeY := smoothstep(0, 1, clamp01(math.Min(float64(row), float64(h-1-row))/marginY))
 		curIdx := -1 // -1 marks a blank (uncolored) run
 		for col := 0; col < w; col++ {
-			dx := float64(col) - cx
 			idx, ch := -1, ' '
 
-			if edgeY > 0 && !clearing.blanks(dx, row) {
+			if edgeY > 0 {
 				cell := row*w + col
-				dRaw := math.Hypot(dx, dy)
-				// Contrast: push mid-tones apart so bright ridges read as
-				// filaments against darker voids.
-				intensity := smoothstep(contrastLo, contrastHi, fld.vals[cell])
+				// The contrast curve. It is full-range — it clips nothing, which is
+				// what a field carrying its own gradient needs — but it is NOT an
+				// identity, and the distinction is worth the call it invites you to
+				// skip: smoothstep is Hermite on the *clamped* parameter, so a {0,1}
+				// window still bends every interior value through t*t*(3-2t). Each
+				// field is tuned against this S-curved version of its output rather
+				// than against its generator's raw values. Pinned by
+				// TestFieldContrastIsStillHermite.
+				intensity := smoothstep(0, 1, fld.vals[cell])
 				edgeX := smoothstep(0, 1, clamp01(math.Min(float64(col), float64(w-1-col))/marginX))
-				radial := 1 - ops.dimToRim*clamp01(dRaw/maxD)
-				envelope := edgeX * edgeY * radial * breathe
+				envelope := edgeX * edgeY
 				lit := intensity * envelope
 				// Split lit between the two channels. At lumRange 0 this is the
 				// identity (dens == lit, lumT unused); at 1 the glyph holds full
@@ -591,47 +286,17 @@ func renderSplashField(w, h, frame int, pal theme.Palette, clearing splashCleari
 						ch = splashRainGlyph(col, row, phase)
 						idx = lut.rainIndex() + g
 					}
-				} else if variant == splashVariantBraille && lit < brailleBandHi {
-					// Faint gas: refine to sub-cell braille dots instead of a
-					// (coarse) ramp glyph; bright cores keep the solid ramp.
-					//
-					// Note this branch keeps its own gate. The halftone answers "is
-					// there ink" at sub-cell resolution, and it answers yes well
-					// below where the density ramp rounds to glyph 0 — so folding it
-					// under the ramp's gate would blank the faintest third of the
-					// band this variant exists to draw.
-					if mask := splashBrailleMask(col, row, dx, dy, phase, contrastLo, contrastHi, envelope); mask != 0 {
-						if si, ok := shadeAt(splashColorIdx(variant, fld.aux[cell], dx, dy, dRaw, phase, maxD, nColors), lumT, ops, lut); ok {
-							ch = rune(0x2800) | rune(mask)
-							idx = si
-						}
-					}
 				} else {
 					gf := dens * float64(maxGlyph)
-					if dither {
-						// Sub-step dither in glyph-index space: kills banding on
-						// smooth gradients. Amplitude < 1 step, so lit=0 stays
-						// glyph 0 (the blank-border invariant — though at lumRange
-						// > 0 the luminance gate in shadeAt carries that instead,
-						// since a lifted density reaches glyph 2 or 3 at lit≈0).
-						gf += (splashDither(col, row) - 0.5) * ditherAmp
-					}
 					if g := clampInt(int(gf), 0, maxGlyph); g > 0 {
-						if si, ok := shadeAt(splashColorIdx(variant, fld.aux[cell], dx, dy, dRaw, phase, maxD, nColors), lumT, ops, lut); ok {
+						if si, ok := shadeAt(splashColorIdx(fld.aux[cell], nColors), lumT, ops, lut); ok {
 							ch = ramp[g]
-							if variant == splashVariantFlow && lit >= flowBandLo && lit <= flowBandHi {
-								// Stroke the contour band along the field's
-								// iso-lines; flat cells keep the ramp glyph.
-								if fg, ok := splashFlowGlyph(fld.vals, w, h, row, col); ok {
-									ch = fg
-								}
-							}
 							idx = si
 						}
 					}
 				}
 				// Starfield on top: a fixed, twinkling point can light even a void
-				// the plasma left dark. Fades with the same border vignette.
+				// the field left dark. Fades with the same border vignette.
 				// Variants whose own motion the eye tracks opt out — fixed points
 				// over moving ones read as stuck pixels.
 				if sh := starHash(col, row); ops.stars && sh > starThreshold {

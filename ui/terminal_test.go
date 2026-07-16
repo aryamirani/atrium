@@ -276,7 +276,7 @@ func TestTerminalFallbackReadableOnNarrowPane(t *testing.T) {
 }
 
 // TestTerminalSplashParity locks the Terminal tab's idle empty state to the same
-// animated nebula as the preview: at an adequate size String() renders the field
+// animated field as the preview: at an adequate size String() renders the field
 // (wordmark and prompt surviving, bounded), and below the floor it falls back to
 // the plain placeholder with no field glyphs. The placeholder keeps the wordmark
 // only where it fits — 48 cols affords it, narrower is the message alone (see
@@ -301,7 +301,7 @@ func TestTerminalSplashParity(t *testing.T) {
 	stripped := ansi.Strip(out)
 	require.Contains(t, stripped, "Select an instance", "terminal prompt must survive")
 	require.Contains(t, stripped, "█", "wordmark must survive")
-	require.True(t, strings.ContainsAny(stripped, fieldGlyphs), "nebula must render behind the wordmark")
+	require.True(t, strings.ContainsAny(stripped, fieldGlyphs), "the field must render behind the wordmark")
 
 	// Below the splash floor → plain fallback, no field glyphs.
 	small := NewTerminalPane(context.Background())

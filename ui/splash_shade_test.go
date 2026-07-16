@@ -160,46 +160,6 @@ func TestSharedLumCurveMatchesRainsTail(t *testing.T) {
 	}
 }
 
-// TestShippedVariantsLumRange is the promise "byte-identical until explicitly
-// opted in", pinned where it cannot rot.
-//
-// The worktree SHA-256 diff proves the same thing far more thoroughly, and it is a
-// throwaway that runs once. This is what stops a variant being opted in by
-// accident six months from now — and it is a real risk rather than a theoretical
-// one: ops.dimToRim once shipped declared-and-never-read because a scripted edit
-// silently no-op'd, and a lumRange that quietly reverted to 0 would look exactly
-// like a variant that was never tuned.
-func TestShippedVariantsLumRange(t *testing.T) {
-	want := map[splashVariant]float64{
-		splashVariantLegacy:  0,
-		splashVariantFBM:     0,
-		splashVariantBraille: 0,
-		splashVariantFlow:    0,
-		splashVariantJulia:   0,
-		splashVariantMandala: 0,
-		// Rain is the one field whose own gradient is the point: a constant-weight
-		// katakana cannot shade by size, so all of its brightness rides the colour.
-		splashVariantRain: 1,
-		// The tunnel's fog is the other such gradient, and it has no stipple to
-		// spend on the trade. A literal rather than the constant baseOps reads, so
-		// this stays a change-detector instead of comparing a name to itself.
-		splashVariantTunnel: 1,
-		// Ripple's rings decay to nothing, which is a gradient with no stipple to
-		// spend — but unlike rain and the tunnel it stops short of 1, keeping the
-		// density ramp for its crests while the luminance carries the tail. The
-		// value came from a rendered sweep; see baseOps.
-		splashVariantRipple: 0.75,
-	}
-	require.Len(t, want, int(splashVariantCount),
-		"every variant needs an explicit lumRange here — a new one must make a choice, "+
-			"not inherit whatever the zero value happens to be")
-	for v := splashVariant(0); v < splashVariantCount; v++ {
-		w, ok := want[v]
-		require.Truef(t, ok, "variant %d is missing from the table", int(v))
-		require.Equalf(t, w, v.ops().lumRange, "variant %d's shipped lumRange", int(v))
-	}
-}
-
 // shadeDecoder inverts the shade grid so a rendered cell can be read back as the
 // (hue, luminance) it actually carries.
 //
@@ -245,7 +205,7 @@ func shadeStopGrid(t *testing.T, w, h, frame int, pal theme.Palette, v splashVar
 	t.Helper()
 	d := newShadeDecoder(t, buildSplashLUT(pal))
 	out := renderSplashField(w, h, frame, pal,
-		splashClearing{wordCenterRow: (h - 1) / 2}, v)
+		centeredFocalRow(h), v)
 
 	stops := make([][]int, 0, h)
 	prefixes := make([][]string, 0, h)
@@ -290,8 +250,15 @@ func TestShadedFieldVariesLuminanceAndHoldsHue(t *testing.T) {
 	pal := splashTestPalette()
 	const w, h = 120, 40
 
-	flat, flatPre := shadeStopGrid(t, w, h, 7, pal, splashVariantFBM)
-	// The control: at lumRange 0 every cell is blank or at its hue's *full* colour.
+	// The control is synthesized rather than shipped. Every variant used to be at
+	// lumRange 0 and the nebula was the natural one to read it off; V5 retired the
+	// organic fields and no survivor is at 0, so the knob drives it. The tunnel
+	// because it must be a field that reaches shadeAt at all — rain draws from its
+	// own ramp and never arrives — and because it is the densest, so the spread
+	// below is measured over most of the pane.
+	withLumRange(t, 0)
+	flat, flatPre := shadeStopGrid(t, w, h, 7, pal, splashVariantTunnel)
+	// At lumRange 0 every cell is blank or at its hue's *full* colour.
 	//
 	// Not "no cell decodes into the grid" — it cannot be, and asserting it would be
 	// vacuous. The grid's top stop is pinned to the gradient affix, so a lumRange 0
@@ -305,7 +272,7 @@ func TestShadedFieldVariesLuminanceAndHoldsHue(t *testing.T) {
 	}
 
 	withLumRange(t, 0.5)
-	lit, litPre := shadeStopGrid(t, w, h, 7, pal, splashVariantFBM)
+	lit, litPre := shadeStopGrid(t, w, h, 7, pal, splashVariantTunnel)
 
 	seen := map[int]bool{}
 	for _, row := range lit {
@@ -368,7 +335,7 @@ func TestShadedFaintCellsAreDimNotTiny(t *testing.T) {
 
 	faintFrac := func() float64 {
 		out := ansi.Strip(renderSplashField(w, h, 7, pal,
-			splashClearing{wordCenterRow: (h - 1) / 2}, splashVariantFBM))
+			centeredFocalRow(h), splashVariantRipple))
 		lit, faint := 0, 0
 		for _, ch := range out {
 			switch ch {
@@ -384,6 +351,13 @@ func TestShadedFaintCellsAreDimNotTiny(t *testing.T) {
 		return float64(faint) / float64(lit)
 	}
 
+	// The lumRange-0 control is synthesized: no variant ships 0 since V5 retired
+	// the organic fields, and this needs a field with a broad faint *band* to
+	// measure — ripple's packet halo is most of its area, and it is the reason
+	// ripple stops at 0.75 rather than going to 1. The tunnel has no such band at
+	// all: its wall is multiplied by fog, so a cell is lit or crushed to blank with
+	// almost nothing in between, and it renders 0.0% faint dots at either setting.
+	withLumRange(t, 0)
 	flat := faintFrac()
 	withLumRange(t, 0.5)
 	shaded := faintFrac()
@@ -597,9 +571,15 @@ func TestParseSplashLumRangeRejectsNonFinite(t *testing.T) {
 //
 // It exists because the estimate that motivated this design ("one extra multiply
 // per cell") was wrong by an order of magnitude: the split is a Log and an Exp,
-// which are tens of nanoseconds each and do not pipeline. The lumRange 0 row is the
-// control and the one that must not move — every shipped variant is on it, and the
-// short-circuit in shadeAt is what keeps them there.
+// which are tens of nanoseconds each and do not pipeline. The lumRange 0 row is
+// the control: the cost of the field with the channel switched off, via the
+// short-circuit in shadeAt.
+//
+// That row used to be what every shipped variant ran, which made it the row that
+// must not move. It is not any more — V5 retired the fields that wanted their
+// stipple, and all three survivors are at 0.75 or above — so it is now the
+// baseline the other row is read against, and the path a future variant would
+// take, rather than a promise about the roster.
 //
 // Truecolor is forced for the reason forceBenchTrueColor documents: a bench
 // binary's stdout is not a TTY, so the emitter would otherwise be timed with
@@ -614,11 +594,11 @@ func BenchmarkRenderSplashShaded(b *testing.B) {
 		for _, r := range []float64{0, 0.5} {
 			b.Run(fmt.Sprintf("%s/lum%.1f", s.name, r), func(b *testing.B) {
 				withLumRange(b, r)
-				clearing := centeredClearing(s.h, 20, 4)
+				focalRow := centeredFocalRow(s.h)
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					_ = renderSplashField(s.w, s.h, i, pal, clearing, splashVariantFBM)
+					_ = renderSplashField(s.w, s.h, i, pal, focalRow, splashVariantTunnel)
 				}
 			})
 		}
@@ -628,11 +608,12 @@ func BenchmarkRenderSplashShaded(b *testing.B) {
 // TestShadedVariantsKeepTheContract runs the render contract at lumRange 0.5 for
 // every variant, because opting one in must not be able to break it.
 //
-// This is the guard that matters for the tuning round that follows. The blank
-// border changes *owner* at lumRange > 0: today it is carried by ditherAmp < 1
-// (lit=0 rounds to glyph 0, as TestSplashDitherBlankFloor pins), but a lifted
-// density reaches glyph 2 or 3 at lit≈0, so that argument stops holding. What
-// keeps it is splashShade's lit <= 0 guard and shadeAt's luminance gate. The
+// This is the guard that matters whenever the knob moves. The blank border
+// changes *owner* at lumRange > 0: it used to be carried by the dither staying
+// under one glyph step (lit=0 rounds to glyph 0), but a lifted density reaches
+// glyph 2 or 3 at lit≈0, so that argument stopped holding — and the dither is
+// gone with the fields that wanted it, so nothing is left of it. What keeps the
+// border is splashShade's lit <= 0 guard and shadeAt's luminance gate. The
 // border rows survive by construction either way — edgeY is exactly 0 there and
 // gates the whole cell body — but the columns do not, and the field measurably
 // grows toward them (the leftmost lit column moves from 8 to 2 at 240 wide).
@@ -645,10 +626,10 @@ func TestShadedVariantsKeepTheContract(t *testing.T) {
 	const w, h = 80, 30
 
 	for name, v := range splashTestVariants() {
-		a := renderSplashField(w, h, 5, pal, centeredClearing(h, 20, 4), v)
-		require.Equalf(t, a, renderSplashField(w, h, 5, pal, centeredClearing(h, 20, 4), v),
+		a := renderSplashField(w, h, 5, pal, centeredFocalRow(h), v)
+		require.Equalf(t, a, renderSplashField(w, h, 5, pal, centeredFocalRow(h), v),
 			"%s: same inputs must render identically when shaded", name)
-		require.NotEqualf(t, a, renderSplashField(w, h, 6, pal, centeredClearing(h, 20, 4), v),
+		require.NotEqualf(t, a, renderSplashField(w, h, 6, pal, centeredFocalRow(h), v),
 			"%s: consecutive frames must still differ when shaded", name)
 
 		lines := stripLines(a)

@@ -456,19 +456,23 @@ func TestSplashRippleOpensMidFlight(t *testing.T) {
 			"a third of its life, so the field is starting from nothing", mature, lit)
 }
 
-// TestSplashRippleIsNotTheNebula guards the nastiest silent failure in the
-// variant surface. splashFieldAt's switch falls through to splashFBMAt, so a
+// TestSplashRippleReachesItsOwnField guards the nastiest silent failure in the
+// variant surface. splashFieldAt's switch falls through to the fallback, so a
 // ripple registered in the enum, the rotation, the names, the ops and both test
-// maps — but missing that one case — renders the nebula's field wearing ripple's
+// maps — but missing that one case — renders rain's field wearing ripple's
 // Pass-2 policy, and the contract loop (determinism, bounds, animation) is
 // perfectly happy with that.
 //
 // It samples the point function, and that is load-bearing rather than
-// incidental: ripple's ops already differ from the nebula's on five fields
-// (contrastLo/Hi, dither, lumRange, dimToRim, breathes), so two ops-applied
-// renders differ whatever field is underneath them. The tunnel's version of this
-// test compared renders and passed with its case deleted.
-func TestSplashRippleIsNotTheNebula(t *testing.T) {
+// incidental: ripple's ops differ from the fallback's on both fields, so two
+// ops-applied renders differ whatever field is underneath them. The tunnel's
+// version of this test compared renders and passed with its case deleted.
+//
+// Sampling rain is not arbitrary: it is what splashFieldAt's default arm returns,
+// which is the whole point — this asks "am I getting the fallback's field". Move
+// that arm to another variant without moving this probe and the test still passes
+// while testing nothing about the fallback.
+func TestSplashRippleReachesItsOwnField(t *testing.T) {
 	const phase = 5 * driftPerFrame
 	sample := func(v splashVariant) []float64 {
 		at := splashFieldAt(v, 96)
@@ -481,9 +485,9 @@ func TestSplashRippleIsNotTheNebula(t *testing.T) {
 		}
 		return out
 	}
-	require.NotEqual(t, sample(splashVariantFBM), sample(splashVariantRipple),
-		"ripple must reach splashRippleAt — an unregistered variant silently falls "+
-			"through to the nebula's field")
+	require.NotEqual(t, sample(splashVariantRain), sample(splashVariantRipple),
+		"ripple must reach splashRippleAt — a variant with no case in splashFieldAt "+
+			"silently falls through to the fallback's field")
 }
 
 // TestSplashRippleIgnoresThePaneSize is the scaling decision, pinned where a
@@ -547,18 +551,20 @@ func rippleMeasurable(col, row, w, h int) bool {
 // rain shipped ops.dimToRim declared and never read, and every brightness test
 // it had was structurally blind to that because they all asserted Pass-1 math.
 //
-// The claim is contrastLo == 0, and what it buys is that a drop dies by fading.
-// The nebula's window starts at fbmContrastLo and erases everything below it, so
-// under the ops ripple would inherit by default, a decaying ring would not fade
-// out — it would vanish outright the moment its crest crossed the floor, and
-// with it the faint majority of every packet.
+// The claim is that a drop dies by fading, and the threat is a contrast window
+// with a floor: one erases everything below it, so a decaying ring would not fade
+// out — it would vanish outright the moment its crest crossed the floor, taking
+// the faint majority of every packet with it. The organic fields shipped exactly
+// such a window (0.36 to 0.64) and ripple would have inherited it by default;
+// V5 retired them and with them the window, so Pass 2 now runs one full-range
+// curve for every field. This measures that it stayed full-range.
 //
-// The band's own floor is not arbitrary and is not contrastLo: a cell stops
-// rendering at val ~0.10 whatever the window, because the widest window is still
-// a Hermite S-curve (there is no identity on this path — see splashVariant.ops)
+// The band's own floor is not arbitrary and is not the window: a cell stops
+// rendering at val ~0.10 regardless, because the full-range curve is still a
+// Hermite S-curve (there is no identity on this path — see renderSplashField)
 // and it crushes 0.10 to lit 0.028, which the luminance gate in shadeAt blanks.
 // That floor is the design working; the band sits above it so that what is
-// measured is the window.
+// measured is the curve.
 func TestSplashRippleRendersTheFadeNotAThreshold(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	const w, h, frame = 240, 60, 300
@@ -571,7 +577,11 @@ func TestSplashRippleRendersTheFadeNotAThreshold(t *testing.T) {
 			if !rippleMeasurable(col, row, w, h) {
 				continue
 			}
-			if v := vals[row][col]; v > 0.12 && v < fbmContrastLo {
+			// The upper edge is the floor the retired organic window would have
+			// erased to, kept as the band's edge so the measurement is unchanged
+			// from when that window was a live alternative.
+			const retiredWindowLo = 0.36
+			if v := vals[row][col]; v > 0.12 && v < retiredWindowLo {
 				faint++
 				if stops[row][col] > 0 {
 					faintLit++
@@ -582,28 +592,30 @@ func TestSplashRippleRendersTheFadeNotAThreshold(t *testing.T) {
 	require.Greaterf(t, faint, 300, "not enough faint cells to measure (%d)", faint)
 	require.Greaterf(t, float64(faintLit)/float64(faint), 0.98,
 		"a decaying ring must fade rather than pop: %d of %d cells between the render "+
-			"floor and the nebula's contrast floor rendered blank, so this variant is "+
-			"reading a window it opted out of", faint-faintLit, faint)
+			"floor and the retired window's floor rendered blank, so Pass 2 is putting "+
+			"a threshold under this field", faint-faintLit, faint)
 }
 
-// TestSplashRippleRendersDropsTheSameEverywhere is the dimToRim half of the same
-// Pass-2 claim, and it is the exact bug rain shipped: an envelope declared and
-// never read looks identical to one read and set to zero, until you measure the
-// pane.
-//
-// radialDim dims a cell by its distance from the wordmark. On the nebula that
-// reads as a glow; here it would mean a drop landing near the edge of the pane
-// is dimmer than an identical drop landing in the middle — a difference the
-// picture cannot account for, since nothing in this field is further away than
-// anything else. So: cells carrying the same field value must render at the same
+// TestSplashRippleRendersDropsTheSameEverywhere is the envelope half of the same
+// Pass-2 claim: cells carrying the same field value must render at the same
 // brightness wherever they are.
+//
+// Pass 2 used to offer a radial dim — brightness falling with distance from the
+// wordmark. On the nebula it read as a glow; here it would mean a drop landing
+// near the edge of the pane is dimmer than an identical drop landing in the
+// middle, a difference the picture cannot account for, since nothing in this
+// field is further away than anything else. V5 deleted it, along with the fields
+// that wanted it, so this no longer guards an opt-out — it guards that nothing
+// *new* makes brightness a function of position. That is worth keeping precisely
+// because of how the old one failed: an envelope declared and never read looks
+// identical to one read and set to zero until you measure the pane.
 //
 // The val band is narrow on purpose. A wide one would compare the *means* of two
 // differently-shaped distributions — if the far cells happened to skew toward
 // the band's dim end the test would read that as an envelope — so the band is
 // kept to a couple of luminance stops and the sample is made up from several
-// frames instead. Under radialDim the far band would fall ~2 stops, which this
-// separates comfortably.
+// frames instead. The old dim would have dropped the far band ~2 stops, which
+// this separates comfortably.
 func TestSplashRippleRendersDropsTheSameEverywhere(t *testing.T) {
 	withColorProfile(t, termenv.TrueColor)
 	const w, h = 240, 60

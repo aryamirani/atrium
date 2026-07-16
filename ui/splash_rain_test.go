@@ -32,9 +32,9 @@ func TestRainHeadAdvancesLessThanARowPerFrame(t *testing.T) {
 // TestRainAnimatesEveryFrame guards the trap that makes rain different from the
 // dense fields.
 //
-// TestSplashVariantsContract checks one frame pair per variant, which the
-// nebula passes trivially: thousands of lit cells, so something always crosses
-// a quantization boundary. Rain lights far fewer, and its heads only cross a row
+// TestSplashVariantsContract checks one frame pair per variant, which a dense
+// field like the tunnel passes trivially: thousands of lit cells, so something
+// always crosses a quantization boundary. Rain lights far fewer, and its heads only cross a row
 // every ~4 frames — so had brightness been quantized to integer rows, most
 // consecutive pairs would be *identical* and that contract check would pass or
 // fail on a coin flip depending on which frames it happened to sample.
@@ -44,7 +44,7 @@ func TestRainAnimatesEveryFrame(t *testing.T) {
 	pal := splashTestPalette()
 	prev := ""
 	for f := 0; f < 30; f++ {
-		got := renderSplashField(80, 30, f, pal, centeredClearing(30, 20, 4), splashVariantRain)
+		got := renderSplashField(80, 30, f, pal, centeredFocalRow(30), splashVariantRain)
 		if f > 0 {
 			require.NotEqualf(t, prev, got,
 				"frames %d and %d render identically: rain must move every frame, "+
@@ -133,7 +133,7 @@ func TestRainIsContinuousInPhase(t *testing.T) {
 func TestRainRendersAsLinesNotDots(t *testing.T) {
 	const w, h = 80, 40
 	out := ansi.Strip(renderSplashField(w, h, 40, splashTestPalette(),
-		splashClearing{wordCenterRow: h / 2}, splashVariantRain))
+		h/2, splashVariantRain))
 	rows := strings.Split(out, "\n")
 
 	lit, faint := 0, 0
@@ -161,7 +161,7 @@ func TestRainRendersAsLinesNotDots(t *testing.T) {
 func TestRainStreamsAreLong(t *testing.T) {
 	const w, h = 80, 40
 	out := ansi.Strip(renderSplashField(w, h, 40, splashTestPalette(),
-		splashClearing{wordCenterRow: h / 2}, splashVariantRain))
+		h/2, splashVariantRain))
 	rows := strings.Split(out, "\n")
 
 	longest, runs, cells := 0, 0, 0
@@ -247,7 +247,7 @@ func TestRainTailsLeaveGaps(t *testing.T) {
 	// And prove it end to end: no column may be solid over a tall pane.
 	const w, h = 80, 60
 	out := ansi.Strip(renderSplashField(w, h, 40, splashTestPalette(),
-		splashClearing{wordCenterRow: h / 2}, splashVariantRain))
+		h/2, splashVariantRain))
 	rows := strings.Split(out, "\n")
 	for col := 0; col < w; col++ {
 		lit := 0
@@ -389,7 +389,7 @@ func rainStopGrid(t *testing.T, w, h, frame int, pal theme.Palette) [][]int {
 		stopOf[a.prefix] = i
 	}
 	out := renderSplashField(w, h, frame, pal,
-		splashClearing{wordCenterRow: (h - 1) / 2}, splashVariantRain)
+		centeredFocalRow(h), splashVariantRain)
 
 	grid := make([][]int, 0, h)
 	for _, line := range strings.Split(out, "\n") {
@@ -422,14 +422,19 @@ func rainStopGrid(t *testing.T, w, h, frame int, pal theme.Palette) [][]int {
 // TestRainKeepsItsHeadsAwayFromTheFocalPoint is the regression for a defect that
 // every other test in this file was structurally unable to see.
 //
-// splashOps exists so a variant can decline the Pass-2 envelope terms, and rain
-// declines dimToRim for a stated reason: the radial dim fades the field by
-// distance from the wordmark, which *inverts* rain's depth — a near stream at
-// the rim renders dimmer than a far stream at the middle — and costs every head
-// out there the top of the ramp, which is the only white on screen and the thing
-// the eye tracks. The field was declared and then not consumed: Pass 2 read the
-// package constant instead, so rain got a 42% radial dim it had opted out of and
-// a full-brightness head at the rim landed on stop 8 of 15.
+// Pass 2 used to carry a radial dim — brightness falling with distance from the
+// wordmark — which *inverts* rain's depth, since a near stream at the rim then
+// renders dimmer than a far stream at the middle, and costs every head out there
+// the top of the ramp, the only white on screen and the thing the eye tracks.
+// Rain declined it via splashOps.dimToRim, and the field was declared and then
+// not consumed: Pass 2 read the package constant instead, so rain got the 42% dim
+// it had opted out of and a full-brightness head at the rim landed on stop 8 of
+// 15.
+//
+// V5 deleted the dim outright — no surviving variant wanted one — so this no
+// longer guards an opt-out. What it still guards is the envelope: nothing between
+// the layer table and the emitted cell may darken a head by where it happens to
+// be. That was always the claim; the ops field was only how rain asked for it.
 //
 // The brightness tests above could not catch it. They compute stops straight
 // from the layer table (rainStopFor(L.bright)), which is Pass-1 math — the
@@ -440,11 +445,8 @@ func TestRainKeepsItsHeadsAwayFromTheFocalPoint(t *testing.T) {
 	const w, h = 120, 40
 	const top = splashRainStops - 1
 
-	require.Zerof(t, splashVariantRain.ops().dimToRim,
-		"this test only means anything while rain declines the radial dim")
-
 	// The vignette legitimately fades the border, so sample only where it has
-	// reached full strength — what is under test is the radial term, not it.
+	// reached full strength — what is under test is everything else.
 	marginX := math.Max(1, float64(w)*edgeVignetteFrac)
 	marginY := math.Max(1, float64(h)*edgeVignetteFrac)
 	cx, cyFocal := float64(w-1)/2, float64((h-1)/2)
@@ -479,9 +481,10 @@ func TestRainKeepsItsHeadsAwayFromTheFocalPoint(t *testing.T) {
 	require.Positive(t, sampled, "the far region must contain sampleable cells")
 	require.Equalf(t, top, best,
 		"the brightest cell more than half-way to the rim reached ramp stop %d, not "+
-			"the top (%d): rain's heads are being dimmed by a radial falloff it "+
-			"declined in splashOps (a dim of %.2f puts them at stop %d)",
-		best, top, radialDim, rainStopFor(1-radialDim*0.5))
+			"the top (%d): something between rain's layer table and the emitted cell "+
+			"is dimming heads by their distance from the wordmark. The dim that did "+
+			"this was 42%%, which lands a rim head on stop %d",
+		best, top, rainStopFor(1-0.42*0.5))
 }
 
 // TestRainGlyphsAreWidthOne is what actually settles the glyph set, rather than
@@ -511,7 +514,7 @@ func TestRainGlyphsRenderIntact(t *testing.T) {
 	}
 	const w, h = 80, 40
 	out := ansi.Strip(renderSplashField(w, h, 40, splashTestPalette(),
-		splashClearing{wordCenterRow: h / 2}, splashVariantRain))
+		h/2, splashVariantRain))
 	seen := 0
 	for _, r := range out {
 		if r == ' ' || r == '\n' {

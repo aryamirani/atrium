@@ -9,10 +9,14 @@ package ui
 // palette does not have (see buildRainRamp) and why almost every constant here
 // is about the *step* between a head and its tail rather than about either one.
 //
-// It is also the field that exposed the text clearing. The ellipse blanks the
-// field around the wordmark, which an organic field hides by fading into it and
-// a structured one turns into a band cut through its streams. Rain takes no
-// clearing at all — see splashVariant.textPad.
+// It is also the field that exposed the text clearing, and eventually retired it.
+// That clearing blanked an ellipse of field around the wordmark: an organic field
+// hid it by fading into it, but rain's streams are long, straight and vertical,
+// so a blanked row reads as a band cut clean through them. Rain opted out, the
+// tunnel and ripple did the same for their own geometry, and V5 retired the last
+// field the margin ever flattered — so no variant takes one now and the machinery
+// is gone. It never protected the text (see TestOverlayIsOpaque); it was only
+// ever charm.
 
 import "math"
 

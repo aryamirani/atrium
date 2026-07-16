@@ -38,7 +38,8 @@ func TestMain(m *testing.M) {
 
 	// Pin the splash variant: with no override the splash rotates per launch
 	// (time-seeded), which would make idle-screen renders nondeterministic.
-	_ = os.Setenv("ATRIUM_SPLASH_VARIANT", "a")
+	// Deliberately not ui's fallback variant — see ui's TestMain.
+	_ = os.Setenv("ATRIUM_SPLASH_VARIANT", "tunnel")
 
 	exitCode := testutil.SandboxHomeMain(m)
 

@@ -27,33 +27,14 @@ import (
 type splashVariant int
 
 const (
-	// splashVariantLegacy is the PR #314 sum-of-sines plasma — the comparison
-	// baseline while the noise-based variants are tuned.
-	splashVariantLegacy splashVariant = iota
-	// splashVariantFBM is the domain-warped fBm nebula ("a"): organic,
-	// non-repeating filaments instead of periodic rings, with dithering.
-	splashVariantFBM
-	// splashVariantBraille ("b") is the fBm nebula with its faint zones
-	// refined to 2×4 sub-cell braille dots — much finer gradation in the
-	// thin gas, while bright cores keep the solid ramp.
-	splashVariantBraille
-	// splashVariantFlow ("c") is the fBm nebula with a mid-intensity contour
-	// band stroked in gradient-oriented line glyphs (─ ╱ │ ╲) — filament
-	// edges read as drawn streamlines.
-	splashVariantFlow
-	// splashVariantJulia ("d") is an animated Julia set with orbit-trap
-	// luminance and bloom — the fractal morphs continuously as its c
-	// parameter orbits.
-	splashVariantJulia
-	// splashVariantMandala ("e") is a log-polar fBm kaleidoscope centered on
-	// the wordmark — a 2N-fold rosette of the ridged noise field with a slow
-	// infinite zoom, rotation, and bloom.
-	splashVariantMandala
 	// splashVariantRain ("f") is Matrix-style digital rain: per-column streams
-	// with bright heads and fading tails, layered at three depths. The only
-	// variant with persistent directional motion — and the only one that shades
-	// by luminance rather than by glyph density.
-	splashVariantRain
+	// with bright heads and fading tails, layered at three depths. The roster's
+	// motion entry — and the only variant that shades by luminance alone, with no
+	// hue of its own to spend (see buildRainRamp).
+	//
+	// It is also the package's fallback: an unrecognized override name and a
+	// variant with no case in splashFieldAt or baseOps all land here.
+	splashVariantRain splashVariant = iota
 	// splashVariantTunnel ("g") is a textured wall flying past a vanishing point
 	// that sits on the wordmark: screen position maps to (depth, angle), so a
 	// plain noise lookup becomes an infinite corridor. The roster's depth entry —
@@ -75,109 +56,44 @@ const (
 	splashVariantCount
 )
 
-// isFractal groups the escape/trap-based variants, which share bloom, a wide
-// contrast window, and the structure-locked hue mix.
-func (v splashVariant) isFractal() bool {
-	return v == splashVariantJulia || v == splashVariantMandala
-}
-
-// hueIsAux groups the variants whose hue is a property of their own field rather
-// than of the cell's address, so splashColorIdx spends their aux straight as the
-// gradient position instead of mixing it with radius and swirl.
+// splashDefaultVariant is the fallback for an unrecognized override value; an
+// unset override rotates instead (see splashActiveVariant).
 //
-// It is a predicate here rather than a splashOps field on purpose. Hue mapping
-// looks like Pass-2 policy, and splashOps is where Pass-2 policy lives — but
-// rain never reaches splashColorIdx at all (it draws from its own ramp), so an
-// ops field would have to carry a value for rain that nothing reads, which is
-// the shape of the dimToRim bug this package already shipped once. A predicate
-// is answerable for every variant because it describes the field, not the
-// renderer, and it sits beside isFractal, which groups julia and mandala for the
-// same reason: a hue rule shared by more than one variant.
-//
-// What the members have in common is that aux already *is* the gradient position
-// — the tunnel's mipped depth band, ripple's ring age. See splashColorIdx's arm
-// for why the default mix is not merely different for them but wrong.
-func (v splashVariant) hueIsAux() bool {
-	return v == splashVariantTunnel || v == splashVariantRipple
-}
+// Rain, so that the package has exactly one fallback rather than three: this,
+// splashFieldAt's default arm and baseOps' default arm all resolve to it, and a
+// variant that is mis-wired in any of them renders rain rather than something
+// that merely looks plausible. Deliberately NOT what the test suites pin — see
+// parseSplashEnvVariant, whose fall-through is invisible to a pin that names the
+// fallback.
+const splashDefaultVariant = splashVariantRain
 
-// splashDefaultVariant is the fallback for an unrecognized override value
-// (an unset override rotates instead — see splashActiveVariant) and the
-// variant the contract tests pin.
-const splashDefaultVariant = splashVariantFBM
-
-// splashRotation is the pool random mode draws from: every finished variant
-// except the superseded legacy baseline (still pinnable as "plasma", or via
-// the env override).
+// splashRotation is the pool random mode draws from: every shipped variant.
 var splashRotation = []splashVariant{
-	splashVariantFBM, splashVariantBraille, splashVariantFlow,
-	splashVariantJulia, splashVariantMandala, splashVariantRain,
-	splashVariantTunnel, splashVariantRipple,
+	splashVariantRain, splashVariantTunnel, splashVariantRipple,
 }
 
 // splashVariantNames maps the user-facing pattern names (config.SplashVariants,
 // cycled in the settings panel) onto the variant enum. ui deliberately takes
 // the name as a plain string (SetSplashVariant) so it needs no config import.
 var splashVariantNames = map[string]splashVariant{
-	"nebula":   splashVariantFBM,
-	"braille":  splashVariantBraille,
-	"contours": splashVariantFlow,
-	"julia":    splashVariantJulia,
-	"mandala":  splashVariantMandala,
-	"plasma":   splashVariantLegacy,
-	"rain":     splashVariantRain,
-	"ripple":   splashVariantRipple,
-	"tunnel":   splashVariantTunnel,
-}
-
-// structured reports whether a variant's field carries directional geometry
-// that a hole punched in it is visible *against*. It is the difference between
-// a field that hides the text clearing and one that exposes it: the nebula and
-// its relatives drift and fade, so a soft void around the wordmark reads as gas
-// thinning out, while rain's streams are long, straight and vertical — a band
-// with no streams in it reads as a band, and the eye asks what put it there.
-//
-// The tunnel is the same story in polar form: its wall is built from concentric
-// rings and radial spokes, so an ellipse bitten out of them reads as a rendering
-// fault rather than as space. It needs the clearing least of all — the fog
-// already opens a black core exactly where the wordmark sits.
-//
-// Ripple is the sharpest case of the three. A ring is a single closed curve, so
-// a clearing does not thin it — it takes a bite out of it, and a circle with an
-// arc missing is not sparser weather, it is a broken circle. The pool between
-// drops is already black anyway, so a margin of quiet is the one thing this
-// field has plenty of.
-func (v splashVariant) structured() bool {
-	switch v {
-	case splashVariantRain, splashVariantTunnel, splashVariantRipple:
-		return true
-	default:
-		return false
-	}
+	"rain":   splashVariantRain,
+	"ripple": splashVariantRipple,
+	"tunnel": splashVariantTunnel,
 }
 
 // splashOps is a variant's Pass-2 policy: how its raw field is turned into
 // glyphs and colour.
+//
+// It is deliberately small. It carried five more fields — a contrast window, a
+// dither, a radial dim, a breathing swell — that existed for the organic fields
+// retired in V5, and not one of them was a knob a surviving variant turned. A new
+// variant that wants one re-adds it with its own justification, which is healthier
+// than inheriting an unowned one: this package has already shipped that bug, with
+// dimToRim declared and never read, so rain silently took a 42% dim it had opted
+// out of. git show 0734403 is the archive.
 type splashOps struct {
-	// contrastLo/contrastHi are the smoothstep window applied to the raw field.
-	// It exists to push a noise field's mid-tones apart — but it is destructive
-	// where the field already carries its own gradient, since everything below
-	// Lo is erased and everything above Hi flattens.
-	contrastLo, contrastHi float64
-	// dither adds sub-glyph-step noise to break banding on smooth gradients.
-	dither bool
 	// stars draws the fixed twinkling starfield over the field.
 	stars bool
-	// dimToRim is how much the field dims from the focal point out to the
-	// farthest corner. It reads as a glow emanating from the wordmark on a field
-	// that has no depth of its own — and fights one that does, by dimming
-	// whatever is furthest from the centre regardless of how near it is meant to
-	// look.
-	dimToRim float64
-	// breathes applies the slow global brightness swell. It makes a static field
-	// feel alive; on a field already in motion it is a flicker over everything at
-	// once, and it costs the brightest cells the top of their range.
-	breathes bool
 	// lumRange is the share of a cell's brightness that rides its colour's
 	// luminance rather than its glyph's density.
 	//
@@ -188,32 +104,14 @@ type splashOps struct {
 	// glyph vocabulary has no light end to fade into. Between them the two channels
 	// split it, so density can carry texture while luminance carries brightness.
 	//
-	// Both endpoints are reproduced exactly and for free (see splashShade), which is
-	// what makes every variant byte-identical until it opts in.
+	// Both endpoints are reproduced exactly and for free (see splashShade). No
+	// shipped variant sits at 0 any more — the fields that wanted their stipple were
+	// the organic ones — so that endpoint survives for the dev override and for a
+	// future variant rather than for the roster.
 	lumRange float64
 }
 
 // ops returns a variant's Pass-2 policy.
-//
-// The contrast window is the interesting one. A noise field concentrates its
-// values near the middle, so the narrow fBm window is what turns a flat wash
-// into filaments — but it assumes the field has no gradient of its own worth
-// keeping. Rain's does: its tail *is* a ramp from the head down to nothing, and
-// running the fBm window over it erased the faint 44% of every tail outright,
-// flattened the brightest 22%, and crushed the fade into the third that was
-// left. With dither scattering the survivors, streams rendered as loose
-// confetti — no visible trails, and so no parallax to see either, since there
-// were no streams to be nearer or further away. A full-range window keeps the
-// tail the generator drew.
-//
-// Full-range, and not identity — the distinction is worth naming because the
-// name "identity" invites an optimizer to skip the call. smoothstep is Hermite
-// on the *clamped* parameter, so a {0,1} window still bends every value through
-// t*t*(3-2t): it clips nothing, which is the property a self-shading field needs,
-// but it does not pass values through untouched, and no window can. A variant
-// whose own gradient carries meaning is therefore reading an S-curved version of
-// it, and should tune its constants against that rather than against the
-// generator's raw output. Pinned by TestWidestContrastWindowIsStillHermite.
 func (v splashVariant) ops() splashOps {
 	o := v.baseOps()
 	if r, ok := splashLumRangeOverride(); ok {
@@ -223,46 +121,16 @@ func (v splashVariant) ops() splashOps {
 }
 
 // baseOps is the shipped policy, before the dev-only lumRange override.
+//
+// Every variant states both fields as a literal, and the roster table
+// (TestShippedVariantsOps) pins them per variant, so a new one has to make an
+// explicit choice rather than inherit whatever the zero value happens to be. Rain
+// and the tunnel currently agree on both and are still written out separately on
+// purpose: merging them would silently move one when the other is retuned.
 func (v splashVariant) baseOps() splashOps {
-	switch {
-	case v == splashVariantLegacy:
-		// The superseded baseline, kept faithful: its wide window and no dither.
+	switch v {
+	case splashVariantTunnel:
 		return splashOps{
-			contrastLo: splashContrastLo, contrastHi: splashContrastHi,
-			stars: true, dimToRim: radialDim, breathes: true,
-		}
-	case v == splashVariantRain:
-		return splashOps{
-			// The widest window: clip nothing, so the whole tail survives (see
-			// above — it is still an S-curve, not an identity).
-			contrastLo: 0, contrastHi: 1,
-			// Dither is for banding on a smooth wash. A stream is a thin line of
-			// cells, so per-cell noise does not smooth it — it eats it.
-			dither: false,
-			// Stars are fixed points; rain is moving ones. Together the fixed ones
-			// read as stuck pixels, and rain has its own highlight anyway.
-			stars: false,
-			// All brightness rides the colour; the glyph stays a constant mark.
-			// This is the whole difference between a stream and a column of dots —
-			// see buildRainRamp.
-			lumRange: 1,
-			// Both envelope terms are off, and for the same reason: they cost the
-			// head the top of the ramp, which is the only white on screen and the
-			// thing the eye tracks. dimToRim would also actively undo the depth —
-			// it dims by distance from the centre, so a near stream at the rim
-			// would render dimmer than a far one at the middle.
-			dimToRim: 0,
-			breathes: false,
-		}
-	case v == splashVariantTunnel:
-		return splashOps{
-			// Same reason as rain: the fog IS the field's gradient, and the fBm
-			// window would erase the far wall and flatten the near one — which is
-			// to say, erase the depth. Clip nothing.
-			contrastLo: 0, contrastHi: 1,
-			// The wall is built from rings and spokes. Per-cell noise does not
-			// smooth structure, it eats it.
-			dither: false,
 			// Screen-fixed stars punching through a moving wall destroy vection —
 			// the reflex that makes a receding texture read as self-motion rather
 			// than as a pattern. This is the variant's whole premise, so it is not
@@ -275,26 +143,10 @@ func (v splashVariant) baseOps() splashOps {
 			// {0, 0.5, 0.75, 1}, not from the arithmetic — at 1 the glyph is a
 			// constant '@' and every bit of the corridor is drawn in colour.
 			lumRange: 1,
-			// dimToRim would invert depth outright — it dims by distance from the
-			// wordmark, and the wordmark is the vanishing point, so the near wall at
-			// the rim would render dimmer than the far centre. breathes would swell
-			// the whole corridor at once, which reads as a flicker, not as flight.
-			dimToRim: 0,
-			breathes: false,
 		}
-	case v == splashVariantRipple:
+	case splashVariantRipple:
 		return splashOps{
-			// Clip nothing, and here that is not the usual "the field has its own
-			// gradient" argument — it is that a drop *dies*. Its ring decays to zero
-			// on purpose, and the fBm's window erases everything under Lo, so a
-			// decaying ring would not fade out: it would vanish the instant its peak
-			// crossed 0.36, popping off the pool a third of the way through its life.
-			// The fade is the death, so the window has to let it happen.
-			contrastLo: 0, contrastHi: 1,
-			// A ring is a thin closed line of cells. Per-cell noise does not smooth a
-			// line, it eats holes in it.
-			dither: false,
-			// The one new variant that keeps the starfield, because for once fixed
+			// The one variant that keeps the starfield, because for once fixed
 			// points are *right*: this field is a dark pool, and a still pool
 			// reflects a still sky. Rain and the tunnel had to drop the stars because
 			// the eye tracks their motion and a fixed point in a moving field reads
@@ -314,62 +166,20 @@ func (v splashVariant) baseOps() splashOps {
 			// faint halo and the halo is most of the field's area — at 0.5 it renders
 			// as confetti around every ring.
 			lumRange: 0.75,
-			// dimToRim is a glow from the wordmark, and this field has no depth for
-			// it to fight — but it has no depth for it to *mean* anything either, so
-			// it would simply make the drops at the edge of the pane dimmer than the
-			// ones near the middle for no reason the picture can account for.
-			// breathes would swell every ring at once, which is a flicker over a
-			// field whose whole subject is things happening at different times.
-			dimToRim: 0,
-			breathes: false,
-		}
-	case v.isFractal():
-		// The trap glow is already contrasty; a wide window keeps its range.
-		return splashOps{
-			contrastLo: fractalContrastLo, contrastHi: fractalContrastHi,
-			dither: true, stars: true, dimToRim: radialDim, breathes: true,
 		}
 	default:
+		// Rain, and the fallback for a variant with no case here (see
+		// splashDefaultVariant).
 		return splashOps{
-			contrastLo: fbmContrastLo, contrastHi: fbmContrastHi,
-			dither: true, stars: true, dimToRim: radialDim, breathes: true,
+			// Stars are fixed points; rain is moving ones. Together the fixed ones
+			// read as stuck pixels, and rain has its own highlight anyway.
+			stars: false,
+			// All brightness rides the colour; the glyph stays a constant mark.
+			// This is the whole difference between a stream and a column of dots —
+			// see buildRainRamp.
+			lumRange: 1,
 		}
 	}
-}
-
-// splashTextPad is the margin a clearing leaves around the text it protects,
-// in cells, added to the text's half-extents.
-type splashTextPad struct{ wordX, wordY, msgX, msgY int }
-
-// textPad returns a variant's clearing margin, and whether it wants a clearing
-// at all.
-//
-// It is worth being precise about what the clearing is for, because the name
-// suggests a job it does not have. It does *not* keep the field from bleeding
-// through the text: overlayAt is an opaque compositor — it writes each overlaid
-// line's cells wholesale, spaces included — and the banner is solid to begin
-// with (it fills with ░ and contains no spaces at all). The text covers its own
-// footprint no matter what the field does underneath. The clearing's only job is
-// aesthetic: it opens a margin of quiet *around* the text.
-//
-// That margin is the whole charm on an organic field, which fades into it, so
-// the gas appears to part around the wordmark. On a structured field it is the
-// opposite: rain's streams are long, straight and vertical, and a margin is a
-// band of missing streams with nothing drawn in it to account for them. Measured
-// against the inherited padding that came to three such bands — one below the
-// wordmark, two around a one-row message whose ellipse spanned three rows.
-//
-// So structured variants take no clearing rather than a smaller one. Tightening
-// the padding could only ever fix two of those three bands: wordCenterRow rounds
-// to wordY + wordH/2, half a row below the even-height banner's true center, so
-// the art spans dy ∈ [-3, +2] and no integer half-extent covers exactly that —
-// 4 takes a row past the bottom, 3 uncovers the top. Dropping the clearing skips
-// the geometry entirely, and loses nothing: the text was never relying on it.
-func (v splashVariant) textPad() (splashTextPad, bool) {
-	if v.structured() {
-		return splashTextPad{}, false
-	}
-	return splashTextPad{wordX: 2, wordY: 1, msgX: 2, msgY: 2}, true
 }
 
 // SplashVariantNames lists every pinnable pattern name, sorted.
@@ -392,41 +202,66 @@ func SplashVariantNames() []string {
 }
 
 // splashEnvVariant resolves the dev-only ATRIUM_SPLASH_VARIANT override once
-// per process. It trumps the config setting so screenshot A/B runs and the
-// test suites (which pin "a" in TestMain against rotation nondeterminism)
-// stay deterministic whatever the config under test says. The second value
-// is false when the variable is unset. Accepts both the user-facing names
-// and the historical dev letters.
+// per process. It trumps the config setting so screenshot A/B runs and the test
+// suites (which pin a variant in TestMain against rotation nondeterminism) stay
+// deterministic whatever the config under test says. The second value is false
+// when the variable is unset.
 var splashEnvVariant = sync.OnceValues(func() (splashVariant, bool) {
-	s := os.Getenv("ATRIUM_SPLASH_VARIANT")
+	return parseSplashEnvVariant(os.Getenv("ATRIUM_SPLASH_VARIANT"))
+})
+
+// parseSplashEnvVariant reads the override: the variant to render, and whether
+// the variable was set at all.
+//
+// Split from the env read for one reason — it is the only way any of this is
+// testable. The resolution lives in a sync.OnceValues closure and TestMain pins
+// the variable, which defeats even a subprocess probe, so the letters had no test
+// at all and the fall-through here had no way to be stated. Its sibling knob
+// (parseSplashLumRange) already had this shape.
+//
+// The two knobs answer the same question differently, and the asymmetry is
+// deliberate. Junk gives parseSplashLumRange ok=false (no override), but gives
+// this ok=true: the bool means "an override was set", not "it was understood", so
+// a typo, a retirement and a deletion all resolve to splashDefaultVariant rather
+// than falling back to the rotation. That keeps a mispinned suite deterministic —
+// wrong, but not flaky, which is the failure worth having.
+//
+// It is also why the understanding is a separate function rather than a fifth
+// case here. Collapsing them makes the letter that names the fallback untestable:
+// "f" resolves to rain and so does every unrecognized string, so deleting case
+// "f" cannot be observed at this boundary and the whole letter vocabulary sits on
+// a guard that passes either way. And it is why TestMain pins a variant that is
+// not the fallback, for the same reason one level up.
+func parseSplashEnvVariant(s string) (splashVariant, bool) {
 	if s == "" {
 		return splashDefaultVariant, false
 	}
+	if v, ok := lookupSplashVariant(s); ok {
+		return v, true
+	}
+	return splashDefaultVariant, true
+}
+
+// lookupSplashVariant answers only "does this build know that name", which is the
+// question the fall-through above destroys. It accepts the user-facing names and
+// the historical dev letters, kept as they were: f/g/h are what the screenshot
+// recipes, the notes and the muscle memory all use, and re-lettering to a/b/c
+// would buy tidiness and break every recipe. a–e and "legacy" named the organic
+// fields retired in V5; next free letter is i.
+func lookupSplashVariant(s string) (splashVariant, bool) {
 	if v, ok := splashVariantNames[s]; ok {
 		return v, true
 	}
 	switch s {
-	case "legacy":
-		return splashVariantLegacy, true
-	case "a":
-		return splashVariantFBM, true
-	case "b":
-		return splashVariantBraille, true
-	case "c":
-		return splashVariantFlow, true
-	case "d":
-		return splashVariantJulia, true
-	case "e":
-		return splashVariantMandala, true
-	case "f", "rain":
+	case "f":
 		return splashVariantRain, true
 	case "g":
 		return splashVariantTunnel, true
 	case "h":
 		return splashVariantRipple, true
 	}
-	return splashDefaultVariant, true
-})
+	return splashDefaultVariant, false
+}
 
 // splashLumRange is the dev-only ATRIUM_SPLASH_LUMRANGE override: it replaces
 // every variant's shipped lumRange, so a screenshot round can sweep the knob
@@ -554,9 +389,18 @@ func splashRotationPick(nano int64) splashVariant {
 // splashRotationReroll maps a seed to a rotation variant other than cur, so a
 // re-roll always visibly changes the pattern. It draws over the pool minus cur
 // (len-1 slots) and steps past cur's slot, which keeps the result uniform over
-// the remaining variants rather than biased toward cur's neighbour. A cur
-// outside the pool (the unpicked zero value, or the legacy baseline — pinnable
-// but never drawn) has nothing to exclude, so it falls back to a plain draw.
+// the remaining variants rather than biased toward cur's neighbour.
+//
+// A cur outside the pool has nothing to exclude, so it falls back to a plain
+// draw over the whole pool. Every shipped variant is in the pool now — the
+// retired legacy baseline used to be the one that wasn't — so that arm is
+// defensive, and it is worth being exact about what it defends: not an index
+// panic. slices.Index returns -1, every idx is >= -1, so the step-past-cur
+// increment fires unconditionally and still lands inside the slice. What is lost
+// without it is slot 0 — the draw silently becomes uniform over the pool *minus
+// its first variant*, which is a bias no caller asked for and nothing would
+// notice. (The len < 2 arm is the one that stops a panic: splashRotationIdx
+// would take nano % 0.)
 func splashRotationReroll(nano int64, cur splashVariant) splashVariant {
 	ci := slices.Index(splashRotation, cur)
 	if ci < 0 || len(splashRotation) < 2 {
