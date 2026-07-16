@@ -151,6 +151,8 @@ func splashFieldAt(v Variant, maxD float64) splashPointFn {
 		return splashTunnelAtFor(maxD)
 	case Ripple:
 		return splashRippleAt
+	case Galaxy:
+		return splashGalaxyAtFor(maxD)
 	default:
 		// Rain, and the fallback for a variant that forgot its case here.
 		//

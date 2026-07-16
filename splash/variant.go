@@ -33,6 +33,13 @@ const (
 	// interfere where they cross. The roster's event entry — the only field with
 	// a birth and a death in it rather than a steady state.
 	Ripple
+	// Galaxy ("i") is an inclined spiral turning around the wordmark: a soft
+	// bright bulge, arms mottled with turbulence and star-knots, a dust lane
+	// silhouetting the disk's near edge, warm at the core and cool at the rim. The
+	// tunnel's single-object sibling — brightness is the whole subject, and the
+	// arms are a rigidly rotating density wave rather than winding matter (see
+	// splashGalaxyAtFor).
+	Galaxy
 
 	// variantCount is the enum's cardinality, not a variant — it must stay last.
 	// It exists so the tests can prove they cover every variant: the contract
@@ -48,6 +55,7 @@ const (
 // panel): the two lists are hand-maintained in packages that cannot import each
 // other, and app asserts they agree. It backs both ParseVariant and String.
 var variantNames = map[string]Variant{
+	"galaxy": Galaxy,
 	"rain":   Rain,
 	"ripple": Ripple,
 	"tunnel": Tunnel,
@@ -57,7 +65,7 @@ var variantNames = map[string]Variant{
 // from. The order is the rotation order; the returned slice is a fresh copy, so
 // callers cannot mutate the pool.
 func Variants() []Variant {
-	return []Variant{Rain, Tunnel, Ripple}
+	return []Variant{Rain, Tunnel, Ripple, Galaxy}
 }
 
 // String returns the variant's pinnable pattern name, or "unknown" for a value
@@ -156,6 +164,21 @@ func (v Variant) ops() splashOps {
 			// palette's whole defect. Below that the ramp reaches into the packet's
 			// faint halo and the halo is most of the field's area — at 0.5 it renders
 			// as confetti around every ring.
+			lumRange: 0.75,
+		}
+	case Galaxy:
+		return splashOps{
+			// No fixed starfield: a galaxy is dense, and the star glyphs (a small '·'
+			// or '+') land *on* the bright disk, replacing a solid cell with a mark that
+			// covers little of it — which reads as a dark speck, a hole punched in the
+			// glow. It is the tunnel's problem, not ripple's: ripple keeps its stars
+			// because its field is a dark pool with empty space for them, and this one
+			// has none. The galaxy's own bright knots are its stars.
+			stars: false,
+			// Brightness is the whole subject — bulge to arms to dust lanes — and the
+			// arms want the density ramp too: at 0.75 the bright arms step o → O → 0 → @
+			// across their width while the faint disk rides the colour's luminance, the
+			// textured spiral a photo has and the value the rendered sweep landed on.
 			lumRange: 0.75,
 		}
 	default:
