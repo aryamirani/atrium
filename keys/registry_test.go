@@ -145,9 +145,9 @@ func TestRegistry_ReorderLadderVocabulary(t *testing.T) {
 // truthfully: ctrl+q and ctrl+x are TUI actions the attach layer mirrors as
 // raw bytes (session/tmux/attach.go), and ctrl+pgup/pgdn exists only in the
 // attach layer (session/tmux/detach.go). Everything else is plain TUI
-// dispatch. The cheatsheet generator renders LayerAttached rows with an
-// "in a session: " prefix; LayerBoth descs must state the attached side in
-// prose, pinned here so a reworded desc can't drop it.
+// dispatch. This test pins the layer tag on each entry; the matching prose
+// rule — LayerBoth descs must state the attached side, since those rows get no
+// "in a session: " prefix — is pinned by TestHelpGroups_LayerBothStateAttachedSide.
 func TestRegistry_LayerTags(t *testing.T) {
 	wantLayer := map[KeyName]Layer{
 		KeyAttachToggle: LayerBoth,

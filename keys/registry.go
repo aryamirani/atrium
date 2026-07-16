@@ -9,7 +9,8 @@ import (
 // raw-byte scanner while inside a session (session/tmux/attach.go and
 // detach.go). Generated help uses the tag to document layer-crossing keys
 // truthfully: LayerAttached rows render with an "in a session: " prefix, and
-// LayerBoth descs must state the attached side in prose (pinned by tests).
+// LayerBoth descs must state the attached side in prose (pinned by
+// TestHelpGroups_LayerBothStateAttachedSide).
 type Layer int
 
 const (
