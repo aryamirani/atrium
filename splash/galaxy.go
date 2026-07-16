@@ -198,10 +198,11 @@ func splashGalaxyArmLOD(u, w, vAspect float64) float64 {
 	}
 	dpsiDu := math.Abs(galWind*u+galArms*w) / r2
 	dpsiDw := math.Abs(galArms*u-galWind*w) / r2
+	// stepPhase is > 0 at every r > 0, so the divide below never needs a guard: the
+	// two gradient forms are (galWind,galArms)·(u,w) and (galArms,−galWind)·(u,w),
+	// whose matrix has determinant −(galWind²+galArms²) ≠ 0, so they cannot both
+	// vanish off the origin — and r == 0 already returned above.
 	stepPhase := math.Max(dpsiDu, vAspect*dpsiDw)
-	if stepPhase == 0 {
-		return 1
-	}
 	return clamp01(math.Pi / (galLODC * stepPhase))
 }
 
