@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZviBaratz/atrium/keys"
 	"github.com/ZviBaratz/atrium/session"
 	"github.com/ZviBaratz/atrium/ui/theme"
 
@@ -497,10 +498,13 @@ func (l *List) String() string {
 		th := theme.Current()
 		// Kept terse so it never clips: the list panel is only ~30% of the terminal
 		// width, so a longer "new session / all keys" phrasing truncates on normal and
-		// narrow terminals. The styled key glyphs carry the meaning (n = new, ? = keys).
-		hint := th.AttentionStyle().Render("n") + " " + th.DimStyle().Render("new") +
+		// narrow terminals. The styled key glyphs carry the meaning (n = new, ? = keys);
+		// the glyphs come from the registry so a rebind can't strand this hint.
+		hint := th.AttentionStyle().Render(keys.GlobalKeyBindings[keys.KeyNew].Help().Key) +
+			" " + th.DimStyle().Render("new") +
 			th.FaintStyle().Render("  ·  ") +
-			th.AttentionStyle().Render("?") + " " + th.DimStyle().Render("keys")
+			th.AttentionStyle().Render(keys.GlobalKeyBindings[keys.KeyHelp].Help().Key) +
+			" " + th.DimStyle().Render("keys")
 		lines = append(lines, lipgloss.PlaceHorizontal(l.width-2, lipgloss.Center, hint))
 		// Vertically center within the panel interior so the empty state reads as
 		// intentional rather than top-anchored.
