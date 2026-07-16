@@ -48,6 +48,11 @@ func TestShippedVariantsOps(t *testing.T) {
 		// density ramp while the tail rides the colour. The value came from a rendered
 		// sweep; see ops.
 		Ripple: {stars: true, lumRange: 0.75},
+		// The galaxy drops the starfield — its disk is dense, so a fixed star glyph
+		// lands on the glow and reads as a punched hole rather than a point (see ops).
+		// Its brightness (bulge to arms to lanes) is the whole subject, split between
+		// the density ramp and the colour's luminance at 0.75 so the arms keep texture.
+		Galaxy: {stars: false, lumRange: 0.75},
 	}
 	require.Len(t, want, int(variantCount),
 		"every variant needs an explicit policy here — a new one must make these "+

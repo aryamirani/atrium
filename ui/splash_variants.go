@@ -84,7 +84,7 @@ func parseSplashEnvVariant(s string) (splash.Variant, bool) {
 // splash.ParseVariant) and the historical dev letters, kept as they were: f/g/h
 // are what the screenshot recipes, the notes and the muscle memory all use, and
 // re-lettering to a/b/c would buy tidiness and break every recipe. a–e and
-// "legacy" named the organic fields retired in V5; next free letter is i.
+// "legacy" named the organic fields retired in V5; next free letter is j.
 func lookupSplashVariant(s string) (splash.Variant, bool) {
 	if v, ok := splash.ParseVariant(s); ok {
 		return v, true
@@ -96,6 +96,8 @@ func lookupSplashVariant(s string) (splash.Variant, bool) {
 		return splash.Tunnel, true
 	case "h":
 		return splash.Ripple, true
+	case "i":
+		return splash.Galaxy, true
 	}
 	return splashDefaultVariant, false
 }

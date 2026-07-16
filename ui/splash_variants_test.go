@@ -28,10 +28,12 @@ func TestParseSplashEnvVariant(t *testing.T) {
 
 	for s, want := range map[string]splash.Variant{
 		"rain": splash.Rain, "tunnel": splash.Tunnel, "ripple": splash.Ripple,
+		"galaxy": splash.Galaxy,
 		// The historical dev letters. They are kept as they are — f/g/h is what the
 		// screenshot recipes and the notes use — so a–e are simply gone with the
-		// fields they named, and i is next.
+		// fields they named, and i is the galaxy.
 		"f": splash.Rain, "g": splash.Tunnel, "h": splash.Ripple,
+		"i": splash.Galaxy,
 	} {
 		v, ok := parseSplashEnvVariant(s)
 		require.Truef(t, ok, "%q must set an override", s)
@@ -60,7 +62,9 @@ func TestParseSplashEnvVariant(t *testing.T) {
 func TestLookupSplashVariantKnowsOnlyWhatItShips(t *testing.T) {
 	for s, want := range map[string]splash.Variant{
 		"rain": splash.Rain, "tunnel": splash.Tunnel, "ripple": splash.Ripple,
-		"f": splash.Rain, "g": splash.Tunnel, "h": splash.Ripple,
+		"galaxy": splash.Galaxy,
+		"f":      splash.Rain, "g": splash.Tunnel, "h": splash.Ripple,
+		"i": splash.Galaxy,
 	} {
 		v, ok := lookupSplashVariant(s)
 		require.Truef(t, ok, "%q is a name this build ships", s)
@@ -69,7 +73,7 @@ func TestLookupSplashVariantKnowsOnlyWhatItShips(t *testing.T) {
 	// Retired names and letters are not known — including the ones that would
 	// resolve to the fallback anyway, which is exactly what the layer above hides.
 	for _, s := range []string{"banana", "", "nebula", "braille", "contours", "julia",
-		"mandala", "plasma", "legacy", "a", "b", "c", "d", "e", "i", "Rain", " rain"} {
+		"mandala", "plasma", "legacy", "a", "b", "c", "d", "e", "j", "Rain", " rain"} {
 		_, ok := lookupSplashVariant(s)
 		require.Falsef(t, ok, "%q must not be a known name", s)
 	}
