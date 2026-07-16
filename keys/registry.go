@@ -278,6 +278,22 @@ var GlobalKeyBindings = func() map[KeyName]key.Binding {
 	return m
 }()
 
+// layers maps each registered action to its Layer, for LayerOf. Derived from
+// Registry; immutable after init.
+var layers = func() map[KeyName]Layer {
+	m := make(map[KeyName]Layer, len(Registry))
+	for _, e := range Registry {
+		m[e.Name] = e.Layer
+	}
+	return m
+}()
+
+// LayerOf reports which input layer honors the named action's key. Help
+// generators use it to annotate attached-layer keys truthfully.
+func LayerOf(name KeyName) Layer {
+	return layers[name]
+}
+
 // GlobalKeyStringsMap maps terminal key strings to actions for the Update
 // loop's dispatch. Derived from the Registry entries' WithKeys (documented-
 // only entries excluded); immutable after init.
