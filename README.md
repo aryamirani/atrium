@@ -155,7 +155,7 @@ in-app keymap and this section ever drift apart, so it stays complete.
 | `w` | open the session's PR in the browser |
 | `r` | resume a paused session |
 | `ctrl-r` | resume all paused sessions in the current view |
-| `y` | copy branch name to clipboard |
+| `y` | copy branch name to clipboard (works over SSH — see [Clipboard](#clipboard)) |
 | `f` | copy/open URLs & paths from the preview |
 
 ##### Groups
@@ -283,6 +283,37 @@ environment — the session name rides in the environment, never interpolated in
 the command, so it can't break argument parsing. Use it for `terminal-notifier`,
 webhooks (`curl`), or any custom notifier. A failing command is logged, never
 fatal. Both settings are also editable live from the Settings panel (`,`).
+
+#### Clipboard
+
+Copy actions (`y` for the branch name, and hint mode's `f` copy) use **two
+paths** so a copy lands in your local clipboard whether Atrium runs on your
+machine or on a remote host:
+
+- **OSC 52** — Atrium emits the copied text to your terminal as a clipboard
+  escape sequence. This is the SSH-friendly path: it needs no clipboard binary
+  on the remote, so a copy from an agent running over SSH still reaches the
+  clipboard of the terminal in front of you. Your terminal must support (and
+  usually enable) OSC 52 clipboard writes.
+- **System clipboard utility** — Atrium also shells out to `xclip`/`xsel`/
+  `wl-copy` (Linux), `pbcopy` (macOS), or the Windows clipboard. This is the
+  local fallback for terminals that ignore OSC 52.
+
+A copy only reports failure when **both** paths are unavailable, and the message
+names the next step (install a clipboard utility, or use a terminal with OSC 52
+support).
+
+> **Running Atrium inside your own outer tmux?** tmux swallows OSC 52 by default,
+> so the escape never reaches your terminal. Enable clipboard passthrough in that
+> **outer** tmux (the one you started before launching Atrium):
+>
+> ```tmux
+> # ~/.tmux.conf
+> set -g set-clipboard on
+> ```
+>
+> This applies only to an outer tmux you control — Atrium's own per-session tmux
+> server is internal and already handled.
 
 #### OS chrome (window title & taskbar progress)
 
