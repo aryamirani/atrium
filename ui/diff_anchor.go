@@ -115,6 +115,26 @@ func (d *DiffPane) CommentAnchor() (diffRow, bool) {
 	return d.rows[d.cursor], true
 }
 
+// CommentLocation returns the "file:line" the cursor sits on, for the composer
+// title. Valid only in comment mode on an annotatable row.
+func (d *DiffPane) CommentLocation() (string, bool) {
+	a, ok := d.CommentAnchor()
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("%s:%d", a.file, a.lineNo), true
+}
+
+// CommentMessage builds the queued-prompt text for the cursor's line and the given
+// note, or false when there is no valid anchor.
+func (d *DiffPane) CommentMessage(note string) (string, bool) {
+	a, ok := d.CommentAnchor()
+	if !ok {
+		return "", false
+	}
+	return composeDiffComment(a, note), true
+}
+
 // refreshCommentView re-renders the frozen rows with the cursor highlighted and
 // scrolls the viewport so the cursor row stays visible.
 func (d *DiffPane) refreshCommentView() {
