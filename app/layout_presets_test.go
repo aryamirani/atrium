@@ -167,6 +167,26 @@ func TestCycleKeyLeavesFocus(t *testing.T) {
 	require.False(t, h.listHidden(), "cycling onward from focus must leave focus mode")
 }
 
+// TestExitFocusLayoutDirect pins the state contract of exitFocusLayout one layer
+// below TestEscLeavesFocusToPriorPreset (which goes through key dispatch): the
+// function itself must restore layoutIndex to layoutPrev, clear layoutCustom, leave
+// focus (listHidden false), and land on the preset that preceded focus.
+func TestExitFocusLayoutDirect(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h := newPresetHome(t)
+
+	cycleTo(t, h, "review") // layoutPrev = default index, layoutIndex = review index
+	cycleTo(t, h, "focus")  // layoutPrev = review index, layoutIndex = focus index
+	prevIdx := h.layoutPrev // capture review index before the call
+
+	_ = h.exitFocusLayout()
+
+	require.Equal(t, prevIdx, h.layoutIndex, "exitFocusLayout must restore layoutIndex to layoutPrev")
+	require.False(t, h.layoutCustom, "exitFocusLayout must clear the custom override")
+	require.False(t, h.listHidden(), "exitFocusLayout must leave focus mode")
+	require.Equal(t, "review", h.currentPreset().name, "the active preset must be the one that preceded focus")
+}
+
 // TestFocusModeSeamIsInert: in focus the list is hidden, so there is no visible
 // seam to grab — a press at the column the seam would occupy must not start a
 // divider drag (the !listHidden guard on the grab).
