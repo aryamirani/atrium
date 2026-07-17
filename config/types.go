@@ -207,6 +207,11 @@ type Config struct {
 	// false restores the chrome-free interface, where the bar appears only for
 	// inline interactions that need it (naming, filtering, progress).
 	HintBar *bool `json:"hint_bar,omitempty"`
+	// RecordPromptHistory, when true (the default), records submitted prompts in
+	// state.json so they can be reused from the create form and quick-send. nil
+	// means the default (on). Setting it false stops new prompts being recorded;
+	// clearing existing history is a separate action.
+	RecordPromptHistory *bool `json:"record_prompt_history,omitempty"`
 	// OSChrome, when true (the default), surfaces fleet state in the terminal's OS
 	// chrome: the window title ("atrium · 2 need you · 5 running") and an OSC 9;4
 	// taskbar progress bar. nil means the default (on). Set it false when your

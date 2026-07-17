@@ -169,6 +169,9 @@ const (
 	// stateScreensaver is the full-window splash easter egg (backtick from the
 	// default state); any key or click returns to stateDefault.
 	stateScreensaver
+	// stateHistory is the prompt-history picker, opened from an empty prompt field
+	// (create form or quick-send) to reuse a previously-submitted prompt (#388).
+	stateHistory
 )
 
 type home struct {
@@ -336,6 +339,9 @@ type home struct {
 	spinner spinner.Model
 	// textInputOverlay handles text input with state
 	textInputOverlay *overlay.TextInputOverlay
+	// promptHistoryOverlay is the reuse picker over State.PromptHistory, opened from
+	// an empty prompt field; on select it inserts into textInputOverlay (#388).
+	promptHistoryOverlay *overlay.PromptHistoryOverlay
 	// queueOverlay manages a session's pending prompt queue (list / cancel).
 	queueOverlay *overlay.QueueOverlay
 	// cmdLogOverlay shows the recorded tmux/git/gh subprocesses (#372).
@@ -538,6 +544,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("queue overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.queueOverlay.Render(), mainView, true)
+	} else if m.state == stateHistory {
+		if m.promptHistoryOverlay == nil {
+			log.ErrorLog.Printf("prompt history overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.promptHistoryOverlay.Render(), mainView, true)
 	} else if m.state == stateCmdLog {
 		if m.cmdLogOverlay == nil {
 			log.ErrorLog.Printf("command-log overlay is nil")

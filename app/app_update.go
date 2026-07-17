@@ -631,6 +631,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.handlePromptState(msg)
 	}
 
+	if m.state == stateHistory {
+		return m.handleHistoryState(msg)
+	}
+
 	if m.state == stateConfirm {
 		return m.handleConfirmState(msg)
 	}
