@@ -261,6 +261,28 @@ the command, so it can't break argument parsing. Use it for `terminal-notifier`,
 webhooks (`curl`), or any custom notifier. A failing command is logged, never
 fatal. Both settings are also editable live from the Settings panel (`,`).
 
+#### OS chrome (window title & taskbar progress)
+
+When Atrium is one tab or window among many, its signal otherwise stops at its own
+panel borders. With `os_chrome` on (the default), Atrium surfaces the fleet in the
+terminal's own chrome:
+
+- **Window title** — `atrium · 2 need you · 5 running`, updated as statuses change
+  (zero segments are omitted; a fully idle fleet is a bare `atrium`).
+- **Taskbar progress** (OSC 9;4) — an indeterminate bar while any agent is working,
+  cleared when none are, and an error state when a session dies. Rendered by
+  Ghostty 1.2+, Windows Terminal, ConEmu, and kitty; other terminals ignore it.
+
+Set `os_chrome` to `false` when your shell or multiplexer owns the title:
+
+```json
+{
+  "os_chrome": false
+}
+```
+
+Also editable live from the Settings panel (`,`).
+
 #### Profiles
 
 Profiles let you define multiple named program configurations and switch between them when creating a new session. When more than one profile is defined, the session creation overlay shows a profile picker that you can navigate with `←`/`→`.
@@ -433,6 +455,7 @@ added without a row here.
 | `nerd_font` | bool | `false` | draw markers with patched-Nerd-Font vendor icons |
 | `session_context_bar` | bool | `true` | thin tmux status line inside attached sessions |
 | `hint_bar` | bool | `true` | always-on bottom key-hint bar |
+| `os_chrome` | bool | `true` | fleet state in the terminal title + OSC 9;4 taskbar progress |
 | `max_sessions` | int | unlimited | opt-in cap on concurrent sessions |
 | `trust_worktrees_root` | bool | `false` | pre-accept Claude's workspace-trust for the worktrees root |
 | `carry_files` | array | `[".claude/settings.local.json"]` | gitignored files copied into each worktree ([Carried files](#carried-files)) |
