@@ -80,6 +80,7 @@ func DefaultConfig() *Config {
 	killDoubleTap := true
 	sessionContextBar := true
 	hintBar := true
+	mouse := true
 	osChrome := true
 	showReleaseNotes := true
 	updateBaseOnCreate := true
@@ -91,6 +92,7 @@ func DefaultConfig() *Config {
 		Theme:               "tokyo-night",
 		SessionContextBar:   &sessionContextBar,
 		HintBar:             &hintBar,
+		Mouse:               &mouse,
 		RecordPromptHistory: &recordPromptHistory,
 		OSChrome:            &osChrome,
 		BranchPrefix: func() string {
