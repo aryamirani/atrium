@@ -222,6 +222,9 @@ func RerollSplashVariant() {
 
 // splashRotationPick maps a launch-time nanosecond seed to a rotation variant.
 func splashRotationPick(nano int64) fresco.Variant {
+	if len(splashRotation) == 0 {
+		return splashDefaultVariant
+	}
 	return splashRotation[splashRotationIdx(nano, len(splashRotation))]
 }
 
