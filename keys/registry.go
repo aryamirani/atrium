@@ -361,6 +361,7 @@ var (
 	// comment, esc leaves.
 	DiffCommentModeHints = []key.Binding{
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "move")),
+		key.NewBinding(key.WithKeys("J", "K"), key.WithHelp("J/K", "extend")),
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "comment")),
 		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "exit")),
 	}

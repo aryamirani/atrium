@@ -63,6 +63,7 @@ func (d *DiffPane) EnterComment() bool {
 	}
 	d.commenting = true
 	d.cursor = first
+	d.anchor = first
 	d.refreshCommentView()
 	return true
 }
@@ -74,8 +75,8 @@ func (d *DiffPane) ExitComment() {
 	}
 	d.commenting = false
 	// Repaint the frozen snapshot once without the cursor so the highlight clears
-	// immediately, even before the next poll delivers fresh content.
-	d.diff = renderDiffRows(d.rows, d.width, -1)
+	// immediately, even before the next poll delivers fresh content (hi<lo = none).
+	d.diff = renderDiffRows(d.rows, d.width, 0, -1)
 	d.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, d.stats, d.diff))
 }
 
@@ -91,8 +92,55 @@ func (d *DiffPane) moveCursor(dir int) {
 	}
 	if next := d.nextAnnotatable(d.cursor, dir); next >= 0 {
 		d.cursor = next
-		d.refreshCommentView()
 	}
+	d.anchor = d.cursor // a plain move collapses any range to a single line
+	d.refreshCommentView()
+}
+
+// ExtendDown grows the selection to the next contiguous code line below.
+func (d *DiffPane) ExtendDown() { d.extendCursor(+1) }
+
+// ExtendUp grows the selection to the next contiguous code line above.
+func (d *DiffPane) ExtendUp() { d.extendCursor(-1) }
+
+// extendCursor moves only the cursor (leaving the anchor put) by one row, but only
+// when that row is another code line — so a selection stays a contiguous block and
+// clamps at hunk headers, file boundaries, and blank lines. j/k (moveCursor) may jump
+// across those to any code line; a range may not span them.
+func (d *DiffPane) extendCursor(dir int) {
+	if !d.commenting {
+		return
+	}
+	i := d.cursor + dir
+	if i < 0 || i >= len(d.rows) || !d.rows[i].annotatable() {
+		return
+	}
+	d.cursor = i
+	d.refreshCommentView()
+}
+
+// selRange returns the selected row span [lo, hi] (inclusive), ordered.
+func (d *DiffPane) selRange() (lo, hi int) {
+	lo, hi = d.anchor, d.cursor
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return lo, hi
+}
+
+// selectedRows returns the code rows in the current selection, in file order.
+func (d *DiffPane) selectedRows() []diffRow {
+	if !d.commenting {
+		return nil
+	}
+	lo, hi := d.selRange()
+	var out []diffRow
+	for i := lo; i <= hi && i < len(d.rows); i++ {
+		if i >= 0 && d.rows[i].annotatable() {
+			out = append(out, d.rows[i])
+		}
+	}
+	return out
 }
 
 // nextAnnotatable returns the index of the first annotatable row strictly past
@@ -115,30 +163,31 @@ func (d *DiffPane) CommentAnchor() (diffRow, bool) {
 	return d.rows[d.cursor], true
 }
 
-// CommentLocation returns the "file:line" the cursor sits on, for the composer
-// title. Valid only in comment mode on an annotatable row.
+// CommentLocation returns the selection's "file:line" (or "file:start-end" for a
+// multi-line range) for the composer title. Valid only in comment mode.
 func (d *DiffPane) CommentLocation() (string, bool) {
-	a, ok := d.CommentAnchor()
-	if !ok {
+	rows := d.selectedRows()
+	if len(rows) == 0 {
 		return "", false
 	}
-	return fmt.Sprintf("%s:%d", a.file, a.lineNo), true
+	return diffRangeLocation(rows), true
 }
 
-// CommentMessage builds the queued-prompt text for the cursor's line and the given
-// note, or false when there is no valid anchor.
+// CommentMessage builds the queued-prompt text for the current selection and note,
+// or false when there is no valid selection.
 func (d *DiffPane) CommentMessage(note string) (string, bool) {
-	a, ok := d.CommentAnchor()
-	if !ok {
+	rows := d.selectedRows()
+	if len(rows) == 0 {
 		return "", false
 	}
-	return composeDiffComment(a, note), true
+	return composeDiffComment(rows, note), true
 }
 
-// refreshCommentView re-renders the frozen rows with the cursor highlighted and
+// refreshCommentView re-renders the frozen rows with the selection highlighted and
 // scrolls the viewport so the cursor row stays visible.
 func (d *DiffPane) refreshCommentView() {
-	d.diff = renderDiffRows(d.rows, d.width, d.cursor)
+	lo, hi := d.selRange()
+	d.diff = renderDiffRows(d.rows, d.width, lo, hi)
 	d.viewport.SetContent(lipgloss.JoinVertical(lipgloss.Left, d.stats, d.diff))
 	// The diff block sits below the stats block in the viewport; the cursor row's
 	// absolute Y is that offset plus its row index.
@@ -158,9 +207,10 @@ func diffCursorStyle() lipgloss.Style {
 }
 
 // renderDiffRows styles parsed rows into the pane's patch body. It mirrors
-// colorizeDiff's per-kind styling, and when cursor >= 0 paints that row as a
-// full-width highlight bar (the comment-mode line cursor). width <= 0 skips the fit.
-func renderDiffRows(rows []diffRow, width, cursor int) string {
+// colorizeDiff's per-kind styling, and paints every row in the inclusive [lo, hi]
+// span as a full-width highlight bar (the comment-mode selection; a single line when
+// lo==hi, nothing when hi<lo). width <= 0 skips the fit.
+func renderDiffRows(rows []diffRow, width, lo, hi int) string {
 	fit := func(line string) string {
 		line = strings.ReplaceAll(line, "\t", "    ")
 		if width > 0 && runewidth.StringWidth(line) > width {
@@ -176,7 +226,7 @@ func renderDiffRows(rows []diffRow, width, cursor int) string {
 
 	lines := make([]string, len(rows))
 	for i, r := range rows {
-		if i == cursor {
+		if i >= lo && i <= hi {
 			bar := fit(r.text)
 			if width > 0 {
 				bar = diffCursorStyle().Width(width).Render(bar)
@@ -288,10 +338,23 @@ func leadingInt(s string) int {
 	return n
 }
 
+// diffRangeLocation renders the "file:line" (single row) or "file:start-end" (range)
+// reference for a selection of code rows. The rows are same-file and in order.
+func diffRangeLocation(rows []diffRow) string {
+	if len(rows) == 1 {
+		return fmt.Sprintf("%s:%d", rows[0].file, rows[0].lineNo)
+	}
+	return fmt.Sprintf("%s:%d-%d", rows[0].file, rows[0].lineNo, rows[len(rows)-1].lineNo)
+}
+
 // composeDiffComment builds the queued-prompt text a diff comment delivers to the
-// agent: a "Re: file:line" reference, the exact diff line quoted (its +/- marker
-// kept so the agent sees whether it is an added, removed, or context line), then the
-// user's note trimmed of surrounding whitespace.
-func composeDiffComment(anchor diffRow, note string) string {
-	return fmt.Sprintf("Re: %s:%d\n\n    %s\n\n%s", anchor.file, anchor.lineNo, anchor.text, strings.TrimSpace(note))
+// agent: a "Re: file:line" (or "file:start-end") reference, the selected diff lines
+// quoted verbatim (their +/- markers kept so the agent sees added vs removed vs
+// context), then the user's note trimmed of surrounding whitespace.
+func composeDiffComment(rows []diffRow, note string) string {
+	quoted := make([]string, len(rows))
+	for i, r := range rows {
+		quoted[i] = "    " + r.text
+	}
+	return fmt.Sprintf("Re: %s\n\n%s\n\n%s", diffRangeLocation(rows), strings.Join(quoted, "\n"), strings.TrimSpace(note))
 }

@@ -32,10 +32,13 @@ type DiffPane struct {
 
 	// Comment mode (#383): while commenting, the pane is frozen on a snapshot of
 	// rows so the line cursor is stable and its anchor reliable — SetDiff becomes a
-	// no-op until ExitComment, and cursor indexes an annotatable row in rows.
+	// no-op until ExitComment, and cursor indexes an annotatable row in rows. anchor
+	// is the fixed end of a multi-line selection: j/k move both (collapsing to one
+	// line), J/K move only the cursor to grow/shrink a contiguous range.
 	rows       []diffRow
 	commenting bool
 	cursor     int
+	anchor     int
 }
 
 // NewDiffPane returns an empty DiffPane.

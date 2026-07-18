@@ -111,20 +111,33 @@ func TestDiffCommentCursor(t *testing.T) {
 	require.False(t, d.IsCommenting())
 }
 
-// TestComposeDiffComment pins the queued-prompt text a diff comment becomes: a
-// file:line reference, the exact diff line quoted (marker kept, so the agent sees
-// added vs removed), then the user's note — trimmed of surrounding whitespace.
+// TestComposeDiffComment pins the queued-prompt text a single-line diff comment
+// becomes: a file:line reference, the exact diff line quoted (marker kept, so the
+// agent sees added vs removed), then the note — trimmed of surrounding whitespace.
 func TestComposeDiffComment(t *testing.T) {
-	anchor := diffRow{kind: rowAdd, text: "+\tif cents <= 0 {", file: "payment.go", lineNo: 42}
-	got := composeDiffComment(anchor, "  handle the zero case too\n")
+	rows := []diffRow{{kind: rowAdd, text: "+\tif cents <= 0 {", file: "payment.go", lineNo: 42}}
+	got := composeDiffComment(rows, "  handle the zero case too\n")
 	want := "Re: payment.go:42\n\n    +\tif cents <= 0 {\n\nhandle the zero case too"
+	require.Equal(t, want, got)
+}
+
+// TestComposeDiffComment_Range pins a multi-line comment: a file:start-end reference
+// and the whole selected block quoted in order, markers kept.
+func TestComposeDiffComment_Range(t *testing.T) {
+	rows := []diffRow{
+		{kind: rowContext, text: " a", file: "x.go", lineNo: 10},
+		{kind: rowDel, text: "-b", file: "x.go", lineNo: 11},
+		{kind: rowAdd, text: "+c", file: "x.go", lineNo: 11},
+	}
+	got := composeDiffComment(rows, "look at this block")
+	want := "Re: x.go:10-11\n\n     a\n    -b\n    +c\n\nlook at this block"
 	require.Equal(t, want, got)
 }
 
 // TestComposeDiffComment_Deletion references the removed line's old-file position.
 func TestComposeDiffComment_Deletion(t *testing.T) {
-	anchor := diffRow{kind: rowDel, text: "-\treturn nil", file: "a/b.go", lineNo: 7}
-	got := composeDiffComment(anchor, "why drop the error?")
+	rows := []diffRow{{kind: rowDel, text: "-\treturn nil", file: "a/b.go", lineNo: 7}}
+	got := composeDiffComment(rows, "why drop the error?")
 	require.Contains(t, got, "Re: a/b.go:7")
 	require.Contains(t, got, "-\treturn nil")
 	require.Contains(t, got, "why drop the error?")
@@ -137,4 +150,43 @@ func TestEnterCommentNoCodeLines(t *testing.T) {
 	d.rows = parseDiffRows("diff --git a/x b/x\nindex 1..2\n")
 	require.False(t, d.EnterComment(), "no code lines means nothing to comment")
 	require.False(t, d.IsCommenting())
+}
+
+// TestDiffCommentRange pins J/K range selection: it starts single-line, grows a
+// contiguous code block downward, clamps at hunk boundaries (a range can't span the
+// @@ header the way j/k navigation can), and a plain move collapses it again.
+func TestDiffCommentRange(t *testing.T) {
+	d := NewDiffPane()
+	d.SetSize(80, 20)
+	d.rows = parseDiffRows(cursorDiff) // foo.go code lines " ctx1", "+add1", " ctx2"
+
+	require.True(t, d.EnterComment())
+	require.Len(t, d.selectedRows(), 1, "starts as a single-line selection")
+
+	// Extend up at the first code line clamps — the hunk header sits above it.
+	d.ExtendUp()
+	require.Len(t, d.selectedRows(), 1, "extend clamps at the hunk boundary")
+
+	// Extend down grows a contiguous range, in order.
+	d.ExtendDown()
+	rows := d.selectedRows()
+	require.Len(t, rows, 2)
+	require.Equal(t, " ctx1", rows[0].text)
+	require.Equal(t, "+add1", rows[1].text)
+
+	d.ExtendDown()
+	require.Len(t, d.selectedRows(), 3, "spans the whole hunk's code lines")
+	d.ExtendDown()
+	require.Len(t, d.selectedRows(), 3, "extend clamps at the end of the hunk")
+
+	// A range location reads file:start-end.
+	loc, ok := d.CommentLocation()
+	require.True(t, ok)
+	require.Equal(t, "foo.go:1-3", loc)
+
+	// A plain move collapses the selection back to a single line.
+	d.CursorUp()
+	rows = d.selectedRows()
+	require.Len(t, rows, 1, "j/k collapses the selection")
+	require.Equal(t, "+add1", rows[0].text)
 }
