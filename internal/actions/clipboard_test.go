@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
-	"io"
 	"strings"
 	"testing"
 
@@ -151,7 +150,3 @@ func TestCopyToClipboard_WriteFaultyOutputAndExecFail(t *testing.T) {
 	require.Contains(t, msg, "install", "the error must name the next step (install a clipboard utility)")
 	require.Contains(t, msg, "osc 52", "the error must name the terminal alternative")
 }
-
-// Ensure the errWriter type satisfies io.Writer — a compile-time guard so a
-// future refactor that breaks the interface fails here rather than silently.
-var _ io.Writer = errWriter{}
