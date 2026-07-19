@@ -270,6 +270,85 @@ func TestFilter_Note(t *testing.T) {
 	require.False(t, ParseFilter("note:fix").Matches(empty))
 }
 
+func TestFilter_Effort(t *testing.T) {
+	low := newFilterInstance(t, "routine", "b")
+	low.SetEffortMeta("low")
+	high := newFilterInstance(t, "refactor", "b")
+	high.SetEffortMeta("high")
+	maxed := newFilterInstance(t, "hardest", "b")
+	maxed.SetEffortMeta("max")
+	medium := newFilterInstance(t, "mid", "b")
+	medium.SetEffortMeta("medium")
+	xhigh := newFilterInstance(t, "deepest", "b")
+	xhigh.SetEffortMeta("xhigh")
+	none := newFilterInstance(t, "unknown", "b") // no effort set
+
+	require.True(t, ParseFilter("effort:low").Matches(low))
+	require.False(t, ParseFilter("effort:low").Matches(high))
+	require.False(t, ParseFilter("effort:low").Matches(none))
+
+	require.True(t, ParseFilter("effort:high").Matches(high))
+	require.False(t, ParseFilter("effort:high").Matches(low))
+
+	// The match is a *prefix*, not a substring: "high" is contained in "xhigh" but
+	// does not prefix it, so an effort:high filter must leave xhigh sessions out.
+	// This is the only pair in the level set where the two differ, so it is the
+	// only assertion that pins prefix semantics — without it, swapping
+	// effortTerm's strings.HasPrefix for strings.Contains passes the whole test.
+	require.False(t, ParseFilter("effort:high").Matches(xhigh))
+	require.True(t, ParseFilter("effort:x").Matches(xhigh))
+	require.True(t, ParseFilter("effort:xhigh").Matches(xhigh))
+	require.False(t, ParseFilter("effort:x").Matches(high))
+
+	require.True(t, ParseFilter("effort:max").Matches(maxed))
+	require.False(t, ParseFilter("effort:max").Matches(low))
+
+	// "m" is a prefix of both "medium" and "max".
+	require.True(t, ParseFilter("effort:m").Matches(medium))
+	require.True(t, ParseFilter("effort:m").Matches(maxed))
+	require.False(t, ParseFilter("effort:m").Matches(low))
+
+	// "me" narrows to medium only; "ma" narrows to max only.
+	require.True(t, ParseFilter("effort:me").Matches(medium))
+	require.False(t, ParseFilter("effort:me").Matches(maxed))
+	require.True(t, ParseFilter("effort:ma").Matches(maxed))
+	require.False(t, ParseFilter("effort:ma").Matches(medium))
+
+	// Case-insensitive on the query side.
+	require.True(t, ParseFilter("EFFORT:LOW").Matches(low))
+
+	// ...and on the value side: EffortInfo is raw hook truth, deliberately
+	// unvalidated (session/effort.go), so a level can arrive in any case. This
+	// pins effortTerm's own strings.ToLower — without it that call is dead.
+	shouty := newFilterInstance(t, "shouty", "b")
+	shouty.SetEffortMeta("HIGH")
+	require.True(t, ParseFilter("effort:high").Matches(shouty))
+
+	// Empty value is a no-op (match all) so "effort:" never blinks the list empty.
+	require.True(t, ParseFilter("effort:").Matches(low))
+	require.True(t, ParseFilter("effort:").Matches(none))
+
+	// A value prefixing no known level matches nothing.
+	require.False(t, ParseFilter("effort:xyz").Matches(low))
+
+	// "none" is the sentinel for sessions with no resolved effort, mirroring
+	// account:none / pr:none.
+	require.True(t, ParseFilter("effort:none").Matches(none))
+	require.False(t, ParseFilter("effort:none").Matches(low))
+
+	// The sentinel is an EXACT match, not a prefix one, mirroring account:none:
+	// EffortInfo is unvalidated, so a level a newer CLI resolves could begin with
+	// "n" and must stay reachable rather than being swallowed to mean no-effort.
+	novel := newFilterInstance(t, "novel", "b")
+	novel.SetEffortMeta("nova")
+	require.True(t, ParseFilter("effort:no").Matches(novel))
+	require.False(t, ParseFilter("effort:no").Matches(none))
+
+	// Sessions with no effort match only the empty predicate and the sentinel,
+	// never a specific level.
+	require.False(t, ParseFilter("effort:low").Matches(none))
+}
+
 func TestFilter_MixedPredicateAndSubstringANDed(t *testing.T) {
 	inst := newFilterInstance(t, "feat login", "feat/login")
 	inst.SetStatus(Ready)
