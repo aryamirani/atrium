@@ -275,8 +275,8 @@ func TestFilter_Effort(t *testing.T) {
 	low.SetEffortMeta("low")
 	high := newFilterInstance(t, "refactor", "b")
 	high.SetEffortMeta("high")
-	max := newFilterInstance(t, "hardest", "b")
-	max.SetEffortMeta("max")
+	maxed := newFilterInstance(t, "hardest", "b")
+	maxed.SetEffortMeta("max")
 	medium := newFilterInstance(t, "mid", "b")
 	medium.SetEffortMeta("medium")
 	none := newFilterInstance(t, "unknown", "b") // no effort set
@@ -288,18 +288,18 @@ func TestFilter_Effort(t *testing.T) {
 	require.True(t, ParseFilter("effort:high").Matches(high))
 	require.False(t, ParseFilter("effort:high").Matches(low))
 
-	require.True(t, ParseFilter("effort:max").Matches(max))
+	require.True(t, ParseFilter("effort:max").Matches(maxed))
 	require.False(t, ParseFilter("effort:max").Matches(low))
 
 	// "m" is a prefix of both "medium" and "max".
 	require.True(t, ParseFilter("effort:m").Matches(medium))
-	require.True(t, ParseFilter("effort:m").Matches(max))
+	require.True(t, ParseFilter("effort:m").Matches(maxed))
 	require.False(t, ParseFilter("effort:m").Matches(low))
 
 	// "me" narrows to medium only; "ma" narrows to max only.
 	require.True(t, ParseFilter("effort:me").Matches(medium))
-	require.False(t, ParseFilter("effort:me").Matches(max))
-	require.True(t, ParseFilter("effort:ma").Matches(max))
+	require.False(t, ParseFilter("effort:me").Matches(maxed))
+	require.True(t, ParseFilter("effort:ma").Matches(maxed))
 	require.False(t, ParseFilter("effort:ma").Matches(medium))
 
 	// Case-insensitive.
