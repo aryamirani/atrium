@@ -13,10 +13,10 @@ import (
 //
 // A query is split on whitespace into terms that are combined with AND. Each term
 // is either a predicate over cached instance state (status:, dirty, behind[:expr],
-// pr:, account:, note:) or a plain substring matched against DisplayName, Branch,
-// or the session note. Predicate values are matched by case-insensitive prefix so
-// the list narrows progressively as the user types rather than blinking empty
-// mid-word (see the package tests).
+// pr:, account:, note:, model:) or a plain substring matched against DisplayName,
+// Branch, or the session note. Predicate values are matched by case-insensitive
+// prefix so the list narrows progressively as the user types rather than blinking
+// empty mid-word (see the package tests).
 type Filter struct {
 	terms []term
 }
@@ -76,6 +76,8 @@ func parseTerm(tok string) term {
 		return accountTerm(strings.TrimPrefix(tok, "account:"))
 	case strings.HasPrefix(tok, "note:"):
 		return noteTerm(strings.TrimPrefix(tok, "note:"))
+	case strings.HasPrefix(tok, "model:"):
+		return modelTerm(strings.TrimPrefix(tok, "model:"))
 	default:
 		return substringTerm(tok)
 	}
@@ -207,5 +209,25 @@ func substringTerm(q string) term {
 func noteTerm(value string) term {
 	return func(i *Instance) bool {
 		return strings.HasPrefix(strings.ToLower(i.Note()), value)
+	}
+}
+
+// modelTerm matches the session's resolved model (ModelInfo) by case-insensitive
+// substring. An empty value is a no-op (matches every session) so a mid-typed
+// "model:" never blinks the list empty. Sessions with no resolved model
+// (ModelInfo == "") only match an empty predicate. Substring matching is used
+// rather than prefix because model names are vendor-prefixed ("claude-opus-4-8"),
+// so a natural query like "opus" or "sonnet" matches the family segment without
+// requiring the leading "claude-".
+func modelTerm(value string) term {
+	return func(i *Instance) bool {
+		info := strings.ToLower(i.ModelInfo())
+		if value == "" {
+			return true
+		}
+		if info == "" {
+			return false
+		}
+		return strings.Contains(info, value)
 	}
 }
