@@ -279,6 +279,8 @@ func TestFilter_Effort(t *testing.T) {
 	maxed.SetEffortMeta("max")
 	medium := newFilterInstance(t, "mid", "b")
 	medium.SetEffortMeta("medium")
+	xhigh := newFilterInstance(t, "deepest", "b")
+	xhigh.SetEffortMeta("xhigh")
 	none := newFilterInstance(t, "unknown", "b") // no effort set
 
 	require.True(t, ParseFilter("effort:low").Matches(low))
@@ -287,6 +289,16 @@ func TestFilter_Effort(t *testing.T) {
 
 	require.True(t, ParseFilter("effort:high").Matches(high))
 	require.False(t, ParseFilter("effort:high").Matches(low))
+
+	// The match is a *prefix*, not a substring: "high" is contained in "xhigh" but
+	// does not prefix it, so an effort:high filter must leave xhigh sessions out.
+	// This is the only pair in the level set where the two differ, so it is the
+	// only assertion that pins prefix semantics — without it, swapping
+	// effortTerm's strings.HasPrefix for strings.Contains passes the whole test.
+	require.False(t, ParseFilter("effort:high").Matches(xhigh))
+	require.True(t, ParseFilter("effort:x").Matches(xhigh))
+	require.True(t, ParseFilter("effort:xhigh").Matches(xhigh))
+	require.False(t, ParseFilter("effort:x").Matches(high))
 
 	require.True(t, ParseFilter("effort:max").Matches(maxed))
 	require.False(t, ParseFilter("effort:max").Matches(low))
