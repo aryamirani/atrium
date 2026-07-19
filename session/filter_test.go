@@ -270,6 +270,52 @@ func TestFilter_Note(t *testing.T) {
 	require.False(t, ParseFilter("note:fix").Matches(empty))
 }
 
+func TestFilter_Effort(t *testing.T) {
+	low := newFilterInstance(t, "routine", "b")
+	low.SetEffortMeta("low")
+	high := newFilterInstance(t, "refactor", "b")
+	high.SetEffortMeta("high")
+	max := newFilterInstance(t, "hardest", "b")
+	max.SetEffortMeta("max")
+	medium := newFilterInstance(t, "mid", "b")
+	medium.SetEffortMeta("medium")
+	none := newFilterInstance(t, "unknown", "b") // no effort set
+
+	require.True(t, ParseFilter("effort:low").Matches(low))
+	require.False(t, ParseFilter("effort:low").Matches(high))
+	require.False(t, ParseFilter("effort:low").Matches(none))
+
+	require.True(t, ParseFilter("effort:high").Matches(high))
+	require.False(t, ParseFilter("effort:high").Matches(low))
+
+	require.True(t, ParseFilter("effort:max").Matches(max))
+	require.False(t, ParseFilter("effort:max").Matches(low))
+
+	// "m" is a prefix of both "medium" and "max".
+	require.True(t, ParseFilter("effort:m").Matches(medium))
+	require.True(t, ParseFilter("effort:m").Matches(max))
+	require.False(t, ParseFilter("effort:m").Matches(low))
+
+	// "me" narrows to medium only; "ma" narrows to max only.
+	require.True(t, ParseFilter("effort:me").Matches(medium))
+	require.False(t, ParseFilter("effort:me").Matches(max))
+	require.True(t, ParseFilter("effort:ma").Matches(max))
+	require.False(t, ParseFilter("effort:ma").Matches(medium))
+
+	// Case-insensitive.
+	require.True(t, ParseFilter("EFFORT:LOW").Matches(low))
+
+	// Empty value is a no-op (match all) so "effort:" never blinks the list empty.
+	require.True(t, ParseFilter("effort:").Matches(low))
+	require.True(t, ParseFilter("effort:").Matches(none))
+
+	// A value prefixing no known level matches nothing.
+	require.False(t, ParseFilter("effort:xyz").Matches(low))
+
+	// Sessions with no effort only match the empty predicate, not specific ones.
+	require.False(t, ParseFilter("effort:low").Matches(none))
+}
+
 func TestFilter_MixedPredicateAndSubstringANDed(t *testing.T) {
 	inst := newFilterInstance(t, "feat login", "feat/login")
 	inst.SetStatus(Ready)

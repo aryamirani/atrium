@@ -13,10 +13,10 @@ import (
 //
 // A query is split on whitespace into terms that are combined with AND. Each term
 // is either a predicate over cached instance state (status:, dirty, behind[:expr],
-// pr:, account:, note:) or a plain substring matched against DisplayName, Branch,
-// or the session note. Predicate values are matched by case-insensitive prefix so
-// the list narrows progressively as the user types rather than blinking empty
-// mid-word (see the package tests).
+// pr:, account:, note:, effort:) or a plain substring matched against DisplayName,
+// Branch, or the session note. Predicate values are matched by case-insensitive
+// prefix so the list narrows progressively as the user types rather than blinking
+// empty mid-word (see the package tests).
 type Filter struct {
 	terms []term
 }
@@ -76,6 +76,8 @@ func parseTerm(tok string) term {
 		return accountTerm(strings.TrimPrefix(tok, "account:"))
 	case strings.HasPrefix(tok, "note:"):
 		return noteTerm(strings.TrimPrefix(tok, "note:"))
+	case strings.HasPrefix(tok, "effort:"):
+		return effortTerm(strings.TrimPrefix(tok, "effort:"))
 	default:
 		return substringTerm(tok)
 	}
@@ -207,5 +209,22 @@ func substringTerm(q string) term {
 func noteTerm(value string) term {
 	return func(i *Instance) bool {
 		return strings.HasPrefix(strings.ToLower(i.Note()), value)
+	}
+}
+
+// effortTerm matches the session's resolved effort level (EffortInfo) by
+// case-insensitive prefix. An empty value is a no-op (matches every session)
+// so a mid-typed "effort:" never blinks the list empty. A session with no
+// known effort level (EffortInfo returns "") only matches the empty predicate.
+// Effort values are: low, medium, high, xhigh, max. Prefix matching means
+// "effort:m" matches both "medium" and "max", narrowing further to one as
+// the user continues typing.
+func effortTerm(value string) term {
+	return func(i *Instance) bool {
+		info := strings.ToLower(i.EffortInfo())
+		if value == "" {
+			return true
+		}
+		return info != "" && strings.HasPrefix(info, value)
 	}
 }
