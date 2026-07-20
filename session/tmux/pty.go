@@ -19,7 +19,16 @@ type Pty struct{}
 
 // Start launches cmd inside a new pty and returns its master end.
 func (pt Pty) Start(cmd *exec.Cmd) (*os.File, error) {
-	return pty.Start(cmd)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		_ = cmd.Wait()
+	}()
+
+	return ptmx, nil
 }
 
 // Close is a no-op: the real pty's lifetime is tied to the file returned by
